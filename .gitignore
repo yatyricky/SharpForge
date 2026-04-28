@@ -1,0 +1,55 @@
+# Build output
+bin/
+obj/
+out/
+publish/
+*.binlog
+
+# Test results & coverage
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.trx
+
+# IDE / editor
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+*.user
+*.suo
+*.userprefs
+.idea/
+
+# Rider / ReSharper
+_ReSharper*/
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+project.lock.json
+project.fragment.lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Generated transpiler output (per-sample artifact)
+samples/sf-out.lua
+
+# JassGen-emitted bindings are regenerated on demand
+samples/JassNative/
+
+# SharpForge bindings cache (lives in %TEMP%, but ignore in-tree just in case)
+BindingsCache/
