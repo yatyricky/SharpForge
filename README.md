@@ -210,3 +210,19 @@ Both subcommands currently print "not implemented" and return exit code 2; CLI s
 | `samples/Class` | Namespace, instance class, constructor, instance methods, `+=`, `$"..."`    |
 
 `samples/Class/expected/sharp_forge.lua` is the **golden** output and is verified by `ClassSampleTests` on every test run.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 SharpForge contributors.
+
+## AI assistance
+
+Significant portions of this codebase were drafted, refactored, and reviewed with AI pair-programming:
+
+- **Editor:** [VS Code](https://code.visualstudio.com/) with GitHub Copilot Chat (agent mode).
+- **Model:** Anthropic **Claude Opus 4.7**.
+
+All AI-generated changes were reviewed, compiled, and tested by a human before commit. Project conventions, design decisions, and acceptance criteria are owned by the maintainers, not the model.
+
