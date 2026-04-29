@@ -23,6 +23,8 @@ public sealed class IRType
 
     public bool IsStatic { get; init; }
 
+    public IRTypeReference? BaseType { get; init; }
+
     public List<IRField> Fields { get; } = new();
     public List<IRFunction> Methods { get; } = new();
 }
@@ -40,6 +42,10 @@ public sealed class IRFunction
     public required string LuaName { get; init; }
     public List<string> Parameters { get; } = new();
     public IRBlock Body { get; init; } = new();
+
+    public string? InitLuaName { get; init; }
+
+    public IRBaseConstructorCall? BaseConstructorCall { get; init; }
 
     /// <summary>Static method/function — emitted with <c>.</c> and no implicit self.</summary>
     public bool IsStatic { get; init; }

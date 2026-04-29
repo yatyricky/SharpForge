@@ -69,6 +69,10 @@ public sealed class LuaEmitter
         var typePath = path + "." + type.Name;
         WriteLine($"-- {type.FullName}");
         WriteLine($"{typePath} = {typePath} or {{}}");
+        if (type.BaseType is { } baseType)
+        {
+            WriteLine($"setmetatable({typePath}, {{ __index = {FormatTypeReference(baseType)} }})");
+        }
 
         // Static field initializers.
         foreach (var f in type.Fields.Where(f => f.IsStatic))
@@ -104,37 +108,64 @@ public sealed class LuaEmitter
 
     private void EmitMethod(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
     {
+        if (m.IsConstructor)
+        {
+            EmitConstructor(typePath, m, instanceFields);
+            return;
+        }
+
         var sep = m.IsInstance ? ":" : ".";
         var paramList = string.Join(", ", m.Parameters);
         WriteLine($"function {typePath}{sep}{m.LuaName}({paramList})");
         _indent++;
 
-        if (m.IsConstructor)
-        {
-            WriteLine($"local self = setmetatable({{}}, {{ __index = {typePath} }})");
-            foreach (var field in instanceFields)
-            {
-                WriteIndent();
-                _sb.Append("self.").Append(field.Name).Append(" = ");
-                if (field.Initializer is null)
-                {
-                    _sb.Append("nil");
-                }
-                else
-                {
-                    EmitExpr(field.Initializer);
-                }
-                _sb.Append('\n');
-            }
-        }
-
         EmitBlock(m.Body);
 
-        if (m.IsConstructor)
-        {
-            WriteLine("return self");
-        }
+        _indent--;
+        WriteLine("end");
+    }
 
+    private void EmitConstructor(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
+    {
+        var paramList = string.Join(", ", m.Parameters);
+        var initName = m.InitLuaName ?? "__Init";
+
+        WriteLine($"function {typePath}.{initName}(self{(paramList.Length == 0 ? string.Empty : ", " + paramList)})");
+        _indent++;
+        if (m.BaseConstructorCall is not null)
+        {
+            EmitStmt(m.BaseConstructorCall);
+        }
+        foreach (var field in instanceFields)
+        {
+            WriteIndent();
+            _sb.Append("self.").Append(field.Name).Append(" = ");
+            if (field.Initializer is null)
+            {
+                _sb.Append("nil");
+            }
+            else
+            {
+                EmitExpr(field.Initializer);
+            }
+            _sb.Append('\n');
+        }
+        EmitBlock(m.Body);
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {typePath}.{m.LuaName}({paramList})");
+        _indent++;
+        WriteLine($"local self = setmetatable({{}}, {{ __index = {typePath} }})");
+        WriteIndent();
+        _sb.Append(typePath).Append('.').Append(initName).Append("(self");
+        foreach (var parameter in m.Parameters)
+        {
+            _sb.Append(", ").Append(parameter);
+        }
+        _sb.Append(")\n");
+        WriteLine("return self");
         _indent--;
         WriteLine("end");
     }
@@ -179,6 +210,16 @@ public sealed class LuaEmitter
                 WriteIndent();
                 EmitExpr(es.Expression);
                 _sb.Append('\n');
+                break;
+            case IRBaseConstructorCall baseCall:
+                WriteIndent();
+                _sb.Append(FormatTypeReference(baseCall.BaseType)).Append('.').Append(baseCall.InitLuaName).Append("(self");
+                foreach (var argument in baseCall.Arguments)
+                {
+                    _sb.Append(", ");
+                    EmitExpr(argument);
+                }
+                _sb.Append(")\n");
                 break;
             case IRReturn r:
                 WriteIndent();
@@ -307,12 +348,7 @@ public sealed class LuaEmitter
                 _sb.Append(id.Name);
                 break;
             case IRTypeReference tr:
-                _sb.Append(_rootTable);
-                foreach (var segment in tr.NamespaceSegments)
-                {
-                    _sb.Append('.').Append(segment);
-                }
-                _sb.Append('.').Append(tr.Name);
+                _sb.Append(FormatTypeReference(tr));
                 break;
             case IRMemberAccess ma:
                 EmitExpr(ma.Target);
@@ -381,6 +417,17 @@ public sealed class LuaEmitter
                 default: sb.Append(ch); break;
             }
         }
+        return sb.ToString();
+    }
+
+    private string FormatTypeReference(IRTypeReference type)
+    {
+        var sb = new StringBuilder(_rootTable);
+        foreach (var segment in type.NamespaceSegments)
+        {
+            sb.Append('.').Append(segment);
+        }
+        sb.Append('.').Append(type.Name);
         return sb.ToString();
     }
 

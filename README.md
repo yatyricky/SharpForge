@@ -164,6 +164,9 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 | Auto-properties                    | ✅     | Lowered as fields for the current MVP                    |
 | Static constructors                | ✅     | Emitted after static member initializers                 |
 | Constructor/method overload names  | ✅     | Arity-suffixed Lua names when overloads exist            |
+| Single inheritance                 | ✅     | Derived class tables inherit through Lua metatables      |
+| `virtual` / `override` methods     | ✅     | Override methods replace inherited dispatch entries      |
+| `base(...)` / `base.Method()`      | ✅     | Base constructor init helpers and direct base calls       |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ⏳     | Planned                                                  |

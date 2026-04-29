@@ -59,7 +59,7 @@ public sealed class IRLowering
             }
         }
 
-        module.Types.Sort((a, b) => string.CompareOrdinal(a.FullName, b.FullName));
+        SortTypesByInheritance(module.Types);
         _module = null;
         return module;
     }
@@ -85,6 +85,7 @@ public sealed class IRLowering
             Name = symbol.Name,
             FullName = string.Join('.', nsSegments.Append(symbol.Name)),
             IsStatic = symbol.IsStatic,
+            BaseType = GetLowerableBaseType(symbol),
         };
 
         foreach (var member in typeDecl.Members)
@@ -142,6 +143,8 @@ public sealed class IRLowering
             {
                 Name = symbol.Name,
                 LuaName = "New",
+                InitLuaName = "__Init",
+                BaseConstructorCall = GetImplicitBaseConstructorCall(symbol),
                 IsConstructor = true,
                 IsInstance = false,
             });
@@ -190,6 +193,8 @@ public sealed class IRLowering
         {
             Name = c.Identifier.ValueText,
             LuaName = symbol is null ? "New" : GetLuaMethodName(symbol),
+            InitLuaName = symbol is null ? "__Init" : GetLuaConstructorInitName(symbol),
+            BaseConstructorCall = LowerBaseConstructorCall(c, owner, model),
             IsConstructor = true,
             IsInstance = false, // emit with `.` because we create `self` ourselves
         };
@@ -209,6 +214,30 @@ public sealed class IRLowering
         }
 
         return fn;
+    }
+
+    private IRBaseConstructorCall? LowerBaseConstructorCall(
+        ConstructorDeclarationSyntax constructor,
+        INamedTypeSymbol owner,
+        SemanticModel model)
+    {
+        if (constructor.Initializer is { } initializer)
+        {
+            if (!initializer.IsKind(SyntaxKind.BaseConstructorInitializer))
+            {
+                return null;
+            }
+
+            var baseCtor = model.GetSymbolInfo(initializer).Symbol as IMethodSymbol;
+            return baseCtor is null
+                ? null
+                : new IRBaseConstructorCall(
+                    LowerTypeReference(baseCtor.ContainingType),
+                    GetLuaConstructorInitName(baseCtor),
+                    initializer.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray());
+        }
+
+        return GetImplicitBaseConstructorCall(owner);
     }
 
     private IRFunction LowerMethod(MethodDeclarationSyntax m, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
@@ -418,6 +447,13 @@ public sealed class IRLowering
     private IRExpr LowerInvocation(InvocationExpressionSyntax inv, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        if (inv.Expression is MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax } && symbol is { IsStatic: false })
+        {
+            return new IRInvocation(
+                new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                new[] { new IRIdentifier("self") }.Concat(args).ToArray());
+        }
+
         if (inv.Expression is IdentifierNameSyntax && symbol is { IsStatic: false })
         {
             return new IRInvocation(
@@ -538,8 +574,70 @@ public sealed class IRLowering
         return overloads.Length > 1 ? $"{method.Name}_{method.Parameters.Length}" : method.Name;
     }
 
+    private static string GetLuaConstructorInitName(IMethodSymbol method)
+        => GetLuaMethodName(method).Replace("New", "__Init", StringComparison.Ordinal);
+
     private static IRTypeReference LowerTypeReference(INamedTypeSymbol type)
         => new(GetNamespaceSegments(type.ContainingNamespace), type.Name);
+
+    private IRBaseConstructorCall? GetImplicitBaseConstructorCall(INamedTypeSymbol owner)
+    {
+        var baseType = GetLowerableBaseType(owner);
+        if (baseType is null || owner.BaseType is null)
+        {
+            return null;
+        }
+
+        var parameterlessBaseCtor = owner.BaseType.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 0);
+        return parameterlessBaseCtor is null
+            ? null
+            : new IRBaseConstructorCall(baseType, GetLuaConstructorInitName(parameterlessBaseCtor), Array.Empty<IRExpr>());
+    }
+
+    private IRTypeReference? GetLowerableBaseType(INamedTypeSymbol symbol)
+    {
+        var baseType = symbol.BaseType;
+        if (baseType is null || baseType.SpecialType == SpecialType.System_Object || IsIgnoredClass(baseType))
+        {
+            return null;
+        }
+
+        return LowerTypeReference(baseType);
+    }
+
+    private static void SortTypesByInheritance(List<IRType> types)
+    {
+        types.Sort((a, b) => string.CompareOrdinal(a.FullName, b.FullName));
+        var byName = types.ToDictionary(t => t.FullName, StringComparer.Ordinal);
+        var sorted = new List<IRType>(types.Count);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var type in types)
+        {
+            Visit(type);
+        }
+
+        types.Clear();
+        types.AddRange(sorted);
+
+        void Visit(IRType type)
+        {
+            if (!visited.Add(type.FullName))
+            {
+                return;
+            }
+
+            if (type.BaseType is { } baseType && byName.TryGetValue(GetTypeReferenceFullName(baseType), out var baseIrType))
+            {
+                Visit(baseIrType);
+            }
+
+            sorted.Add(type);
+        }
+    }
+
+    private static string GetTypeReferenceFullName(IRTypeReference type)
+        => string.Join('.', type.NamespaceSegments.Append(type.Name));
 
     private bool IsIgnoredClass(INamedTypeSymbol? symbol)
         => symbol is not null && _ignoredClasses.Contains(symbol.Name);
