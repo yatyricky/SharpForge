@@ -61,7 +61,8 @@ public sealed class RoslynFrontend
             assemblyName: "SharpForgeUserScript",
             syntaxTrees: trees,
             references: references,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                .WithNullableContextOptions(NullableContextOptions.Enable));
 
         return Task.FromResult(compilation);
     }
@@ -89,7 +90,8 @@ public sealed class RoslynFrontend
             assemblyName: $"SharpForgeBindings_{hash}",
             syntaxTrees: trees,
             references: Basic.Reference.Assemblies.Net80.References.All,
-            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                .WithNullableContextOptions(NullableContextOptions.Enable));
 
         var tmp = dllPath + ".tmp";
         using (var fs = File.Create(tmp))

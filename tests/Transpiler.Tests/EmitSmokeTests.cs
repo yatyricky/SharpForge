@@ -97,9 +97,40 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task String_concat_uses_nil_safe_polyfill()
+    {
+        var src = """
+            public static class Strings
+            {
+                public static string Interp(string? name, int hp)
+                {
+                    return $"{name} - HP: {hp}";
+                }
+
+                public static string Plus(string? prefix, int value)
+                {
+                    return prefix + ":" + value;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Strings.cs");
+
+        Assert.Contains("function SF__.Str__.Concat__(...)", lua);
+        Assert.Contains("if part ~= nil then", lua);
+        Assert.Contains("return SF__.Str__.Concat__(name, \" - HP: \", hp)", lua);
+        Assert.Contains("return SF__.Str__.Concat__(prefix, \":\", value)", lua);
+        Assert.DoesNotContain("return ((name ..", lua);
+        Assert.DoesNotContain("return ((prefix ..", lua);
+    }
+
+    [Fact]
     public async Task Samples_transpile_jass_calls_without_emitting_extern_host()
     {
-        var sampleDir = Path.Combine(FindRepoRoot(), "samples");
+        var repoRoot = FindRepoRoot();
+        var sampleDir = Directory.Exists(Path.Combine(repoRoot, "samples"))
+            ? Path.Combine(repoRoot, "samples")
+            : Path.Combine(repoRoot, "SampleProject");
         var sourceFiles = Directory.GetFiles(sampleDir, "*.cs", SearchOption.AllDirectories)
             .Select(path => new FileInfo(path))
             .ToArray();
@@ -327,8 +358,8 @@ public class EmitSmokeTests
         Assert.True(lua.IndexOf("-- Game.Unit", StringComparison.Ordinal) < lua.IndexOf("-- Game.Hero", StringComparison.Ordinal));
         Assert.Contains("setmetatable(SF__.Game.Hero, { __index = SF__.Game.Unit })", lua);
         Assert.Contains("function SF__.Game.Unit.__Init(self, hp)", lua);
-        Assert.Contains("function SF__.Game.Hero.__Init(self, hp)", lua);
-        Assert.Contains("SF__.Game.Unit.__Init(self, hp)", lua);
+        Assert.Matches(@"function SF__\.Game\.Hero\.__Init\(self, hp\d*\)", lua);
+        Assert.Matches(@"SF__\.Game\.Unit\.__Init\(self, hp\d*\)", lua);
         Assert.Contains("self.Mana = 10", lua);
         Assert.Contains("function SF__.Game.Unit:Label()", lua);
         Assert.Contains("function SF__.Game.Hero:Label()", lua);
@@ -465,14 +496,14 @@ public class EmitSmokeTests
 
         var lua = await TranspileSourceAsync(src, "Interfaces.cs");
 
-        Assert.Contains("function SF__.__is(obj, target)", lua);
-        Assert.Contains("function SF__.__as(obj, target)", lua);
+        Assert.Contains("function SF__.Type__.Is__(obj, target)", lua);
+        Assert.Contains("function SF__.Type__.As__(obj, target)", lua);
         Assert.Contains("-- Game.INamed", lua);
         Assert.Contains("SF__.Game.Unit.__sf_interfaces = {[SF__.Game.INamed] = true}", lua);
         Assert.Contains("self.__sf_type = SF__.Game.Hero", lua);
-        Assert.Contains("return SF__.__is(value, SF__.Game.INamed)", lua);
-        Assert.Contains("local named = SF__.__as(value, SF__.Game.INamed)", lua);
-        Assert.Contains("return SF__.__is(hero, SF__.Game.INamed)", lua);
+        Assert.Contains("return SF__.Type__.Is__(value, SF__.Game.INamed)", lua);
+        Assert.Matches(@"local named\d* = SF__\.Type__\.As__\(value\d*, SF__\.Game\.INamed\)", lua);
+        Assert.Contains("return SF__.Type__.Is__(hero, SF__.Game.INamed)", lua);
     }
 
     [Fact]
@@ -506,14 +537,203 @@ public class EmitSmokeTests
         var lua = await TranspileSourceAsync(src, "Collections.cs");
 
         Assert.Contains("local values = {1, 2, 3}", lua);
-        Assert.Contains("local __sf_collection0 = values", lua);
-        Assert.Contains("for __sf_i0 = 1, #__sf_collection0 do", lua);
-        Assert.Contains("local value = __sf_collection0[__sf_i0]", lua);
+        Assert.Contains("local collection = values", lua);
+        Assert.Contains("for i, value in ipairs(collection) do", lua);
         Assert.Matches(@"values\[\(?\s*0\s*\+\s*1\s*\)?\]", lua);
         Assert.Contains("#values", lua);
-        Assert.Contains("local values = {4, 5}", lua);
-        Assert.Contains("table.insert(values, 6)", lua);
-        Assert.Matches(@"values\[\(?\s*1\s*\+\s*1\s*\)?\]", lua);
+        Assert.Matches(@"local values\d* = \{4, 5\}", lua);
+        Assert.Matches(@"table\.insert\(values\d*, 6\)", lua);
+        Assert.Matches(@"values\d*\[\(?\s*1\s*\+\s*1\s*\)?\]", lua);
+    }
+
+    [Fact]
+    public async Task SharpLib_collections_emit_stub_backed_lua_helpers()
+    {
+        var src = """
+            using SharpLib;
+
+            namespace SharpLib
+            {
+                public class List<T>
+                {
+                    public int Count => 0;
+                    public T this[int index] { get => default!; set { } }
+                    public void Add(T item) { }
+                    public void Sort() { }
+                    public Enumerator GetEnumerator() => default!;
+                    public class Enumerator
+                    {
+                        public T Current => default!;
+                        public bool MoveNext() { return false; }
+                    }
+                }
+
+                public class Dictionary<K, V>
+                {
+                    public int Count => 0;
+                    public V this[K key] { get => default!; set { } }
+                    public void Add(K key, V value) { }
+                    public V? Get(K key) { return default; }
+                    public void Set(K key, V value) { }
+                    public bool Remove(K key) { return false; }
+                    public Enumerator GetEnumerator() => default!;
+                    public class Enumerator
+                    {
+                        public KeyValue<K, V> Current => default!;
+                        public bool MoveNext() { return false; }
+                    }
+                }
+
+                public class KeyValue<K, V>
+                {
+                    public K Key => default!;
+                    public V Value => default!;
+                }
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var values = new List<int>();
+                    values.Add(1);
+                    values.Sort();
+
+                    var table = new Dictionary<string, int>();
+                    table["key"] = 1;
+                    table.Add("k2", 2);
+                    var value = table["key"];
+                    var nullable = new Dictionary<string, int?>();
+                    nullable["gone"] = null;
+                    nullable.Remove("gone");
+                    foreach (var kv in table)
+                    {
+                        var text = kv.Key + " = " + kv.Value;
+                    }
+
+                    return value + values[0];
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "SharpLibCollections.cs");
+
+        Assert.Contains("function SF__.Dict__.New__()", lua);
+        Assert.Contains("function SF__.Dict__.Get__(dict, key)", lua);
+        Assert.Contains("function SF__.Dict__.Set__(dict, key, value)", lua);
+        Assert.Contains("function SF__.Dict__.Remove__(dict, key)", lua);
+        Assert.Contains("function SF__.Dict__.Iterate__(dict)", lua);
+        Assert.Contains("SF__.Dict__.Nil__ = SF__.Dict__.Nil__ or {}", lua);
+        Assert.Contains("return { data = {}, keys = {} }", lua);
+        Assert.Contains("local value = dict.data[key]", lua);
+        Assert.Contains("if value == SF__.Dict__.Nil__ then return nil end", lua);
+        Assert.Contains("table.insert(dict.keys, key)", lua);
+        Assert.DoesNotContain("keySet", lua);
+        Assert.Contains("local values = {}", lua);
+        Assert.Contains("table.insert(values, 1)", lua);
+        Assert.Contains("function SF__.List__.Sort__(list, less)", lua);
+        Assert.Contains("while j >= 1 and compare(value, list[j]) do", lua);
+        Assert.Contains("SF__.List__.Sort__(values)", lua);
+        Assert.Contains("local KW__table = SF__.Dict__.New__()", lua);
+        Assert.Contains("SF__.Dict__.Set__(KW__table, \"key\", 1)", lua);
+        Assert.Contains("SF__.Dict__.Set__(KW__table, \"k2\", 2)", lua);
+        Assert.Contains("local value = SF__.Dict__.Get__(KW__table, \"key\")", lua);
+        Assert.Contains("SF__.Dict__.Set__(nullable, \"gone\", nil)", lua);
+        Assert.Contains("SF__.Dict__.Remove__(nullable, \"gone\")", lua);
+        Assert.Contains("in SF__.Dict__.Iterate__(dict)", lua);
+        Assert.Contains("for kv__Key, kv__Value in SF__.Dict__.Iterate__(dict) do", lua);
+        Assert.DoesNotContain("local kv = {", lua);
+        Assert.Contains("local text = SF__.Str__.Concat__(kv__Key, \" = \", kv__Value)", lua);
+        Assert.DoesNotContain("-- SharpLib.List", lua);
+        Assert.DoesNotContain("-- SharpLib.Dictionary", lua);
+    }
+
+    [Fact]
+    public async Task Double_underscore_user_identifiers_are_rejected()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Reserved.cs"),
+            "public static class Reserved { public static int Run() { var bad__name = 1; return bad__name; } }");
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            CheckOnly: true,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task Generated_identifiers_suffix_user_name_collisions_without_prefixing()
+    {
+        var src = """
+            public static class Names
+            {
+                public static int Run()
+                {
+                    var collection = new[] { 1 };
+                    var total = 0;
+                    foreach (var value in collection)
+                    {
+                        total += value;
+                    }
+                    return total;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Names.cs");
+
+        Assert.Contains("local collection = {1}", lua);
+        Assert.Contains("local collection1 = collection", lua);
+        Assert.Contains("for i, value in ipairs(collection1) do", lua);
+    }
+
+    [Fact]
+    public async Task FourCc_native_extension_emits_raw_call()
+    {
+        var src = """
+            public static partial class SF__JASSGEN
+            {
+                public static int FourCC(string val) => throw null!;
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    return SF__JASSGEN.FourCC("hfoo");
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "NativeExt.cs");
+
+        Assert.Contains("return FourCC(\"hfoo\")", lua);
+        Assert.DoesNotContain("SF__JASSGEN", lua);
+    }
+
+    [Fact]
+    public async Task Array_allocation_without_initializer_emits_empty_table()
+    {
+        var src = """
+            public static class Arrays
+            {
+                public static int[] NewItems(int count)
+                {
+                    return new int[count];
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ArrayNew.cs");
+
+        Assert.Contains("return {}", lua);
+        Assert.DoesNotContain("unsupported expr: ArrayCreationExpression", lua);
     }
 
     [Fact]
@@ -560,7 +780,7 @@ public class EmitSmokeTests
         Assert.Contains("self.Y = y", lua);
         Assert.Contains("function SF__.Vector2.op_Addition(a, b)", lua);
         Assert.Contains("SF__.Vector2.New((a.X + b.X), (a.Y + b.Y))", lua);
-        Assert.Contains("local c = SF__.Vector2.op_Addition(a, b)", lua);
+        Assert.Matches(@"local c\d* = SF__\.Vector2\.op_Addition\(a\d*, b\d*\)", lua);
     }
 
     [Fact]
@@ -604,8 +824,8 @@ public class EmitSmokeTests
 
         Assert.Contains("function SF__.Bag:get_Total()", lua);
         Assert.Contains("function SF__.Bag:get_Item(index)", lua);
-        Assert.Contains("function SF__.Bag:set_Item(index, value)", lua);
-        Assert.Contains("values[(index + 1)] = value", lua);
+        Assert.Matches(@"function SF__\.Bag:set_Item\(index\d*, value\d*\)", lua);
+        Assert.Matches(@"self\.values\[\(index\d* \+ 1\)\] = value\d*", lua);
         Assert.Contains("SF__.Signals.Changed = nil", lua);
         Assert.Contains("local fn = SF__.Signals.Double", lua);
         Assert.Contains("bag:set_Item(0, fn(3))", lua);
@@ -657,7 +877,7 @@ public class EmitSmokeTests
         Assert.Contains("local value = SF__.AsyncIterators.Load()", lua);
         Assert.Contains("function SF__.AsyncIterators.Values(start)", lua);
         Assert.Contains("return {start, (start + 1)}", lua);
-        Assert.Contains("local __sf_collection0 = SF__.AsyncIterators.Values(2)", lua);
+        Assert.Contains("local collection = SF__.AsyncIterators.Values(2)", lua);
     }
 
     private static async Task<string> TranspileSourceAsync(string source, string fileName)

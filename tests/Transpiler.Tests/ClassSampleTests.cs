@@ -12,15 +12,22 @@ namespace SharpForge.Transpiler.Tests;
 /// hand-written *reference shape* — not a byte-for-byte contract. These tests
 /// verify the qualities that actually matter for correctness and code quality:
 /// single root table, namespace nesting, instance-method colon syntax,
-/// constructor scaffolding, this-rewriting, and `..` interpolation.
+/// constructor scaffolding, this-rewriting, and nil-safe string interpolation.
 /// </summary>
 public class ClassSampleTests
 {
     private static async Task<string> TranspileSampleAsync()
     {
-        var sourceDir = new DirectoryInfo(Path.Combine(FindRepoRoot(), "samples"));
+        var repoRoot = FindRepoRoot();
+        var sourceDir = Directory.Exists(Path.Combine(repoRoot, "samples"))
+            ? new DirectoryInfo(Path.Combine(repoRoot, "samples"))
+            : new DirectoryInfo(Path.Combine(repoRoot, "SampleProject"));
+        var sourceFiles = Directory.GetFiles(sourceDir.FullName, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part is "bin" or "obj"))
+            .Select(path => new FileInfo(path))
+            .ToArray();
         var compilation = await new RoslynFrontend(Array.Empty<string>())
-            .CompileAsync(new[] { new FileInfo(Path.Combine(sourceDir.FullName, "Hero.cs")) }, CancellationToken.None);
+            .CompileAsync(sourceFiles, CancellationToken.None);
 
         var errors = compilation
             .GetDiagnostics()
@@ -52,12 +59,12 @@ public class ClassSampleTests
     public async Task Constructor_emits_New_with_self_setmetatable_scaffold()
     {
         var lua = await TranspileSampleAsync();
-        Assert.Contains("function SF__.Game.Hero.New(name, hp)", lua);
+        Assert.Matches(@"function SF__\.Game\.Hero\.New\(name\d*, hp\d*\)", lua);
         Assert.Contains("setmetatable({}, { __index = SF__.Game.Hero })", lua);
         Assert.Contains("return self", lua);
         // Constructor body assigns to fields via self.
-        Assert.Contains("self.Name = name", lua);
-        Assert.Contains("self.HP = hp", lua);
+        Assert.Matches(@"self\.Name = name\d*", lua);
+        Assert.Matches(@"self\.HP = hp\d*", lua);
     }
 
     [Fact]
@@ -77,16 +84,12 @@ public class ClassSampleTests
     }
 
     [Fact]
-    public async Task Interpolated_string_lowers_to_concatenation_chain()
+    public async Task Interpolated_string_uses_nil_safe_concat_polyfill()
     {
         var lua = await TranspileSampleAsync();
-        // ToString returns `$"{Name} - HP: {HP}"` → must contain `..` joining the fields and the literal.
-        Assert.Contains("self.Name", lua);
-        Assert.Contains("\" - HP: \"", lua);
-        Assert.Contains("self.HP", lua);
-        Assert.Contains("..", lua);
-        // No empty leading "" .. … fragment.
-        Assert.DoesNotContain("\"\" ..", lua);
+        Assert.Contains("function SF__.Str__.Concat__(...)", lua);
+        Assert.Contains("return SF__.Str__.Concat__(self.Name, \" - HP: \", self.HP)", lua);
+        Assert.DoesNotContain("return ((self.Name ..", lua);
     }
 
     private static int CountOccurrences(string haystack, string needle)

@@ -1,0 +1,21 @@
+namespace Game;
+
+public class Hero : Unit
+{
+    public Hero(string name, double hp) : base(name, hp)
+    {
+        Name = "H" + name;
+        HP = hp * 2;
+    }
+
+    public override void LevelUp()
+    {
+        base.LevelUp();
+        HP += 10;
+    }
+
+    public override string ToString()
+    {
+        return $"Hero: {Name} - HP: {HP}";
+    }
+}

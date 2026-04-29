@@ -19,6 +19,7 @@ public sealed record IRIf(IRExpr Condition, IRBlock Then, IRBlock? Else) : IRStm
 public sealed record IRWhile(IRExpr Condition, IRBlock Body) : IRStmt;
 public sealed record IRFor(IRStmt? Initializer, IRExpr? Condition, IReadOnlyList<IRStmt> Incrementors, IRBlock Body) : IRStmt;
 public sealed record IRForEach(string ItemName, IRExpr Collection, IRBlock Body) : IRStmt;
+public sealed record IRDictionaryForEach(string? ItemName, string KeyName, string ValueName, IRExpr Dictionary, IRBlock Body) : IRStmt;
 public sealed record IRTry(IRBlock Try, string? CatchVariable, IRBlock? Catch, IRBlock? Finally) : IRStmt;
 public sealed record IRThrow(IRExpr? Value) : IRStmt;
 public sealed record IRBreak : IRStmt;

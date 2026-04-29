@@ -16,6 +16,10 @@ public sealed class IRLowering
 {
     private readonly HashSet<string> _ignoredClasses;
     private IRModule? _module;
+    private readonly Dictionary<ISymbol, string> _luaNames = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<ISymbol, (string KeyName, string ValueName)> _dictionaryForEachItems = new(SymbolEqualityComparer.Default);
+    private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
+    private int _luaNameCounter;
 
     public IRLowering(IEnumerable<string>? ignoredClasses = null)
     {
@@ -28,6 +32,10 @@ public sealed class IRLowering
     {
         var module = new IRModule();
         _module = module;
+        _luaNames.Clear();
+        _dictionaryForEachItems.Clear();
+        _usedLuaNames.Clear();
+        _luaNameCounter = 0;
 
         foreach (var tree in compilation.SyntaxTrees)
         {
@@ -48,6 +56,11 @@ public sealed class IRLowering
                     continue;
                 }
 
+                if (IsSharpLibType(symbol))
+                {
+                    continue;
+                }
+
                 if (InheritsFromHandle(symbol))
                 {
                     // JASS handle hierarchy (rooted at `handle`) consists of extern stubs
@@ -55,6 +68,7 @@ public sealed class IRLowering
                     continue;
                 }
 
+                ValidateReservedIdentifiers(typeDecl);
                 module.Types.Add(LowerType(typeDecl, symbol, model, cancellationToken));
             }
         }
@@ -226,6 +240,10 @@ public sealed class IRLowering
             return staticFn;
         }
 
+        var parameters = c.ParameterList.Parameters
+            .Select(p => DeclareLuaName(model.GetDeclaredSymbol(p, ct), p.Identifier.ValueText))
+            .ToArray();
+
         var fn = new IRFunction
         {
             Name = c.Identifier.ValueText,
@@ -236,9 +254,9 @@ public sealed class IRLowering
             IsInstance = false, // emit with `.` because we create `self` ourselves
         };
 
-        foreach (var p in c.ParameterList.Parameters)
+        foreach (var parameter in parameters)
         {
-            fn.Parameters.Add(p.Identifier.ValueText);
+            fn.Parameters.Add(parameter);
         }
 
         if (c.Body is { } body)
@@ -291,7 +309,7 @@ public sealed class IRLowering
 
         foreach (var p in m.ParameterList.Parameters)
         {
-            fn.Parameters.Add(p.Identifier.ValueText);
+            fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(p, ct), p.Identifier.ValueText));
         }
 
         if (m.DescendantNodes().OfType<YieldStatementSyntax>().Any())
@@ -320,6 +338,7 @@ public sealed class IRLowering
     private IEnumerable<IRFunction> LowerProperty(PropertyDeclarationSyntax p, SemanticModel model, CancellationToken ct)
     {
         var isStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword);
+        var propertySymbol = model.GetDeclaredSymbol(p, ct);
         if (p.ExpressionBody is { } expressionBody)
         {
             yield return new IRFunction
@@ -356,7 +375,7 @@ public sealed class IRLowering
                     IsStatic = isStatic,
                     IsInstance = !isStatic,
                 };
-                fn.Parameters.Add("value");
+                fn.Parameters.Add(DeclareLuaName(propertySymbol?.SetMethod?.Parameters.FirstOrDefault(), "value"));
                 LowerAccessorBody(accessor, fn.Body, model, ct);
                 yield return fn;
             }
@@ -366,6 +385,7 @@ public sealed class IRLowering
     private IEnumerable<IRFunction> LowerIndexer(IndexerDeclarationSyntax indexer, SemanticModel model, CancellationToken ct)
     {
         var isStatic = indexer.Modifiers.Any(SyntaxKind.StaticKeyword);
+        var indexerSymbol = model.GetDeclaredSymbol(indexer, ct);
         foreach (var accessor in indexer.AccessorList?.Accessors ?? Enumerable.Empty<AccessorDeclarationSyntax>())
         {
             var isGetter = accessor.IsKind(SyntaxKind.GetAccessorDeclaration);
@@ -379,11 +399,11 @@ public sealed class IRLowering
 
             foreach (var parameter in indexer.ParameterList.Parameters)
             {
-                fn.Parameters.Add(parameter.Identifier.ValueText);
+                fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(parameter, ct), parameter.Identifier.ValueText));
             }
             if (!isGetter)
             {
-                fn.Parameters.Add("value");
+                fn.Parameters.Add(DeclareLuaName(indexerSymbol?.SetMethod?.Parameters.LastOrDefault(), "value"));
             }
 
             LowerAccessorBody(accessor, fn.Body, model, ct);
@@ -418,7 +438,7 @@ public sealed class IRLowering
 
         foreach (var p in o.ParameterList.Parameters)
         {
-            fn.Parameters.Add(p.Identifier.ValueText);
+            fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(p, ct), p.Identifier.ValueText));
         }
 
         if (o.Body is { } body)
@@ -454,7 +474,7 @@ public sealed class IRLowering
             case LocalDeclarationStatementSyntax ld:
                 var first = ld.Declaration.Variables.First();
                 return new IRLocalDecl(
-                    first.Identifier.ValueText,
+                    DeclareLuaName(model.GetDeclaredSymbol(first), first.Identifier.ValueText),
                     first.Initializer is null ? null : LowerExpr(first.Initializer.Value, model));
 
             case ForStatementSyntax fs:
@@ -515,7 +535,7 @@ public sealed class IRLowering
         {
             var first = declaration.Variables.First();
             initializer = new IRLocalDecl(
-                first.Identifier.ValueText,
+                DeclareLuaName(model.GetDeclaredSymbol(first), first.Identifier.ValueText),
                 first.Initializer is null ? null : LowerExpr(first.Initializer.Value, model));
         }
         else if (fs.Initializers.Count > 0)
@@ -540,9 +560,37 @@ public sealed class IRLowering
 
     private IRStmt LowerForEach(ForEachStatementSyntax fe, SemanticModel model, CancellationToken ct)
     {
+        var collection = LowerExpr(fe.Expression, model);
+        var itemSymbol = model.GetDeclaredSymbol(fe, ct);
         var body = new IRBlock();
+        if (!IsDictionaryType(model.GetTypeInfo(fe.Expression).Type))
+        {
+            var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
+            LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
+            return new IRForEach(itemName, collection, body);
+        }
+
+        var itemBaseName = EscapeLuaKeyword(fe.Identifier.ValueText);
+        var keyName = AllocateLuaName(itemBaseName + "__Key");
+        var valueName = AllocateLuaName(itemBaseName + "__Value");
+        if (itemSymbol is not null && CanInlineDictionaryForEachItem(fe.Statement, model, itemSymbol))
+        {
+            _dictionaryForEachItems[itemSymbol] = (keyName, valueName);
+            try
+            {
+                LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
+            }
+            finally
+            {
+                _dictionaryForEachItems.Remove(itemSymbol);
+            }
+
+            return new IRDictionaryForEach(null, keyName, valueName, collection, body);
+        }
+
+        var dictionaryItemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
         LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
-        return new IRForEach(fe.Identifier.ValueText, LowerExpr(fe.Expression, model), body);
+        return new IRDictionaryForEach(dictionaryItemName, keyName, valueName, collection, body);
     }
 
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
@@ -560,7 +608,9 @@ public sealed class IRLowering
         if (ts.Catches.Count > 0)
         {
             var catchClause = ts.Catches[0];
-            catchVariable = catchClause.Declaration?.Identifier.ValueText;
+            catchVariable = catchClause.Declaration is null
+                ? null
+                : DeclareLuaName(model.GetDeclaredSymbol(catchClause.Declaration), catchClause.Declaration.Identifier.ValueText);
             catchBlock = new IRBlock();
             LowerStatements(catchClause.Block.Statements, catchBlock, model, ct);
         }
@@ -577,6 +627,11 @@ public sealed class IRLowering
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
     {
+        if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerDictionaryAssignment(ae.Left, ae.Right, model) is { } dictionaryAssignment)
+        {
+            return dictionaryAssignment;
+        }
+
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerAccessorAssignment(ae.Left, ae.Right, model) is { } accessorAssignment)
         {
             return accessorAssignment;
@@ -636,6 +691,11 @@ public sealed class IRLowering
                 return new IRIdentifier("self");
 
             case MemberAccessExpressionSyntax ma:
+                if (TryLowerSharpLibKeyValueAccess(ma, model) is { } keyValueAccess)
+                {
+                    return keyValueAccess;
+                }
+
                 if (IsCollectionLengthAccess(ma, model))
                 {
                     return new IRLength(LowerExpr(ma.Expression, model));
@@ -649,6 +709,11 @@ public sealed class IRLowering
                 return new IRMemberAccess(LowerExpr(ma.Expression, model), ma.Name.Identifier.ValueText);
 
             case ElementAccessExpressionSyntax elementAccess:
+                if (TryLowerDictionaryGet(elementAccess, model) is { } dictionaryGet)
+                {
+                    return dictionaryGet;
+                }
+
                 if (IsCollectionElementAccess(elementAccess, model))
                 {
                     return new IRElementAccess(
@@ -674,7 +739,7 @@ public sealed class IRLowering
 
             case ArrayCreationExpressionSyntax arrayCreation:
                 return arrayCreation.Initializer is null
-                    ? UnsupportedExpression(e)
+                    ? new IRArrayNew(LowerExpr(arrayCreation.Type.RankSpecifiers[0].Sizes[0], model))
                     : new IRArrayLiteral(arrayCreation.Initializer.Expressions.Select(item => LowerExpr(item, model)).ToArray());
 
             case ImplicitArrayCreationExpressionSyntax implicitArrayCreation:
@@ -696,6 +761,11 @@ public sealed class IRLowering
                     return new IRInvocation(
                         new IRMemberAccess(LowerTypeReference(op.ContainingType), GetLuaMethodName(op)),
                         new[] { LowerExpr(bin.Left, model), LowerExpr(bin.Right, model) });
+                }
+
+                if (bin.IsKind(SyntaxKind.AddExpression) && IsStringExpression(bin, model))
+                {
+                    return new IRStringConcat(FlattenStringConcat(bin, model).ToArray());
                 }
 
                 return new IRBinary(MapBinaryOp(bin.OperatorToken.ValueText), LowerExpr(bin.Left, model), LowerExpr(bin.Right, model));
@@ -727,6 +797,26 @@ public sealed class IRLowering
             return new IRInvocation(
                 new IRMemberAccess(new IRIdentifier("table"), "insert"),
                 new[] { LowerExpr(addAccess.Expression, model), args[0] });
+        }
+
+        if (symbol is { Name: "Sort", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax sortAccess && args.Count <= 1)
+        {
+            return new IRListSort(LowerExpr(sortAccess.Expression, model), args.Count == 0 ? null : args[0]);
+        }
+
+        if (symbol is { Name: "Add" or "Set", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictSetAccess && args.Count == 2)
+        {
+            return new IRDictionarySet(LowerExpr(dictSetAccess.Expression, model), args[0], args[1]);
+        }
+
+        if (symbol is { Name: "Remove", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictRemoveAccess && args.Count == 1)
+        {
+            return new IRDictionaryRemove(LowerExpr(dictRemoveAccess.Expression, model), args[0]);
+        }
+
+        if (symbol is { Name: "Get", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictGetAccess && args.Count == 1)
+        {
+            return new IRDictionaryGet(LowerExpr(dictGetAccess.Expression, model), args[0]);
         }
 
         if (inv.Expression is MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax } && symbol is { IsStatic: false })
@@ -805,6 +895,11 @@ public sealed class IRLowering
             return new IRIdentifier($"--[[unsupported expr: {obj.Kind()}]]nil");
         }
 
+        if (IsDictionaryType(type))
+        {
+            return new IRDictionaryNew();
+        }
+
         if (IsListType(type))
         {
             return new IRArrayLiteral(obj.Initializer?.Expressions.Select(item => LowerExpr(item, model)).ToArray() ?? Array.Empty<IRExpr>());
@@ -823,7 +918,7 @@ public sealed class IRLowering
         }
 
         var type = model.GetTypeInfo(access.Expression).Type;
-        return type is IArrayTypeSymbol || IsListType(type);
+        return type is IArrayTypeSymbol || IsListType(type) || IsDictionaryType(type);
     }
 
     private bool IsCollectionElementAccess(ElementAccessExpressionSyntax access, SemanticModel model)
@@ -834,7 +929,86 @@ public sealed class IRLowering
 
     private static bool IsListType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "List", ContainingNamespace: { } ns }
-           && ns.ToDisplayString() == "System.Collections.Generic";
+           && (ns.ToDisplayString() == "System.Collections.Generic" || IsSharpLibNamespace(ns));
+
+    private static bool IsDictionaryType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "Dictionary", ContainingNamespace: { } ns }
+           && IsSharpLibNamespace(ns);
+
+    private static bool IsSharpLibKeyValueType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "KeyValue", ContainingNamespace: { } ns }
+           && IsSharpLibNamespace(ns);
+
+    private static bool IsSharpLibType(INamedTypeSymbol symbol)
+        => symbol.ContainingNamespace.ToDisplayString().StartsWith("SharpLib", StringComparison.Ordinal);
+
+    private static bool IsSharpLibNamespace(INamespaceSymbol ns)
+    {
+        var name = ns.ToDisplayString();
+        return name == "SharpLib" || name == "SharpLib.Collections";
+    }
+
+    private IRStmt? TryLowerDictionaryAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
+    {
+        if (left is not ElementAccessExpressionSyntax elementAccess || model.GetTypeInfo(elementAccess.Expression).Type is not { } type || !IsDictionaryType(type))
+        {
+            return null;
+        }
+
+        return new IRExprStmt(new IRDictionarySet(
+            LowerExpr(elementAccess.Expression, model),
+            LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model),
+            LowerExpr(right, model)));
+    }
+
+    private IRExpr? TryLowerDictionaryGet(ElementAccessExpressionSyntax access, SemanticModel model)
+    {
+        var type = model.GetTypeInfo(access.Expression).Type;
+        return IsDictionaryType(type)
+            ? new IRDictionaryGet(LowerExpr(access.Expression, model), LowerExpr(access.ArgumentList.Arguments[0].Expression, model))
+            : null;
+    }
+
+    private IRExpr? TryLowerSharpLibKeyValueAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Key" or "Value" } property || !IsSharpLibKeyValueType(property.ContainingType))
+        {
+            return null;
+        }
+
+        if (access.Expression is IdentifierNameSyntax id
+            && model.GetSymbolInfo(id).Symbol is { } itemSymbol
+            && _dictionaryForEachItems.TryGetValue(itemSymbol, out var itemNames))
+        {
+            return new IRIdentifier(property.Name == "Key" ? itemNames.KeyName : itemNames.ValueName);
+        }
+
+        return new IRMemberAccess(LowerExpr(access.Expression, model), property.Name == "Key" ? "k" : "v");
+    }
+
+    private bool CanInlineDictionaryForEachItem(StatementSyntax statement, SemanticModel model, ISymbol itemSymbol)
+    {
+        foreach (var id in statement.DescendantNodes().OfType<IdentifierNameSyntax>())
+        {
+            if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, itemSymbol))
+            {
+                continue;
+            }
+
+            if (id.Parent is MemberAccessExpressionSyntax access
+                && access.Expression == id
+                && access.Name.Identifier.ValueText is "Key" or "Value"
+                && model.GetSymbolInfo(access).Symbol is IPropertySymbol { Name: "Key" or "Value" } property
+                && IsSharpLibKeyValueType(property.ContainingType))
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
 
     private IRStmt? TryLowerAccessorAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {
@@ -948,7 +1122,72 @@ public sealed class IRLowering
                 ? new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(instanceMethod))
                 : new IRMemberAccess(new IRIdentifier("self"), id.Identifier.ValueText);
         }
-        return new IRIdentifier(id.Identifier.ValueText);
+        if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
+        {
+            return new IRIdentifier(GetLuaName(symbol, id.Identifier.ValueText));
+        }
+
+        return new IRIdentifier(EscapeLuaKeyword(id.Identifier.ValueText));
+    }
+
+    private string DeclareLuaName(ISymbol? symbol, string name)
+    {
+        var luaName = AllocateLuaName(name);
+        if (symbol is not null)
+        {
+            _luaNames[symbol] = luaName;
+        }
+        return luaName;
+    }
+
+    private string GetLuaName(ISymbol symbol, string fallback)
+    {
+        if (_luaNames.TryGetValue(symbol.OriginalDefinition, out var originalName))
+        {
+            return originalName;
+        }
+
+        if (_luaNames.TryGetValue(symbol, out var name))
+        {
+            return name;
+        }
+
+        var allocatedName = AllocateLuaName(fallback);
+        _luaNames[symbol] = allocatedName;
+        return allocatedName;
+    }
+
+    private string AllocateLuaName(string name)
+    {
+        var baseName = EscapeLuaKeyword(name);
+        if (_usedLuaNames.Add(baseName))
+        {
+            return baseName;
+        }
+
+        string candidate;
+        do
+        {
+            candidate = baseName + (++_luaNameCounter).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        while (!_usedLuaNames.Add(candidate));
+        return candidate;
+    }
+
+    private static string EscapeLuaKeyword(string name)
+        => name is "and" or "break" or "do" or "else" or "elseif" or "end" or "false" or "for" or "function" or "goto" or "if" or "in" or "local" or "nil" or "not" or "or" or "repeat" or "return" or "then" or "true" or "until" or "while" or "table"
+            ? "KW__" + name
+            : name;
+
+    private void ValidateReservedIdentifiers(SyntaxNode node)
+    {
+        foreach (var token in node.DescendantTokens().Where(t => t.IsKind(SyntaxKind.IdentifierToken)))
+        {
+            if (token.ValueText.Contains("__", StringComparison.Ordinal))
+            {
+                AddReservedIdentifierDiagnostic(token);
+            }
+        }
     }
 
     private static string GetLuaMethodName(IMethodSymbol method)
@@ -1057,9 +1296,7 @@ public sealed class IRLowering
 
     private IRExpr LowerInterpolatedString(InterpolatedStringExpressionSyntax istr, SemanticModel model)
     {
-        // Build a left-folded `..` chain. Empty literal segments are dropped so the
-        // output matches hand-written Lua (`a .. " - " .. b`, not `"" .. a .. ...`).
-        IRExpr? acc = null;
+        var parts = new List<IRExpr>();
         foreach (var content in istr.Contents)
         {
             IRExpr part = content switch
@@ -1078,10 +1315,40 @@ public sealed class IRLowering
                 continue;
             }
 
-            acc = acc is null ? part : new IRBinary("..", acc, part);
+            parts.Add(part);
         }
 
-        return acc ?? new IRLiteral(string.Empty, IRLiteralKind.String);
+        return parts.Count switch
+        {
+            0 => new IRLiteral(string.Empty, IRLiteralKind.String),
+            1 => parts[0],
+            _ => new IRStringConcat(parts),
+        };
+    }
+
+    private IEnumerable<IRExpr> FlattenStringConcat(BinaryExpressionSyntax expression, SemanticModel model)
+    {
+        foreach (var side in new[] { expression.Left, expression.Right })
+        {
+            if (side is BinaryExpressionSyntax nested && nested.IsKind(SyntaxKind.AddExpression) && IsStringExpression(nested, model))
+            {
+                foreach (var part in FlattenStringConcat(nested, model))
+                {
+                    yield return part;
+                }
+            }
+            else
+            {
+                yield return LowerExpr(side, model);
+            }
+        }
+    }
+
+    private static bool IsStringExpression(ExpressionSyntax expression, SemanticModel model)
+    {
+        var type = model.GetTypeInfo(expression);
+        return type.Type?.SpecialType == SpecialType.System_String
+            || type.ConvertedType?.SpecialType == SpecialType.System_String;
     }
 
     private static IRExpr LowerLiteral(LiteralExpressionSyntax lit)
@@ -1146,14 +1413,24 @@ public sealed class IRLowering
 
     private void AddUnsupportedDiagnostic(SyntaxNode node, string kind)
     {
+        AddDiagnostic(node.GetLocation(), $"unsupported {kind}: {node.Kind()}");
+    }
+
+    private void AddReservedIdentifierDiagnostic(SyntaxToken token)
+    {
+        AddDiagnostic(token.GetLocation(), $"reserved identifier '{token.ValueText}': user identifiers must not contain '__'");
+    }
+
+    private void AddDiagnostic(Location location, string message)
+    {
         if (_module is null)
         {
             return;
         }
 
-        var span = node.GetLocation().GetLineSpan();
+        var span = location.GetLineSpan();
         var line = span.StartLinePosition.Line + 1;
         var character = span.StartLinePosition.Character + 1;
-        _module.Diagnostics.Add($"{span.Path}({line},{character}): unsupported {kind}: {node.Kind()}");
+        _module.Diagnostics.Add($"{span.Path}({line},{character}): {message}");
     }
 }
