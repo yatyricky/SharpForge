@@ -17,6 +17,7 @@ public sealed class LuaEmitter
     private readonly HashSet<string> _emittedTablePaths = new(StringComparer.Ordinal);
     private int _indent;
     private int _foreachId;
+    private bool _emitTypeHelpers;
 
     public LuaEmitter(string rootTable)
     {
@@ -33,6 +34,7 @@ public sealed class LuaEmitter
         _emittedTablePaths.Clear();
         _indent = 0;
         _foreachId = 0;
+        _emitTypeHelpers = UsesTypeChecks(module);
 
         EnsureRootEmitted();
 
@@ -51,7 +53,10 @@ public sealed class LuaEmitter
         if (_emittedTablePaths.Add(_rootTable))
         {
             WriteLine($"{_rootTable} = {_rootTable} or {{}}");
-            WriteRootTypeHelpers();
+            if (_emitTypeHelpers)
+            {
+                WriteRootTypeHelpers();
+            }
         }
     }
 
@@ -585,6 +590,49 @@ public sealed class LuaEmitter
         sb.Append('.').Append(type.Name);
         return sb.ToString();
     }
+
+    private static bool UsesTypeChecks(IRModule module)
+        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesTypeChecks(m.Body));
+
+    private static bool BlockUsesTypeChecks(IRBlock block)
+        => block.Statements.Any(StmtUsesTypeChecks);
+
+    private static bool StmtUsesTypeChecks(IRStmt stmt)
+        => stmt switch
+        {
+            IRBlock block => BlockUsesTypeChecks(block),
+            IRLocalDecl local => local.Initializer is not null && ExprUsesTypeChecks(local.Initializer),
+            IRAssign assign => ExprUsesTypeChecks(assign.Target) || ExprUsesTypeChecks(assign.Value),
+            IRExprStmt exprStmt => ExprUsesTypeChecks(exprStmt.Expression),
+            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesTypeChecks),
+            IRReturn ret => ret.Value is not null && ExprUsesTypeChecks(ret.Value),
+            IRIf iff => ExprUsesTypeChecks(iff.Condition) || BlockUsesTypeChecks(iff.Then) || (iff.Else is not null && BlockUsesTypeChecks(iff.Else)),
+            IRWhile wh => ExprUsesTypeChecks(wh.Condition) || BlockUsesTypeChecks(wh.Body),
+            IRFor fr => (fr.Initializer is not null && StmtUsesTypeChecks(fr.Initializer))
+                || (fr.Condition is not null && ExprUsesTypeChecks(fr.Condition))
+                || fr.Incrementors.Any(StmtUsesTypeChecks)
+                || BlockUsesTypeChecks(fr.Body),
+            IRForEach fe => ExprUsesTypeChecks(fe.Collection) || BlockUsesTypeChecks(fe.Body),
+            IRTry tr => BlockUsesTypeChecks(tr.Try)
+                || (tr.Catch is not null && BlockUsesTypeChecks(tr.Catch))
+                || (tr.Finally is not null && BlockUsesTypeChecks(tr.Finally)),
+            IRThrow th => th.Value is not null && ExprUsesTypeChecks(th.Value),
+            _ => false,
+        };
+
+    private static bool ExprUsesTypeChecks(IRExpr expr)
+        => expr switch
+        {
+            IRIs or IRAs => true,
+            IRMemberAccess member => ExprUsesTypeChecks(member.Target),
+            IRElementAccess element => ExprUsesTypeChecks(element.Target) || ExprUsesTypeChecks(element.Index),
+            IRLength length => ExprUsesTypeChecks(length.Target),
+            IRInvocation invocation => ExprUsesTypeChecks(invocation.Callee) || invocation.Arguments.Any(ExprUsesTypeChecks),
+            IRArrayLiteral array => array.Items.Any(ExprUsesTypeChecks),
+            IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
+            IRUnary unary => ExprUsesTypeChecks(unary.Operand),
+            _ => false,
+        };
 
     private void WriteIndent() => _sb.Append(' ', _indent * 4);
     private void WriteLine(string s) { WriteIndent(); _sb.Append(s).Append('\n'); }

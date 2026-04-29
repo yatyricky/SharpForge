@@ -34,6 +34,8 @@ public class EmitSmokeTests
         Assert.Contains("SF__.Demo = SF__.Demo or {}", lua);
         Assert.Contains("function SF__.Demo.Add(a, b)", lua);
         Assert.Matches(@"return\s*\(?\s*a\s*\+\s*b\s*\)?", lua);
+        Assert.DoesNotContain("function SF__.__is", lua);
+        Assert.DoesNotContain("function SF__.__as", lua);
     }
 
     [Fact]

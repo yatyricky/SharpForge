@@ -174,6 +174,7 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 | Properties/indexers/delegates      | ✅     | Computed accessors, indexer methods, direct delegate calls |
 | Event declarations                 | ✅     | Field-like event backing for current MVP                  |
 | Async/iterator MVP                 | ✅     | Synchronous `await`; simple `yield return` table materialization |
+| Type-check helper optimization     | ✅     | Emits `is` / `as` helpers only when needed                |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ⏳     | Planned                                                  |
