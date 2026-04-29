@@ -86,6 +86,7 @@ public sealed class IRLowering
             FullName = string.Join('.', nsSegments.Append(symbol.Name)),
             IsStatic = symbol.IsStatic,
             IsInterface = symbol.TypeKind == TypeKind.Interface,
+            IsStruct = symbol.TypeKind == TypeKind.Struct,
             BaseType = GetLowerableBaseType(symbol),
         };
 
@@ -105,6 +106,9 @@ public sealed class IRLowering
                     break;
                 case MethodDeclarationSyntax m:
                     irType.Methods.Add(LowerMethod(m, symbol, model, ct));
+                    break;
+                case OperatorDeclarationSyntax o:
+                    irType.Methods.Add(LowerOperator(o, model, ct));
                     break;
                 case FieldDeclarationSyntax f when f.Modifiers.Any(SyntaxKind.StaticKeyword):
                     foreach (var v in f.Declaration.Variables)
@@ -270,6 +274,34 @@ public sealed class IRLowering
             LowerStatements(body.Statements, fn.Body, model, ct);
         }
         else if (m.ExpressionBody is { } arrow)
+        {
+            fn.Body.Statements.Add(new IRReturn(LowerExpr(arrow.Expression, model)));
+        }
+
+        return fn;
+    }
+
+    private IRFunction LowerOperator(OperatorDeclarationSyntax o, SemanticModel model, CancellationToken ct)
+    {
+        var symbol = model.GetDeclaredSymbol(o, ct);
+        var fn = new IRFunction
+        {
+            Name = symbol?.Name ?? GetLuaOperatorName(o.OperatorToken.ValueText),
+            LuaName = symbol is null ? GetLuaOperatorName(o.OperatorToken.ValueText) : GetLuaMethodName(symbol),
+            IsStatic = true,
+            IsInstance = false,
+        };
+
+        foreach (var p in o.ParameterList.Parameters)
+        {
+            fn.Parameters.Add(p.Identifier.ValueText);
+        }
+
+        if (o.Body is { } body)
+        {
+            LowerStatements(body.Statements, fn.Body, model, ct);
+        }
+        else if (o.ExpressionBody is { } arrow)
         {
             fn.Body.Statements.Add(new IRReturn(LowerExpr(arrow.Expression, model)));
         }
@@ -513,6 +545,13 @@ public sealed class IRLowering
                     return LowerTypeTest(bin.Left, bin.Right, model, isAsExpression: true);
                 }
 
+                if (model.GetSymbolInfo(bin).Symbol is IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator } op)
+                {
+                    return new IRInvocation(
+                        new IRMemberAccess(LowerTypeReference(op.ContainingType), GetLuaMethodName(op)),
+                        new[] { LowerExpr(bin.Left, model), LowerExpr(bin.Right, model) });
+                }
+
                 return new IRBinary(MapBinaryOp(bin.OperatorToken.ValueText), LowerExpr(bin.Left, model), LowerExpr(bin.Right, model));
 
             case PrefixUnaryExpressionSyntax pre:
@@ -682,6 +721,11 @@ public sealed class IRLowering
 
     private static string GetLuaMethodName(IMethodSymbol method)
     {
+        if (method.MethodKind == MethodKind.UserDefinedOperator)
+        {
+            return method.Name;
+        }
+
         if (method.MethodKind == MethodKind.Constructor)
         {
             var explicitConstructors = method.ContainingType.InstanceConstructors
@@ -696,6 +740,18 @@ public sealed class IRLowering
             .ToArray();
         return overloads.Length > 1 ? $"{method.Name}_{method.Parameters.Length}" : method.Name;
     }
+
+    private static string GetLuaOperatorName(string op)
+        => op switch
+        {
+            "+" => "op_Addition",
+            "-" => "op_Subtraction",
+            "*" => "op_Multiply",
+            "/" => "op_Division",
+            "==" => "op_Equality",
+            "!=" => "op_Inequality",
+            _ => "op_Operator",
+        };
 
     private static string GetLuaConstructorInitName(IMethodSymbol method)
         => GetLuaMethodName(method).Replace("New", "__Init", StringComparison.Ordinal);
@@ -720,7 +776,9 @@ public sealed class IRLowering
     private IRTypeReference? GetLowerableBaseType(INamedTypeSymbol symbol)
     {
         var baseType = symbol.BaseType;
-        if (baseType is null || baseType.SpecialType == SpecialType.System_Object || IsIgnoredClass(baseType))
+        if (baseType is null
+            || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType
+            || IsIgnoredClass(baseType))
         {
             return null;
         }

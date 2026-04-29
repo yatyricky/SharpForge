@@ -170,6 +170,7 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 | Exception MVP                      | ✅     | `try` / single `catch` / `finally` via Lua `pcall`       |
 | Interfaces + `is` / `as`           | ✅     | Type metadata checks against class/interface tables       |
 | Collection MVP                     | ✅     | Arrays/`List<T>` as tables, `foreach`, `Count`, indexing  |
+| Vector-style struct MVP            | ✅     | Struct constructors/fields plus user-defined operators    |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ⏳     | Planned                                                  |

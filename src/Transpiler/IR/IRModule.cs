@@ -25,6 +25,8 @@ public sealed class IRType
 
     public bool IsInterface { get; init; }
 
+    public bool IsStruct { get; init; }
+
     public IRTypeReference? BaseType { get; init; }
 
     public List<IRTypeReference> Interfaces { get; } = new();

@@ -514,6 +514,53 @@ public class EmitSmokeTests
         Assert.Matches(@"values\[\(?\s*1\s*\+\s*1\s*\)?\]", lua);
     }
 
+    [Fact]
+    public async Task Vector_style_structs_emit_constructors_fields_and_operator_calls()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public int X;
+                public int Y;
+
+                public Vector2(int x, int y)
+                {
+                    X = x;
+                    Y = y;
+                }
+
+                public static Vector2 operator +(Vector2 a, Vector2 b)
+                {
+                    return new Vector2(a.X + b.X, a.Y + b.Y);
+                }
+            }
+
+            public static class MathDemo
+            {
+                public static int Run()
+                {
+                    var a = new Vector2(1, 2);
+                    var b = new Vector2(3, 4);
+                    var c = a + b;
+                    return c.X;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Vector2.cs");
+
+        Assert.Contains("-- Vector2", lua);
+        Assert.DoesNotContain("System.ValueType", lua);
+        Assert.Contains("function SF__.Vector2.__Init(self, x, y)", lua);
+        Assert.Contains("self.X = 0", lua);
+        Assert.Contains("self.Y = 0", lua);
+        Assert.Contains("self.X = x", lua);
+        Assert.Contains("self.Y = y", lua);
+        Assert.Contains("function SF__.Vector2.op_Addition(a, b)", lua);
+        Assert.Contains("SF__.Vector2.New((a.X + b.X), (a.Y + b.Y))", lua);
+        Assert.Contains("local c = SF__.Vector2.op_Addition(a, b)", lua);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
