@@ -168,6 +168,7 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 | `virtual` / `override` methods     | ✅     | Override methods replace inherited dispatch entries      |
 | `base(...)` / `base.Method()`      | ✅     | Base constructor init helpers and direct base calls       |
 | Exception MVP                      | ✅     | `try` / single `catch` / `finally` via Lua `pcall`       |
+| Interfaces + `is` / `as`           | ✅     | Type metadata checks against class/interface tables       |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ⏳     | Planned                                                  |

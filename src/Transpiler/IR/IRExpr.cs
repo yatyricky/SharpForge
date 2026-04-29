@@ -22,3 +22,5 @@ public sealed record IRMemberAccess(IRExpr Target, string Member) : IRExpr;
 public sealed record IRInvocation(IRExpr Callee, IReadOnlyList<IRExpr> Arguments, bool UseColon = false) : IRExpr;
 public sealed record IRBinary(string Op, IRExpr Left, IRExpr Right) : IRExpr;
 public sealed record IRUnary(string Op, IRExpr Operand) : IRExpr;
+public sealed record IRIs(IRExpr Value, IRTypeReference Type) : IRExpr;
+public sealed record IRAs(IRExpr Value, IRTypeReference Type) : IRExpr;

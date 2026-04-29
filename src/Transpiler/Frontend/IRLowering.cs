@@ -85,13 +85,21 @@ public sealed class IRLowering
             Name = symbol.Name,
             FullName = string.Join('.', nsSegments.Append(symbol.Name)),
             IsStatic = symbol.IsStatic,
+            IsInterface = symbol.TypeKind == TypeKind.Interface,
             BaseType = GetLowerableBaseType(symbol),
         };
+
+        foreach (var iface in symbol.Interfaces.Where(i => !IsIgnoredClass(i)))
+        {
+            irType.Interfaces.Add(LowerTypeReference(iface));
+        }
 
         foreach (var member in typeDecl.Members)
         {
             switch (member)
             {
+                case MethodDeclarationSyntax when irType.IsInterface:
+                    break;
                 case ConstructorDeclarationSyntax c:
                     irType.Methods.Add(LowerConstructor(c, symbol, model, ct));
                     break;
@@ -137,7 +145,7 @@ public sealed class IRLowering
             }
         }
 
-        if (!irType.IsStatic && irType.Methods.All(m => !m.IsConstructor))
+        if (!irType.IsStatic && !irType.IsInterface && irType.Methods.All(m => !m.IsConstructor))
         {
             irType.Methods.Add(new IRFunction
             {
@@ -467,6 +475,16 @@ public sealed class IRLowering
                 return LowerObjectCreation(obj, model);
 
             case BinaryExpressionSyntax bin:
+                if (bin.IsKind(SyntaxKind.IsExpression))
+                {
+                    return LowerTypeTest(bin.Left, bin.Right, model, isAsExpression: false);
+                }
+
+                if (bin.IsKind(SyntaxKind.AsExpression))
+                {
+                    return LowerTypeTest(bin.Left, bin.Right, model, isAsExpression: true);
+                }
+
                 return new IRBinary(MapBinaryOp(bin.OperatorToken.ValueText), LowerExpr(bin.Left, model), LowerExpr(bin.Right, model));
 
             case PrefixUnaryExpressionSyntax pre:
@@ -531,6 +549,19 @@ public sealed class IRLowering
         }
 
         return new IRInvocation(LowerExpr(inv.Expression, model), args);
+    }
+
+    private IRExpr LowerTypeTest(ExpressionSyntax value, ExpressionSyntax typeSyntax, SemanticModel model, bool isAsExpression)
+    {
+        var type = model.GetTypeInfo(typeSyntax).Type as INamedTypeSymbol;
+        if (type is null)
+        {
+            return UnsupportedExpression(typeSyntax);
+        }
+
+        return isAsExpression
+            ? new IRAs(LowerExpr(value, model), LowerTypeReference(type))
+            : new IRIs(LowerExpr(value, model), LowerTypeReference(type));
     }
 
     private IRExpr LowerObjectCreation(ObjectCreationExpressionSyntax obj, SemanticModel model)

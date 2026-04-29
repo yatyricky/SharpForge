@@ -23,7 +23,11 @@ public sealed class IRType
 
     public bool IsStatic { get; init; }
 
+    public bool IsInterface { get; init; }
+
     public IRTypeReference? BaseType { get; init; }
+
+    public List<IRTypeReference> Interfaces { get; } = new();
 
     public List<IRField> Fields { get; } = new();
     public List<IRFunction> Methods { get; } = new();

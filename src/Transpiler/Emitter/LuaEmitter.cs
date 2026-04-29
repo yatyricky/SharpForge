@@ -49,7 +49,35 @@ public sealed class LuaEmitter
         if (_emittedTablePaths.Add(_rootTable))
         {
             WriteLine($"{_rootTable} = {_rootTable} or {{}}");
+            WriteRootTypeHelpers();
         }
+    }
+
+    private void WriteRootTypeHelpers()
+    {
+        WriteLine($"function {_rootTable}.__is(obj, target)");
+        _indent++;
+        WriteLine("if obj == nil then return false end");
+        WriteLine("local t = obj.__sf_type");
+        WriteLine("while t ~= nil do");
+        _indent++;
+        WriteLine("if t == target then return true end");
+        WriteLine("if t.__sf_interfaces ~= nil and t.__sf_interfaces[target] then return true end");
+        WriteLine("t = t.__sf_base");
+        _indent--;
+        WriteLine("end");
+        WriteLine("return false");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.__as(obj, target)");
+        _indent++;
+        WriteLine($"if {_rootTable}.__is(obj, target) then return obj end");
+        WriteLine("return nil");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
     }
 
     private void EmitType(IRType type)
@@ -72,6 +100,21 @@ public sealed class LuaEmitter
         if (type.BaseType is { } baseType)
         {
             WriteLine($"setmetatable({typePath}, {{ __index = {FormatTypeReference(baseType)} }})");
+            WriteLine($"{typePath}.__sf_base = {FormatTypeReference(baseType)}");
+        }
+        if (type.Interfaces.Count > 0)
+        {
+            WriteIndent();
+            _sb.Append(typePath).Append(".__sf_interfaces = {");
+            for (int i = 0; i < type.Interfaces.Count; i++)
+            {
+                if (i > 0)
+                {
+                    _sb.Append(", ");
+                }
+                _sb.Append('[').Append(FormatTypeReference(type.Interfaces[i])).Append("] = true");
+            }
+            _sb.Append("}\n");
         }
 
         // Static field initializers.
@@ -136,6 +179,7 @@ public sealed class LuaEmitter
         {
             EmitStmt(m.BaseConstructorCall);
         }
+        WriteLine($"self.__sf_type = {typePath}");
         foreach (var field in instanceFields)
         {
             WriteIndent();
@@ -440,6 +484,16 @@ public sealed class LuaEmitter
                 _sb.Append('(').Append(un.Op switch { "!" => "not ", _ => un.Op });
                 EmitExpr(un.Operand);
                 _sb.Append(')');
+                break;
+            case IRIs isExpr:
+                _sb.Append(_rootTable).Append(".__is(");
+                EmitExpr(isExpr.Value);
+                _sb.Append(", ").Append(FormatTypeReference(isExpr.Type)).Append(')');
+                break;
+            case IRAs asExpr:
+                _sb.Append(_rootTable).Append(".__as(");
+                EmitExpr(asExpr.Value);
+                _sb.Append(", ").Append(FormatTypeReference(asExpr.Type)).Append(')');
                 break;
         }
     }

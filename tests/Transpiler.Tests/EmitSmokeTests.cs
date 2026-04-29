@@ -416,6 +416,63 @@ public class EmitSmokeTests
         Assert.Equal(1, exitCode);
     }
 
+    [Fact]
+    public async Task Interfaces_and_is_as_emit_type_metadata_checks()
+    {
+        var src = """
+            namespace Game
+            {
+                public interface INamed
+                {
+                    string Name();
+                }
+
+                public class Unit : INamed
+                {
+                    public string Name()
+                    {
+                        return "unit";
+                    }
+                }
+
+                public class Hero : Unit
+                {
+                }
+
+                public static class Checks
+                {
+                    public static bool IsNamed(object value)
+                    {
+                        return value is INamed;
+                    }
+
+                    public static string GetName(object value)
+                    {
+                        var named = value as INamed;
+                        return named.Name();
+                    }
+
+                    public static bool HeroIsNamed()
+                    {
+                        var hero = new Hero();
+                        return hero is INamed;
+                    }
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Interfaces.cs");
+
+        Assert.Contains("function SF__.__is(obj, target)", lua);
+        Assert.Contains("function SF__.__as(obj, target)", lua);
+        Assert.Contains("-- Game.INamed", lua);
+        Assert.Contains("SF__.Game.Unit.__sf_interfaces = {[SF__.Game.INamed] = true}", lua);
+        Assert.Contains("self.__sf_type = SF__.Game.Hero", lua);
+        Assert.Contains("return SF__.__is(value, SF__.Game.INamed)", lua);
+        Assert.Contains("local named = SF__.__as(value, SF__.Game.INamed)", lua);
+        Assert.Contains("return SF__.__is(hero, SF__.Game.INamed)", lua);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
