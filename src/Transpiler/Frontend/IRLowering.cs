@@ -99,14 +99,38 @@ public sealed class IRLowering
                         irType.Fields.Add(new IRField
                         {
                             Name = v.Identifier.ValueText,
-                            Initializer = v.Initializer is null ? null : LowerExpr(v.Initializer.Value, model),
+                            Initializer = v.Initializer is null
+                                ? LowerDefaultValue(f.Declaration.Type)
+                                : LowerExpr(v.Initializer.Value, model),
                             IsStatic = true,
                         });
                     }
                     break;
-                // Instance fields contribute no IR: their values are written by the
-                // constructor (`self.X = ...`), which is already lowered above.
+                case FieldDeclarationSyntax f:
+                    foreach (var v in f.Declaration.Variables)
+                    {
+                        irType.Fields.Add(new IRField
+                        {
+                            Name = v.Identifier.ValueText,
+                            Initializer = v.Initializer is null
+                                ? LowerDefaultValue(f.Declaration.Type)
+                                : LowerExpr(v.Initializer.Value, model),
+                            IsStatic = false,
+                        });
+                    }
+                    break;
             }
+        }
+
+        if (!irType.IsStatic && irType.Methods.All(m => !m.IsConstructor))
+        {
+            irType.Methods.Add(new IRFunction
+            {
+                Name = symbol.Name,
+                LuaName = "New",
+                IsConstructor = true,
+                IsInstance = false,
+            });
         }
 
         return irType;
@@ -281,7 +305,10 @@ public sealed class IRLowering
 
             case InvocationExpressionSyntax inv:
                 var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
-                return new IRInvocation(LowerExpr(inv.Expression, model), args);
+                return LowerInvocation(inv, args, model);
+
+            case ObjectCreationExpressionSyntax obj:
+                return LowerObjectCreation(obj, model);
 
             case BinaryExpressionSyntax bin:
                 return new IRBinary(MapBinaryOp(bin.OperatorToken.ValueText), LowerExpr(bin.Left, model), LowerExpr(bin.Right, model));
@@ -297,6 +324,36 @@ public sealed class IRLowering
         }
     }
 
+    private IRExpr LowerInvocation(InvocationExpressionSyntax inv, IReadOnlyList<IRExpr> args, SemanticModel model)
+    {
+        var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        if (inv.Expression is MemberAccessExpressionSyntax memberAccess && symbol is { IsStatic: false })
+        {
+            return new IRInvocation(
+                new IRMemberAccess(LowerExpr(memberAccess.Expression, model), memberAccess.Name.Identifier.ValueText),
+                args,
+                UseColon: true);
+        }
+
+        return new IRInvocation(LowerExpr(inv.Expression, model), args);
+    }
+
+    private IRExpr LowerObjectCreation(ObjectCreationExpressionSyntax obj, SemanticModel model)
+    {
+        var args = obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray()
+            ?? Array.Empty<IRExpr>();
+
+        var type = (model.GetSymbolInfo(obj).Symbol as IMethodSymbol)?.ContainingType
+            ?? model.GetTypeInfo(obj).Type as INamedTypeSymbol;
+
+        if (type is null)
+        {
+            return new IRIdentifier($"--[[unsupported expr: {obj.Kind()}]]nil");
+        }
+
+        return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), "New"), args);
+    }
+
     /// <summary>
     /// Resolves bare identifiers via the semantic model. Instance fields/properties/
     /// methods of the enclosing type get rewritten as <c>self.X</c> so callers don't
@@ -305,6 +362,11 @@ public sealed class IRLowering
     private IRExpr LowerIdentifier(IdentifierNameSyntax id, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(id).Symbol;
+        if (symbol is INamedTypeSymbol type)
+        {
+            return LowerTypeReference(type);
+        }
+
         if (symbol is { IsStatic: false } and (IFieldSymbol or IPropertySymbol or IMethodSymbol)
             && symbol.ContainingType is not null)
         {
@@ -312,6 +374,9 @@ public sealed class IRLowering
         }
         return new IRIdentifier(id.Identifier.ValueText);
     }
+
+    private static IRTypeReference LowerTypeReference(INamedTypeSymbol type)
+        => new(GetNamespaceSegments(type.ContainingNamespace), type.Name);
 
     private IRExpr LowerInterpolatedString(InterpolatedStringExpressionSyntax istr, SemanticModel model)
     {
@@ -360,6 +425,25 @@ public sealed class IRLowering
             SyntaxKind.StringLiteralExpression => new IRLiteral(lit.Token.ValueText, IRLiteralKind.String),
             _ => new IRLiteral(null, IRLiteralKind.Nil),
         };
+    }
+
+    private static IRExpr LowerDefaultValue(TypeSyntax type)
+    {
+        if (type is PredefinedTypeSyntax predefined)
+        {
+            return predefined.Keyword.Kind() switch
+            {
+                SyntaxKind.BoolKeyword => new IRLiteral(false, IRLiteralKind.Boolean),
+                SyntaxKind.ByteKeyword or SyntaxKind.SByteKeyword or SyntaxKind.ShortKeyword or SyntaxKind.UShortKeyword
+                    or SyntaxKind.IntKeyword or SyntaxKind.UIntKeyword or SyntaxKind.LongKeyword or SyntaxKind.ULongKeyword
+                    => new IRLiteral(0, IRLiteralKind.Integer),
+                SyntaxKind.FloatKeyword or SyntaxKind.DoubleKeyword or SyntaxKind.DecimalKeyword
+                    => new IRLiteral(0.0, IRLiteralKind.Real),
+                _ => new IRLiteral(null, IRLiteralKind.Nil),
+            };
+        }
+
+        return new IRLiteral(null, IRLiteralKind.Nil);
     }
 
     private static string MapBinaryOp(string op) => op switch

@@ -26,7 +26,7 @@ public sealed class TranspilePipeline
             return 2;
         }
 
-        var sourceFiles = options.InputDirectory.GetFiles("*.cs", SearchOption.AllDirectories);
+        var sourceFiles = EnumerateSourceFiles(options.InputDirectory).ToArray();
         if (sourceFiles.Length == 0)
         {
             await Console.Error.WriteLineAsync("No C# source files found.");
@@ -91,5 +91,22 @@ public sealed class TranspilePipeline
         }
 
         return 0;
+    }
+
+    private static IEnumerable<FileInfo> EnumerateSourceFiles(DirectoryInfo inputDirectory)
+    {
+        return inputDirectory
+            .EnumerateFiles("*.cs", SearchOption.AllDirectories)
+            .Where(file => !IsInBuildOutputDirectory(file, inputDirectory));
+    }
+
+    private static bool IsInBuildOutputDirectory(FileInfo file, DirectoryInfo inputDirectory)
+    {
+        var root = inputDirectory.FullName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var relative = Path.GetRelativePath(root, file.FullName);
+        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return segments.Any(segment =>
+            string.Equals(segment, "bin", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(segment, "obj", StringComparison.OrdinalIgnoreCase));
     }
 }

@@ -17,7 +17,8 @@ public enum IRLiteralKind
 }
 
 public sealed record IRIdentifier(string Name) : IRExpr;
+public sealed record IRTypeReference(IReadOnlyList<string> NamespaceSegments, string Name) : IRExpr;
 public sealed record IRMemberAccess(IRExpr Target, string Member) : IRExpr;
-public sealed record IRInvocation(IRExpr Callee, IReadOnlyList<IRExpr> Arguments) : IRExpr;
+public sealed record IRInvocation(IRExpr Callee, IReadOnlyList<IRExpr> Arguments, bool UseColon = false) : IRExpr;
 public sealed record IRBinary(string Op, IRExpr Left, IRExpr Right) : IRExpr;
 public sealed record IRUnary(string Op, IRExpr Operand) : IRExpr;

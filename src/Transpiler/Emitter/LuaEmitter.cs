@@ -89,7 +89,7 @@ public sealed class LuaEmitter
         // Methods, separated by blank lines.
         for (int i = 0; i < type.Methods.Count; i++)
         {
-            EmitMethod(typePath, type.Methods[i]);
+            EmitMethod(typePath, type.Methods[i], type.Fields.Where(f => !f.IsStatic));
             if (i < type.Methods.Count - 1)
             {
                 _sb.Append('\n');
@@ -97,7 +97,7 @@ public sealed class LuaEmitter
         }
     }
 
-    private void EmitMethod(string typePath, IRFunction m)
+    private void EmitMethod(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
     {
         var sep = m.IsInstance ? ":" : ".";
         var paramList = string.Join(", ", m.Parameters);
@@ -107,6 +107,20 @@ public sealed class LuaEmitter
         if (m.IsConstructor)
         {
             WriteLine($"local self = setmetatable({{}}, {{ __index = {typePath} }})");
+            foreach (var field in instanceFields)
+            {
+                WriteIndent();
+                _sb.Append("self.").Append(field.Name).Append(" = ");
+                if (field.Initializer is null)
+                {
+                    _sb.Append("nil");
+                }
+                else
+                {
+                    EmitExpr(field.Initializer);
+                }
+                _sb.Append('\n');
+            }
         }
 
         EmitBlock(m.Body);
@@ -223,12 +237,28 @@ public sealed class LuaEmitter
             case IRIdentifier id:
                 _sb.Append(id.Name);
                 break;
+            case IRTypeReference tr:
+                _sb.Append(_rootTable);
+                foreach (var segment in tr.NamespaceSegments)
+                {
+                    _sb.Append('.').Append(segment);
+                }
+                _sb.Append('.').Append(tr.Name);
+                break;
             case IRMemberAccess ma:
                 EmitExpr(ma.Target);
                 _sb.Append('.').Append(ma.Member);
                 break;
             case IRInvocation inv:
-                EmitExpr(inv.Callee);
+                if (inv.UseColon && inv.Callee is IRMemberAccess memberAccess)
+                {
+                    EmitExpr(memberAccess.Target);
+                    _sb.Append(':').Append(memberAccess.Member);
+                }
+                else
+                {
+                    EmitExpr(inv.Callee);
+                }
                 _sb.Append('(');
                 for (int i = 0; i < inv.Arguments.Count; i++)
                 {
