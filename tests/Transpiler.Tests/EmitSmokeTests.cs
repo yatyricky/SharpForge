@@ -473,6 +473,47 @@ public class EmitSmokeTests
         Assert.Contains("return SF__.__is(hero, SF__.Game.INamed)", lua);
     }
 
+    [Fact]
+    public async Task Arrays_lists_indexing_and_foreach_emit_table_backed_collections()
+    {
+        var src = """
+            using System.Collections.Generic;
+
+            public static class Collections
+            {
+                public static int SumArray()
+                {
+                    var values = new[] { 1, 2, 3 };
+                    var total = 0;
+                    foreach (var value in values)
+                    {
+                        total += value;
+                    }
+                    return total + values[0] + values.Length;
+                }
+
+                public static int SumList()
+                {
+                    var values = new List<int> { 4, 5 };
+                    values.Add(6);
+                    return values[1] + values.Count;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Collections.cs");
+
+        Assert.Contains("local values = {1, 2, 3}", lua);
+        Assert.Contains("local __sf_collection0 = values", lua);
+        Assert.Contains("for __sf_i0 = 1, #__sf_collection0 do", lua);
+        Assert.Contains("local value = __sf_collection0[__sf_i0]", lua);
+        Assert.Matches(@"values\[\(?\s*0\s*\+\s*1\s*\)?\]", lua);
+        Assert.Contains("#values", lua);
+        Assert.Contains("local values = {4, 5}", lua);
+        Assert.Contains("table.insert(values, 6)", lua);
+        Assert.Matches(@"values\[\(?\s*1\s*\+\s*1\s*\)?\]", lua);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");

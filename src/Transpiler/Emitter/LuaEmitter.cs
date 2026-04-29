@@ -16,6 +16,7 @@ public sealed class LuaEmitter
     private readonly StringBuilder _sb = new();
     private readonly HashSet<string> _emittedTablePaths = new(StringComparer.Ordinal);
     private int _indent;
+    private int _foreachId;
 
     public LuaEmitter(string rootTable)
     {
@@ -31,6 +32,7 @@ public sealed class LuaEmitter
         _sb.Clear();
         _emittedTablePaths.Clear();
         _indent = 0;
+        _foreachId = 0;
 
         EnsureRootEmitted();
 
@@ -295,6 +297,9 @@ public sealed class LuaEmitter
             case IRFor f:
                 EmitFor(f);
                 break;
+            case IRForEach f:
+                EmitForEach(f);
+                break;
             case IRTry t:
                 EmitTry(t);
                 break;
@@ -397,6 +402,28 @@ public sealed class LuaEmitter
         WriteLine("end");
     }
 
+    private void EmitForEach(IRForEach f)
+    {
+        var id = _foreachId++;
+        var collectionName = $"__sf_collection{id}";
+        var indexName = $"__sf_i{id}";
+
+        WriteLine("do");
+        _indent++;
+        WriteIndent();
+        _sb.Append("local ").Append(collectionName).Append(" = ");
+        EmitExpr(f.Collection);
+        _sb.Append('\n');
+        WriteLine($"for {indexName} = 1, #{collectionName} do");
+        _indent++;
+        WriteLine($"local {f.ItemName} = {collectionName}[{indexName}]");
+        EmitBlock(f.Body);
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+    }
+
     private void EmitTry(IRTry t)
     {
         WriteLine("do");
@@ -450,6 +477,16 @@ public sealed class LuaEmitter
                 EmitExpr(ma.Target);
                 _sb.Append('.').Append(ma.Member);
                 break;
+            case IRElementAccess elementAccess:
+                EmitExpr(elementAccess.Target);
+                _sb.Append('[');
+                EmitExpr(new IRBinary("+", elementAccess.Index, new IRLiteral(1, IRLiteralKind.Integer)));
+                _sb.Append(']');
+                break;
+            case IRLength length:
+                _sb.Append('#');
+                EmitExpr(length.Target);
+                break;
             case IRInvocation inv:
                 if (inv.UseColon && inv.Callee is IRMemberAccess memberAccess)
                 {
@@ -470,6 +507,18 @@ public sealed class LuaEmitter
                     EmitExpr(inv.Arguments[i]);
                 }
                 _sb.Append(')');
+                break;
+            case IRArrayLiteral array:
+                _sb.Append('{');
+                for (int i = 0; i < array.Items.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    EmitExpr(array.Items[i]);
+                }
+                _sb.Append('}');
                 break;
             case IRBinary bin:
                 // Always parenthesize: precedence between Lua and C# differs (e.g. `..`,

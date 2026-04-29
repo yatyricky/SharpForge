@@ -304,6 +304,9 @@ public sealed class IRLowering
             case ForStatementSyntax fs:
                 return LowerFor(fs, model, ct);
 
+            case ForEachStatementSyntax fe:
+                return LowerForEach(fe, model, ct);
+
             case TryStatementSyntax ts:
                 return LowerTry(ts, model, ct);
 
@@ -378,6 +381,13 @@ public sealed class IRLowering
             _ when IsIncrementOrDecrement(expression) => LowerIncrementOrDecrement(expression, model),
             _ => new IRExprStmt(LowerExpr(expression, model)),
         };
+
+    private IRStmt LowerForEach(ForEachStatementSyntax fe, SemanticModel model, CancellationToken ct)
+    {
+        var body = new IRBlock();
+        LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
+        return new IRForEach(fe.Identifier.ValueText, LowerExpr(fe.Expression, model), body);
+    }
 
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
     {
@@ -465,7 +475,17 @@ public sealed class IRLowering
                 return new IRIdentifier("self");
 
             case MemberAccessExpressionSyntax ma:
+                if (IsCollectionLengthAccess(ma, model))
+                {
+                    return new IRLength(LowerExpr(ma.Expression, model));
+                }
+
                 return new IRMemberAccess(LowerExpr(ma.Expression, model), ma.Name.Identifier.ValueText);
+
+            case ElementAccessExpressionSyntax elementAccess:
+                return new IRElementAccess(
+                    LowerExpr(elementAccess.Expression, model),
+                    LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
 
             case InvocationExpressionSyntax inv:
                 var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
@@ -473,6 +493,14 @@ public sealed class IRLowering
 
             case ObjectCreationExpressionSyntax obj:
                 return LowerObjectCreation(obj, model);
+
+            case ArrayCreationExpressionSyntax arrayCreation:
+                return arrayCreation.Initializer is null
+                    ? UnsupportedExpression(e)
+                    : new IRArrayLiteral(arrayCreation.Initializer.Expressions.Select(item => LowerExpr(item, model)).ToArray());
+
+            case ImplicitArrayCreationExpressionSyntax implicitArrayCreation:
+                return new IRArrayLiteral(implicitArrayCreation.Initializer.Expressions.Select(item => LowerExpr(item, model)).ToArray());
 
             case BinaryExpressionSyntax bin:
                 if (bin.IsKind(SyntaxKind.IsExpression))
@@ -501,6 +529,13 @@ public sealed class IRLowering
     private IRExpr LowerInvocation(InvocationExpressionSyntax inv, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
+        {
+            return new IRInvocation(
+                new IRMemberAccess(new IRIdentifier("table"), "insert"),
+                new[] { LowerExpr(addAccess.Expression, model), args[0] });
+        }
+
         if (inv.Expression is MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax } && symbol is { IsStatic: false })
         {
             return new IRInvocation(
@@ -577,9 +612,30 @@ public sealed class IRLowering
             return new IRIdentifier($"--[[unsupported expr: {obj.Kind()}]]nil");
         }
 
+        if (IsListType(type))
+        {
+            return new IRArrayLiteral(obj.Initializer?.Expressions.Select(item => LowerExpr(item, model)).ToArray() ?? Array.Empty<IRExpr>());
+        }
+
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
         return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args);
     }
+
+    private bool IsCollectionLengthAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        var symbol = model.GetSymbolInfo(access).Symbol;
+        if (symbol is not IPropertySymbol { Name: "Length" or "Count" })
+        {
+            return false;
+        }
+
+        var type = model.GetTypeInfo(access.Expression).Type;
+        return type is IArrayTypeSymbol || IsListType(type);
+    }
+
+    private static bool IsListType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "List", ContainingNamespace: { } ns }
+           && ns.ToDisplayString() == "System.Collections.Generic";
 
     /// <summary>
     /// Resolves bare identifiers via the semantic model. Instance fields/properties/
