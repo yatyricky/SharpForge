@@ -294,6 +294,17 @@ public sealed class IRLowering
             fn.Parameters.Add(p.Identifier.ValueText);
         }
 
+        if (m.DescendantNodes().OfType<YieldStatementSyntax>().Any())
+        {
+            fn.Body.Statements.Add(new IRReturn(new IRArrayLiteral(
+                m.DescendantNodes()
+                    .OfType<YieldStatementSyntax>()
+                    .Where(y => y.IsKind(SyntaxKind.YieldReturnStatement) && y.Expression is not null)
+                    .Select(y => LowerExpr(y.Expression!, model))
+                    .ToArray())));
+            return fn;
+        }
+
         if (m.Body is { } body)
         {
             LowerStatements(body.Statements, fn.Body, model, ct);
@@ -694,6 +705,9 @@ public sealed class IRLowering
 
             case ParenthesizedExpressionSyntax par:
                 return LowerExpr(par.Expression, model);
+
+            case AwaitExpressionSyntax awaitExpression:
+                return LowerExpr(awaitExpression.Expression, model);
 
             default:
                 return UnsupportedExpression(e);

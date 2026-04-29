@@ -610,6 +610,54 @@ public class EmitSmokeTests
         Assert.Contains("return (bag:get_Total() + bag:get_Item(0))", lua);
     }
 
+    [Fact]
+    public async Task Async_await_and_simple_iterators_emit_sync_mvp_shapes()
+    {
+        var src = """
+            using System.Collections.Generic;
+            using System.Threading.Tasks;
+
+            public static class AsyncIterators
+            {
+                public static async Task<int> Load()
+                {
+                    return 5;
+                }
+
+                public static async Task<int> RunAsync()
+                {
+                    var value = await Load();
+                    return value + 1;
+                }
+
+                public static IEnumerable<int> Values(int start)
+                {
+                    yield return start;
+                    yield return start + 1;
+                }
+
+                public static int Sum()
+                {
+                    var total = 0;
+                    foreach (var value in Values(2))
+                    {
+                        total += value;
+                    }
+                    return total;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "AsyncIterators.cs");
+
+        Assert.Contains("function SF__.AsyncIterators.Load()", lua);
+        Assert.Contains("return 5", lua);
+        Assert.Contains("local value = SF__.AsyncIterators.Load()", lua);
+        Assert.Contains("function SF__.AsyncIterators.Values(start)", lua);
+        Assert.Contains("return {start, (start + 1)}", lua);
+        Assert.Contains("local __sf_collection0 = SF__.AsyncIterators.Values(2)", lua);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
