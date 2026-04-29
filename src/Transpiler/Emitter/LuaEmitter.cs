@@ -86,11 +86,16 @@ public sealed class LuaEmitter
             _sb.Append('\n');
         }
 
-        // Methods, separated by blank lines.
-        for (int i = 0; i < type.Methods.Count; i++)
+        foreach (var staticConstructor in type.Methods.Where(m => m.IsStaticConstructor))
         {
-            EmitMethod(typePath, type.Methods[i], type.Fields.Where(f => !f.IsStatic));
-            if (i < type.Methods.Count - 1)
+            EmitBlock(staticConstructor.Body);
+        }
+
+        var methods = type.Methods.Where(m => !m.IsStaticConstructor).ToArray();
+        for (int i = 0; i < methods.Length; i++)
+        {
+            EmitMethod(typePath, methods[i], type.Fields.Where(f => !f.IsStatic));
+            if (i < methods.Length - 1)
             {
                 _sb.Append('\n');
             }
@@ -189,21 +194,7 @@ public sealed class LuaEmitter
                 }
                 break;
             case IRIf i:
-                WriteIndent();
-                _sb.Append("if ");
-                EmitExpr(i.Condition);
-                _sb.Append(" then\n");
-                _indent++;
-                EmitBlock(i.Then);
-                _indent--;
-                if (i.Else is { } el)
-                {
-                    WriteLine("else");
-                    _indent++;
-                    EmitBlock(el);
-                    _indent--;
-                }
-                WriteLine("end");
+                EmitIf(i);
                 break;
             case IRWhile w:
                 WriteIndent();
@@ -212,8 +203,12 @@ public sealed class LuaEmitter
                 _sb.Append(" do\n");
                 _indent++;
                 EmitBlock(w.Body);
+                WriteLine("::continue::");
                 _indent--;
                 WriteLine("end");
+                break;
+            case IRFor f:
+                EmitFor(f);
                 break;
             case IRBreak:
                 WriteLine("break");
@@ -225,6 +220,80 @@ public sealed class LuaEmitter
                 WriteLine($"-- {c.Text}");
                 break;
         }
+    }
+
+    private void EmitIf(IRIf i)
+    {
+        WriteIndent();
+        _sb.Append("if ");
+        EmitExpr(i.Condition);
+        _sb.Append(" then\n");
+        _indent++;
+        EmitBlock(i.Then);
+        _indent--;
+        if (i.Else is { } el)
+        {
+            if (el.Statements.Count == 1 && el.Statements[0] is IRIf nested)
+            {
+                WriteIndent();
+                _sb.Append("elseif ");
+                EmitExpr(nested.Condition);
+                _sb.Append(" then\n");
+                _indent++;
+                EmitBlock(nested.Then);
+                _indent--;
+                if (nested.Else is { } nestedElse)
+                {
+                    WriteLine("else");
+                    _indent++;
+                    EmitBlock(nestedElse);
+                    _indent--;
+                }
+            }
+            else
+            {
+                WriteLine("else");
+                _indent++;
+                EmitBlock(el);
+                _indent--;
+            }
+        }
+        WriteLine("end");
+    }
+
+    private void EmitFor(IRFor f)
+    {
+        WriteLine("do");
+        _indent++;
+        if (f.Initializer is not null)
+        {
+            EmitStmt(f.Initializer);
+        }
+
+        WriteIndent();
+        _sb.Append("while ");
+        if (f.Condition is null)
+        {
+            _sb.Append("true");
+        }
+        else
+        {
+            EmitExpr(f.Condition);
+        }
+        _sb.Append(" do\n");
+
+        _indent++;
+        EmitBlock(f.Body);
+        WriteLine("::continue::");
+        foreach (var incrementor in f.Incrementors)
+        {
+            EmitStmt(incrementor);
+        }
+        _indent--;
+        WriteLine("end");
+
+        _indent--;
+        WriteLine("end");
     }
 
     private void EmitExpr(IRExpr expr)

@@ -7,6 +7,7 @@ namespace SharpForge.Transpiler.IR;
 public sealed class IRModule
 {
     public List<IRType> Types { get; } = new();
+    public List<string> Diagnostics { get; } = new();
 }
 
 public sealed class IRType
@@ -51,4 +52,6 @@ public sealed class IRFunction
     /// <c>local self = setmetatable({}, { __index = T })</c> and appends <c>return self</c>.
     /// </summary>
     public bool IsConstructor { get; init; }
+
+    public bool IsStaticConstructor { get; init; }
 }

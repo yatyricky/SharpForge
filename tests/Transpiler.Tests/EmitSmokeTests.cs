@@ -148,6 +148,141 @@ public class EmitSmokeTests
         Assert.Equal(0, exitCode);
     }
 
+    [Fact]
+    public async Task For_loop_and_else_if_emit_lua_control_flow()
+    {
+        var src = """
+            public static class Loops
+            {
+                public static int Sum(int limit)
+                {
+                    var total = 0;
+                    for (int i = 0; i < limit; i++)
+                    {
+                        if (i == 1)
+                        {
+                            continue;
+                        }
+                        else if (i == 3)
+                        {
+                            break;
+                        }
+                        total += i;
+                    }
+                    return total;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Loops.cs");
+
+        Assert.Contains("local i = 0", lua);
+        Assert.Matches(@"while\s+\(?\s*i\s*<\s*limit\s*\)?\s+do", lua);
+        Assert.Contains("elseif (i == 3) then", lua);
+        Assert.Contains("::continue::", lua);
+        Assert.Matches(@"i\s*=\s*\(?\s*i\s*\+\s*1\s*\)?", lua);
+    }
+
+    [Fact]
+    public async Task Auto_properties_and_static_constructor_emit_as_members()
+    {
+        var src = """
+            public class Config
+            {
+                public int Hp { get; set; } = 5;
+                public static bool Ready { get; set; }
+
+                static Config()
+                {
+                    Ready = true;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Config.cs");
+
+        Assert.Contains("SF__.Config.Ready = false", lua);
+        Assert.Contains("SF__.Config.Ready = true", lua);
+        Assert.Contains("self.Hp = 5", lua);
+    }
+
+    [Fact]
+    public async Task Constructor_and_method_overloads_get_stable_lua_names()
+    {
+        var src = """
+            public class Overloaded
+            {
+                public int Value;
+
+                public Overloaded()
+                {
+                }
+
+                public Overloaded(int value)
+                {
+                    Value = value;
+                }
+
+                public int Pick()
+                {
+                    return Value;
+                }
+
+                public int Pick(int fallback)
+                {
+                    return fallback;
+                }
+
+                public static int Run()
+                {
+                    var item = new Overloaded(7);
+                    return item.Pick(3);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Overloaded.cs");
+
+        Assert.Contains("function SF__.Overloaded.New_0()", lua);
+        Assert.Contains("function SF__.Overloaded.New_1(value)", lua);
+        Assert.Contains("function SF__.Overloaded:Pick_0()", lua);
+        Assert.Contains("function SF__.Overloaded:Pick_1(fallback)", lua);
+        Assert.Contains("SF__.Overloaded.New_1(7)", lua);
+        Assert.Contains("item:Pick_1(3)", lua);
+    }
+
+    [Fact]
+    public async Task Types_emit_in_stable_name_order()
+    {
+        var src = """
+            namespace Zed { public static class Last { public static int F() { return 1; } } }
+            namespace Alpha { public static class First { public static int F() { return 1; } } }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Ordering.cs");
+
+        Assert.True(lua.IndexOf("-- Alpha.First", StringComparison.Ordinal) < lua.IndexOf("-- Zed.Last", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Unsupported_syntax_returns_pipeline_error()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Unsupported.cs"),
+            "public static class Unsupported { public static void F() { switch (1) { case 1: break; } } }");
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            CheckOnly: true,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");

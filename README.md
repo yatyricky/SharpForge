@@ -155,12 +155,17 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 | Instance classes                   | ✅     | Single root table, `setmetatable` + `__index` for OO     |
 | Constructors → `.New(...)`         | ✅     | Auto-injected `local self = setmetatable(...)`           |
 | Instance methods → `:Method()`     | ✅     | Lua passes `self` implicitly                             |
+| Object creation                    | ✅     | `new T(...)` → `ROOT.NS.T.New(...)`                      |
 | Implicit `this` field access       | ✅     | Roslyn semantic-model rewrites bare `Field` to `self.X`  |
 | Compound assignment (`+=`, etc.)   | ✅     | Expanded to `x = x op v`                                 |
 | String interpolation `$"..."`      | ✅     | Lowered to `..` chain, empty parts dropped               |
-| Control flow: `if` / `while`       | ✅     | `break` / `continue` (`continue` → `goto continue`)      |
+| Control flow: `if` / `while` / `for` | ✅   | `break` / `continue` (`continue` → `goto continue`)      |
 | Static field initializers          | ✅     | Emitted as `T.X = ...`                                   |
+| Auto-properties                    | ✅     | Lowered as fields for the current MVP                    |
+| Static constructors                | ✅     | Emitted after static member initializers                 |
+| Constructor/method overload names  | ✅     | Arity-suffixed Lua names when overloads exist            |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
+| Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ⏳     | Planned                                                  |
 | Conditional compilation directives | ⏳     | Frontend accepts `--define`; emit pruning planned        |
 | Tree-shaking                       | ⏳     | Planned                                                  |

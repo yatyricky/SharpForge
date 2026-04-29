@@ -64,6 +64,14 @@ public sealed class TranspilePipeline
         // 2. Lower compilation to custom IR.
         var lowering = new IRLowering(options.IgnoredClasses);
         var module = lowering.Lower(compilation, cancellationToken);
+        if (module.Diagnostics.Count > 0)
+        {
+            foreach (var diagnostic in module.Diagnostics)
+            {
+                await Console.Error.WriteLineAsync(diagnostic);
+            }
+            return 1;
+        }
 
         // 3. Emit Lua.
         var emitter = new LuaEmitter(options.RootTable);

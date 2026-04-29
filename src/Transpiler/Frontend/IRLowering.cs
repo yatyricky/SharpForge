@@ -15,17 +15,19 @@ namespace SharpForge.Transpiler.Frontend;
 public sealed class IRLowering
 {
     private readonly HashSet<string> _ignoredClasses;
+    private IRModule? _module;
 
     public IRLowering(IEnumerable<string>? ignoredClasses = null)
     {
         _ignoredClasses = ignoredClasses is null
-            ? new HashSet<string>(StringComparer.Ordinal)
+            ? new HashSet<string>(new[] { "SF__JASSGEN" }, StringComparer.Ordinal)
             : new HashSet<string>(ignoredClasses, StringComparer.Ordinal);
     }
 
     public IRModule Lower(CSharpCompilation compilation, CancellationToken cancellationToken)
     {
         var module = new IRModule();
+        _module = module;
 
         foreach (var tree in compilation.SyntaxTrees)
         {
@@ -57,6 +59,8 @@ public sealed class IRLowering
             }
         }
 
+        module.Types.Sort((a, b) => string.CompareOrdinal(a.FullName, b.FullName));
+        _module = null;
         return module;
     }
 
@@ -119,6 +123,16 @@ public sealed class IRLowering
                         });
                     }
                     break;
+                case PropertyDeclarationSyntax p:
+                    irType.Fields.Add(new IRField
+                    {
+                        Name = p.Identifier.ValueText,
+                        Initializer = p.Initializer is null
+                            ? LowerDefaultValue(p.Type)
+                            : LowerExpr(p.Initializer.Value, model),
+                        IsStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword),
+                    });
+                    break;
             }
         }
 
@@ -153,10 +167,29 @@ public sealed class IRLowering
 
     private IRFunction LowerConstructor(ConstructorDeclarationSyntax c, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
+        var symbol = model.GetDeclaredSymbol(c, ct);
+        if (c.Modifiers.Any(SyntaxKind.StaticKeyword))
+        {
+            var staticFn = new IRFunction
+            {
+                Name = ".cctor",
+                LuaName = "__StaticInit",
+                IsStatic = true,
+                IsStaticConstructor = true,
+            };
+
+            if (c.Body is { } staticBody)
+            {
+                LowerStatements(staticBody.Statements, staticFn.Body, model, ct);
+            }
+
+            return staticFn;
+        }
+
         var fn = new IRFunction
         {
             Name = c.Identifier.ValueText,
-            LuaName = "New",
+            LuaName = symbol is null ? "New" : GetLuaMethodName(symbol),
             IsConstructor = true,
             IsInstance = false, // emit with `.` because we create `self` ourselves
         };
@@ -181,10 +214,11 @@ public sealed class IRLowering
     private IRFunction LowerMethod(MethodDeclarationSyntax m, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
         var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
+        var symbol = model.GetDeclaredSymbol(m, ct);
         var fn = new IRFunction
         {
             Name = m.Identifier.ValueText,
-            LuaName = m.Identifier.ValueText,
+            LuaName = symbol is null ? m.Identifier.ValueText : GetLuaMethodName(symbol),
             IsStatic = isStatic,
             IsInstance = !isStatic,
         };
@@ -230,8 +264,14 @@ public sealed class IRLowering
                     first.Identifier.ValueText,
                     first.Initializer is null ? null : LowerExpr(first.Initializer.Value, model));
 
+            case ForStatementSyntax fs:
+                return LowerFor(fs, model, ct);
+
             case ExpressionStatementSyntax es when es.Expression is AssignmentExpressionSyntax ae:
                 return LowerAssignment(ae, model);
+
+            case ExpressionStatementSyntax es when IsIncrementOrDecrement(es.Expression):
+                return LowerIncrementOrDecrement(es.Expression, model);
 
             case ExpressionStatementSyntax es:
                 return new IRExprStmt(LowerExpr(es.Expression, model));
@@ -262,9 +302,39 @@ public sealed class IRLowering
                 return new IRContinue();
 
             default:
-                return new IRRawComment($"unsupported stmt: {s.Kind()}");
+                return UnsupportedStatement(s);
         }
     }
+
+    private IRStmt LowerFor(ForStatementSyntax fs, SemanticModel model, CancellationToken ct)
+    {
+        IRStmt? initializer = null;
+        if (fs.Declaration is { } declaration)
+        {
+            var first = declaration.Variables.First();
+            initializer = new IRLocalDecl(
+                first.Identifier.ValueText,
+                first.Initializer is null ? null : LowerExpr(first.Initializer.Value, model));
+        }
+        else if (fs.Initializers.Count > 0)
+        {
+            initializer = LowerForExpression(fs.Initializers[0], model);
+        }
+
+        var body = new IRBlock();
+        LowerStatements(UnwrapBlock(fs.Statement), body, model, ct);
+        var incrementors = fs.Incrementors.Select(i => LowerForExpression(i, model)).ToArray();
+
+        return new IRFor(initializer, fs.Condition is null ? null : LowerExpr(fs.Condition, model), incrementors, body);
+    }
+
+    private IRStmt LowerForExpression(ExpressionSyntax expression, SemanticModel model)
+        => expression switch
+        {
+            AssignmentExpressionSyntax assignment => LowerAssignment(assignment, model),
+            _ when IsIncrementOrDecrement(expression) => LowerIncrementOrDecrement(expression, model),
+            _ => new IRExprStmt(LowerExpr(expression, model)),
+        };
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
     {
@@ -279,6 +349,27 @@ public sealed class IRLowering
         // Compound assignment: x op= v  ==>  x = x op v
         var op = ae.OperatorToken.ValueText.TrimEnd('=');
         return new IRAssign(target, new IRBinary(op, target, value));
+    }
+
+    private static bool IsIncrementOrDecrement(ExpressionSyntax expression)
+        => expression.IsKind(SyntaxKind.PostIncrementExpression)
+           || expression.IsKind(SyntaxKind.PostDecrementExpression)
+           || expression.IsKind(SyntaxKind.PreIncrementExpression)
+           || expression.IsKind(SyntaxKind.PreDecrementExpression);
+
+    private IRStmt LowerIncrementOrDecrement(ExpressionSyntax expression, SemanticModel model)
+    {
+        var operand = expression switch
+        {
+            PrefixUnaryExpressionSyntax prefix => prefix.Operand,
+            PostfixUnaryExpressionSyntax postfix => postfix.Operand,
+            _ => expression,
+        };
+        var op = expression.IsKind(SyntaxKind.PostDecrementExpression) || expression.IsKind(SyntaxKind.PreDecrementExpression)
+            ? "-"
+            : "+";
+        var target = LowerExpr(operand, model);
+        return new IRAssign(target, new IRBinary(op, target, new IRLiteral(1, IRLiteralKind.Integer)));
     }
 
     private static IEnumerable<StatementSyntax> UnwrapBlock(StatementSyntax s)
@@ -320,19 +411,51 @@ public sealed class IRLowering
                 return LowerExpr(par.Expression, model);
 
             default:
-                return new IRIdentifier($"--[[unsupported expr: {e.Kind()}]]nil");
+                return UnsupportedExpression(e);
         }
     }
 
     private IRExpr LowerInvocation(InvocationExpressionSyntax inv, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        if (inv.Expression is IdentifierNameSyntax && symbol is { IsStatic: false })
+        {
+            return new IRInvocation(
+                new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(symbol)),
+                args,
+                UseColon: true);
+        }
+
+        if (inv.Expression is IdentifierNameSyntax && symbol is { IsStatic: true })
+        {
+            if (IsIgnoredClass(symbol.ContainingType))
+            {
+                return new IRInvocation(new IRIdentifier(symbol.Name), args);
+            }
+
+            return new IRInvocation(
+                new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                args);
+        }
+
         if (inv.Expression is MemberAccessExpressionSyntax memberAccess && symbol is { IsStatic: false })
         {
             return new IRInvocation(
-                new IRMemberAccess(LowerExpr(memberAccess.Expression, model), memberAccess.Name.Identifier.ValueText),
+                new IRMemberAccess(LowerExpr(memberAccess.Expression, model), GetLuaMethodName(symbol)),
                 args,
                 UseColon: true);
+        }
+
+        if (inv.Expression is MemberAccessExpressionSyntax staticAccess && symbol is { IsStatic: true })
+        {
+            if (IsIgnoredClass(symbol.ContainingType))
+            {
+                return new IRInvocation(new IRIdentifier(symbol.Name), args);
+            }
+
+            return new IRInvocation(
+                new IRMemberAccess(LowerExpr(staticAccess.Expression, model), GetLuaMethodName(symbol)),
+                args);
         }
 
         return new IRInvocation(LowerExpr(inv.Expression, model), args);
@@ -351,7 +474,8 @@ public sealed class IRLowering
             return new IRIdentifier($"--[[unsupported expr: {obj.Kind()}]]nil");
         }
 
-        return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), "New"), args);
+        var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
+        return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args);
     }
 
     /// <summary>
@@ -367,16 +491,58 @@ public sealed class IRLowering
             return LowerTypeReference(type);
         }
 
+        if (symbol is { IsStatic: true } and (IFieldSymbol or IPropertySymbol) && symbol.ContainingType is not null)
+        {
+            if (IsIgnoredClass(symbol.ContainingType))
+            {
+                return new IRIdentifier(id.Identifier.ValueText);
+            }
+
+            return new IRMemberAccess(LowerTypeReference(symbol.ContainingType), id.Identifier.ValueText);
+        }
+
+        if (symbol is IMethodSymbol { IsStatic: true } staticMethod)
+        {
+            if (IsIgnoredClass(staticMethod.ContainingType))
+            {
+                return new IRIdentifier(staticMethod.Name);
+            }
+
+            return new IRMemberAccess(LowerTypeReference(staticMethod.ContainingType), GetLuaMethodName(staticMethod));
+        }
+
         if (symbol is { IsStatic: false } and (IFieldSymbol or IPropertySymbol or IMethodSymbol)
             && symbol.ContainingType is not null)
         {
-            return new IRMemberAccess(new IRIdentifier("self"), id.Identifier.ValueText);
+            return symbol is IMethodSymbol instanceMethod
+                ? new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(instanceMethod))
+                : new IRMemberAccess(new IRIdentifier("self"), id.Identifier.ValueText);
         }
         return new IRIdentifier(id.Identifier.ValueText);
     }
 
+    private static string GetLuaMethodName(IMethodSymbol method)
+    {
+        if (method.MethodKind == MethodKind.Constructor)
+        {
+            var explicitConstructors = method.ContainingType.InstanceConstructors
+                .Where(c => !c.IsImplicitlyDeclared)
+                .ToArray();
+            return explicitConstructors.Length > 1 ? $"New_{method.Parameters.Length}" : "New";
+        }
+
+        var overloads = method.ContainingType.GetMembers(method.Name)
+            .OfType<IMethodSymbol>()
+            .Where(m => !m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Ordinary)
+            .ToArray();
+        return overloads.Length > 1 ? $"{method.Name}_{method.Parameters.Length}" : method.Name;
+    }
+
     private static IRTypeReference LowerTypeReference(INamedTypeSymbol type)
         => new(GetNamespaceSegments(type.ContainingNamespace), type.Name);
+
+    private bool IsIgnoredClass(INamedTypeSymbol? symbol)
+        => symbol is not null && _ignoredClasses.Contains(symbol.Name);
 
     private IRExpr LowerInterpolatedString(InterpolatedStringExpressionSyntax istr, SemanticModel model)
     {
@@ -454,4 +620,29 @@ public sealed class IRLowering
         "||" => "or",
         _ => op,
     };
+
+    private IRStmt UnsupportedStatement(StatementSyntax statement)
+    {
+        AddUnsupportedDiagnostic(statement, "statement");
+        return new IRRawComment($"unsupported stmt: {statement.Kind()}");
+    }
+
+    private IRExpr UnsupportedExpression(ExpressionSyntax expression)
+    {
+        AddUnsupportedDiagnostic(expression, "expression");
+        return new IRIdentifier($"--[[unsupported expr: {expression.Kind()}]]nil");
+    }
+
+    private void AddUnsupportedDiagnostic(SyntaxNode node, string kind)
+    {
+        if (_module is null)
+        {
+            return;
+        }
+
+        var span = node.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var character = span.StartLinePosition.Character + 1;
+        _module.Diagnostics.Add($"{span.Path}({line},{character}): unsupported {kind}: {node.Kind()}");
+    }
 }
