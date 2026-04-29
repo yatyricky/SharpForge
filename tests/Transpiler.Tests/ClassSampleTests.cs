@@ -22,12 +22,14 @@ public class ClassSampleTests
         var sourceDir = Directory.Exists(Path.Combine(repoRoot, "samples"))
             ? new DirectoryInfo(Path.Combine(repoRoot, "samples"))
             : new DirectoryInfo(Path.Combine(repoRoot, "SampleProject"));
-        var sourceFiles = Directory.GetFiles(sourceDir.FullName, "*.cs", SearchOption.AllDirectories)
+        var sourcePaths = Directory.GetFiles(sourceDir.FullName, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part is "bin" or "obj"))
+            .Concat(Directory.GetFiles(Path.Combine(repoRoot, "assets", "jass", "generated"), "*.cs", SearchOption.AllDirectories))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(path => new FileInfo(path))
             .ToArray();
         var compilation = await new RoslynFrontend(Array.Empty<string>())
-            .CompileAsync(sourceFiles, CancellationToken.None);
+            .CompileAsync(sourcePaths, CancellationToken.None);
 
         var errors = compilation
             .GetDiagnostics()

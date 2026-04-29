@@ -2,20 +2,21 @@
 
 ## Layout
 - `src/Transpiler/` → `sf-transpile.exe` (Roslyn → IR → Lua emitter)
-- `src/Builder/` → `sf-build.exe` (stub: pack + inject .w3x)
+- `src/Builder/` → `sf-build.exe` (entry Lua bundler + .w3x injector)
 - `src/JassGen/` → `sf-jassgen.exe` (common.j/blizzard.j → C# extern stubs on `static partial class SF__JASSGEN`, plus `global using static SF__JASSGEN;` shim)
 - `tests/Transpiler.Tests/` xUnit
 - `samples/` flat: `Hello.cs`, `Hero.cs` (no nested `cs_src/` or `expected/`)
 - `assets/jass/` ships the JASS source for `sf-jassgen`
 
 ## Build
-- .NET 10 SDK (10.0.202). Projects target `net8.0`. `TreatWarningsAsErrors`, single-file Exe.
-- Single-file publish needs `Basic.Reference.Assemblies.Net80` (1.7.9) — `typeof(object).Assembly.Location` triggers IL3000.
+- .NET 10 SDK (10.0.202+). Projects target `net10.0`. `TreatWarningsAsErrors`, single-file Exe.
+- Single-file publish needs `Basic.Reference.Assemblies.Net100` (1.8.5) — `typeof(object).Assembly.Location` triggers IL3000.
 
 ## Key packages
-- Microsoft.CodeAnalysis.CSharp 4.12.0 + .Workspaces 4.12.0
+- Microsoft.CodeAnalysis.CSharp 5.3.0 + .Workspaces 5.3.0
 - System.CommandLine 2.0.0-beta4.22272.1 → use context-based `cmd.SetHandler(async ctx => { ... ctx.ExitCode = ... })`
-- xUnit 2.9.2 + Microsoft.NET.Test.Sdk 17.11.1
+- War3Net.IO.Mpq 6.0.2 for managed `.w3x` MPQ archive mutation
+- xUnit 2.9.2 + Microsoft.NET.Test.Sdk 18.5.1
 
 ## CLI surface (transpiler)
 - Single command, no `build` verb: `sf-transpile <input-dir> [-o out.lua] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [-v]`
@@ -27,6 +28,15 @@
 ## CLI surface (jassgen)
 - `sf-jassgen <input-dir> [-o out-dir] [--host-class NAME] [-v]`
 - `--host-class`/`-c` → name of the static partial class hosting natives + globals; default `SF__JASSGEN`. Must match the transpiler's `--ignore-class`.
+
+## CLI surface (builder)
+- `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [--csharp cs-dir] [-r SF__] [-v]` (no `pack` subcommand)
+- No output/target → writes `<entry-dir>/bundle.lua`.
+- `-o <map.w3x>` → injects into MPQ `war3map.lua`; `-o <.w3x-folder>` → injects into folder `war3map.lua`; `-o <non-w3x-folder>` → writes `<folder>/bundle.lua`; `-o <non-w3x-file>` → exit 2.
+- Dependencies: literal `require`/`dofile`/`doFile`/`loadfile`/`loadFile`/`package.load`/`include`/`import`/`load`, single or double quotes, slash/backslash/dot module separators.
+- Commented calls ignored except forced line comments like `-- !require('Path.To.Module')`; calculated paths require `--include`.
+- Bundle emits dependency-first module loaders/polyfills and tree-shakes unreachable Lua files.
+- Injection wraps bundle code as tagged `function SF__Bundle()` comments (`--sf-builder:<length>/<checksum>`) and splices `pcall(SF__Bundle)` at the end of `function main()`.
 
 ## Lua emission contract
 - ALL globals live under one root table (default `SF__`, configurable via `--root-table`)

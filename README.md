@@ -52,7 +52,7 @@ SharpForge defines an industrial, sustainable modernization standard for WC3R ma
 SharpForge/
 ├── src/
 │   ├── Transpiler/   # sf-transpile.exe  — C# → Lua compiler
-│   └── Builder/      # sf-build.exe      — Lua bundler + .w3x injector (stub)
+│   └── Builder/      # sf-build.exe      — Lua bundler + .w3x injector
 ├── tests/
 │   └── Transpiler.Tests/
 ├── samples/
@@ -66,7 +66,7 @@ SharpForge/
 
 ### Build
 
-Requires .NET 10 SDK (verified on 10.0.202). Projects target `net8.0`.
+Requires .NET 10 SDK (verified on 10.0.202+). Projects target `net10.0`.
 
 ```powershell
 dotnet build SharpForge.sln
@@ -76,7 +76,7 @@ dotnet test  tests\Transpiler.Tests\Transpiler.Tests.csproj
 Single-file publish:
 
 ```powershell
-dotnet publish src\Transpiler -c Release -r win-x64 -p:IsPublishing=true
+.\publish-all.ps1
 ```
 
 ---
@@ -145,10 +145,12 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
                          [--define SYMBOL]...
                          [--verbose]
 
-sf-build pack <lua-dir> --output <bundle.lua>
-                         [--csharp <cs-dir>]      # transpile C# first, then bundle
-                         [--root-table SF__]
-                         [--verbose]
+sf-build <entry.lua>                              # default output: <entry-dir>/bundle.lua
+         [--output <map.w3x | map.w3x-folder | folder>]
+         [--include <path1.lua;path2.lua>]
+         [--csharp <cs-dir>]                      # transpile C# first, then bundle
+         [--root-table SF__]
+         [--verbose]
 ```
 
 #### Currently implemented (lowering & emit)
@@ -180,12 +182,12 @@ sf-build pack <lua-dir> --output <bundle.lua>
 | Event declarations                 | ✅     | Field-like event backing for current MVP                  |
 | Async/iterator MVP                 | ✅     | Synchronous `await`; simple `yield return` table materialization |
 | Type-check helper optimization     | ✅     | Emits `is` / `as` helpers only when needed                |
-| Toolchain pack integration         | ✅     | `sf-build pack` bundles Lua and optional transpiled C#     |
+| Toolchain pack integration         | ✅     | `sf-build` bundles Lua and optional transpiled C#          |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
-| Topological multi-file ordering    | ⏳     | Planned                                                  |
+| Topological multi-file ordering    | ✅     | Entry-script dependency graph ordered dependency-first    |
 | Conditional compilation directives | ⏳     | Frontend accepts `--define`; emit pruning planned        |
-| Tree-shaking                       | ⏳     | Planned                                                  |
+| Tree-shaking                       | ✅     | Unreachable Lua files are excluded by `sf-build`          |
 | Source-map line annotations        | ⏳     | Planned                                                  |
 | Generics, `async`/`await`          | ⏳     | Planned                                                  |
 
@@ -218,12 +220,23 @@ Three tiers:
 
 Existing Lua exports follow the standard pattern `__SF = __SF or {}; __SF.HeroSystem = HeroSystem`, mirroring the SharpForge root-table convention so both directions of interop look symmetric.
 
-### `Builder` (`sf-build.exe`)  — *stub*
+### `Builder` (`sf-build.exe`)
 
-1. `pack` — topologically sort and bundle a project's Lua files into one file.
-2. `inject` — open the target `.w3x` with [StormLib](https://github.com/ladislav-zezula/StormLib), splice the bundled script into `war3map.lua`, write back.
+1. starts from `<entry.lua>`, recursively follows literal script dependencies, topologically sorts them, and emits one bundle.
 
-Both subcommands currently print "not implemented" and return exit code 2; CLI surface, options, and class skeletons are in place so the implementations can drop in cleanly.
+Dependency discovery supports literal `require`, `dofile`, `doFile`, `loadfile`, `loadFile`, `package.load`, `include`, `import`, and `load` calls with single or double quoted paths. Module paths may use `/`, `\`, or `.` separators. Regular commented-out calls are ignored; prefix a comment with `!` to force a dependency, for example `-- !require('Path.To.Module')`. Calculated paths are intentionally not evaluated; list extra scripts with `--include path/a.lua;path/b.lua`.
+
+`Injection`: Wrap the whole bundle with `--sf-builder:000106309/7f181df892ea2f9e \nfunction SF__Bundle() <bundle.lua code> end \n--sf-builder:000106309/7f181df892ea2f9e`; splices `local s, m = pcall(SF__Bundle) if not s then print(m) end` into the end of `function main()` in `war3map.lua`, replacing any previous SharpForge bundle block by identifying the `--sf-builder:<script length>/<script checksum>` comments.
+
+Target behavior:
+
+- No `-o, --output` writes `bundle.lua` next to the entry script.
+- `-o, --output <map.w3x>` runs `Injection` into `war3map.lua` inside the MPQ archive.
+- `-o, --output <map.w3x-folder>` runs `Injection` into `<map.w3x-folder>/war3map.lua` for folder maps.
+- `--output <folder>` writes `<folder>/bundle.lua` when the folder is not a `.w3x` folder.
+- Non-`.w3x` file targets are rejected with exit code 2.
+
+Archive mutation uses the managed `War3Net.IO.Mpq` package, giving StormLib-style MPQ read/write behavior without shipping a native DLL beside `sf-build`.
 
 ---
 

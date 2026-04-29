@@ -159,6 +159,8 @@ public class EmitSmokeTests
             ? Path.Combine(repoRoot, "samples")
             : Path.Combine(repoRoot, "SampleProject");
         var sourceFiles = Directory.GetFiles(sampleDir, "*.cs", SearchOption.AllDirectories)
+            .Concat(Directory.GetFiles(Path.Combine(repoRoot, "assets", "jass", "generated"), "*.cs", SearchOption.AllDirectories))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(path => new FileInfo(path))
             .ToArray();
 

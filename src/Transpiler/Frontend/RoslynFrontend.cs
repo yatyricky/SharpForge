@@ -47,14 +47,14 @@ public sealed class RoslynFrontend
             return CSharpSyntaxTree.ParseText(text, parseOptions, path: f.FullName, cancellationToken: cancellationToken);
         }).ToArray();
 
-        var references = new List<MetadataReference>(Basic.Reference.Assemblies.Net80.References.All);
+        var references = new List<MetadataReference>(Basic.Reference.Assemblies.Net100.References.All);
         if (bindingFiles.Length > 0)
         {
             var dllPath = GetOrBuildBindingsAssembly(bindingFiles, parseOptions, cancellationToken);
             references.Add(MetadataReference.CreateFromFile(dllPath));
         }
 
-        // Use bundled .NET 8 reference assemblies so semantic queries work even when the
+        // Use bundled .NET 10 reference assemblies so semantic queries work even when the
         // transpiler ships as a single-file executable (Assembly.Location returns "").
         // These references exist purely for compile-time analysis; nothing is emitted to Lua.
         var compilation = CSharpCompilation.Create(
@@ -89,7 +89,7 @@ public sealed class RoslynFrontend
         var compilation = CSharpCompilation.Create(
             assemblyName: $"SharpForgeBindings_{hash}",
             syntaxTrees: trees,
-            references: Basic.Reference.Assemblies.Net80.References.All,
+            references: Basic.Reference.Assemblies.Net100.References.All,
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
                 .WithNullableContextOptions(NullableContextOptions.Enable));
 

@@ -1,11 +1,12 @@
 namespace SharpForge.Builder.Pack;
 
-using System.Text;
+using SharpForge.Builder.Inject;
 using SharpForge.Transpiler.Pipeline;
 
 public sealed record PackOptions(
-    DirectoryInfo InputDirectory,
-    FileInfo OutputFile,
+    FileInfo InputScript,
+    FileInfo? OutputFile,
+    IReadOnlyList<string> IncludePaths,
     DirectoryInfo? CSharpInputDirectory,
     string RootTable,
     bool Verbose);
@@ -17,19 +18,19 @@ public sealed class LuaPacker
 {
     public async Task<int> RunAsync(PackOptions options, CancellationToken cancellationToken)
     {
-        if (!options.InputDirectory.Exists)
+        if (!options.InputScript.Exists)
         {
-            Console.Error.WriteLine($"[sf-build] input directory not found: {options.InputDirectory.FullName}");
+            Console.Error.WriteLine($"[sf-build] input script not found: {options.InputScript.FullName}");
             return 2;
         }
 
-        if (options.OutputFile.Exists && (options.OutputFile.Attributes & FileAttributes.Directory) != 0)
+        if (!options.InputScript.Extension.Equals(".lua", StringComparison.OrdinalIgnoreCase))
         {
-            Console.Error.WriteLine($"[sf-build] output path is a directory: {options.OutputFile.FullName}");
+            Console.Error.WriteLine($"[sf-build] input script must be a .lua file: {options.InputScript.FullName}");
             return 2;
         }
 
-        var generatedFiles = new List<FileInfo>();
+        var startupFiles = new List<FileInfo>();
         string? tempDirectory = null;
         try
         {
@@ -58,46 +59,31 @@ public sealed class LuaPacker
                     return exitCode;
                 }
 
-                generatedFiles.Add(transpiledFile);
+                startupFiles.Add(transpiledFile);
             }
 
-            var luaFiles = options.InputDirectory
-                .EnumerateFiles("*.lua", SearchOption.AllDirectories)
-                .Where(f => !IsSamePath(f.FullName, options.OutputFile.FullName))
-                .OrderBy(f => Path.GetRelativePath(options.InputDirectory.FullName, f.FullName), StringComparer.Ordinal)
-                .ToArray();
+            var includeFiles = ResolveIncludeFiles(options.InputScript.Directory!, options.IncludePaths).ToArray();
+            var bundle = await new LuaBundleBuilder().BuildAsync(
+                new LuaBundleOptions(options.InputScript, includeFiles, startupFiles),
+                cancellationToken).ConfigureAwait(false);
 
-            var allFiles = generatedFiles.Concat(luaFiles).ToArray();
-            if (allFiles.Length == 0)
+            var outputExit = await WriteOutputAsync(options, bundle.Text, cancellationToken).ConfigureAwait(false);
+            if (outputExit != 0)
             {
-                Console.Error.WriteLine("[sf-build] no Lua files found to pack.");
-                return 2;
+                return outputExit;
             }
 
-            if (options.OutputFile.Directory is { } outputDirectory)
-            {
-                outputDirectory.Create();
-            }
-
-            var sb = new StringBuilder();
-            foreach (var file in allFiles)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var label = generatedFiles.Contains(file)
-                    ? "<transpiled-csharp>"
-                    : Path.GetRelativePath(options.InputDirectory.FullName, file.FullName).Replace('\\', '/');
-                var contents = await File.ReadAllTextAsync(file.FullName, cancellationToken).ConfigureAwait(false);
-                sb.Append("--# source: ").Append(label).Append('\n');
-                sb.Append(contents.TrimEnd()).Append("\n\n");
-            }
-
-            await File.WriteAllTextAsync(options.OutputFile.FullName, sb.ToString().TrimEnd() + "\n", cancellationToken).ConfigureAwait(false);
             if (options.Verbose)
             {
-                Console.Error.WriteLine($"[sf-build] packed {allFiles.Length} Lua file(s) -> {options.OutputFile.FullName}");
+                Console.Error.WriteLine($"[sf-build] packed {bundle.ModuleKeys.Count} Lua file(s)");
             }
 
             return 0;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or InvalidOperationException)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
         }
         finally
         {
@@ -108,6 +94,72 @@ public sealed class LuaPacker
         }
     }
 
-    private static bool IsSamePath(string left, string right)
-        => string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+    private static IEnumerable<FileInfo> ResolveIncludeFiles(DirectoryInfo root, IReadOnlyList<string> includePaths)
+    {
+        foreach (var includePath in includePaths)
+        {
+            var path = Path.IsPathRooted(includePath)
+                ? includePath
+                : Path.Combine(root.FullName, includePath);
+            yield return new FileInfo(path);
+        }
+    }
+
+    private static async Task<int> WriteOutputAsync(PackOptions options, string bundle, CancellationToken cancellationToken)
+    {
+        if (options.OutputFile is null)
+        {
+            var outputFile = new FileInfo(Path.Combine(options.InputScript.Directory!.FullName, "bundle.lua"));
+            if (outputFile.Directory is { } outputDirectory)
+            {
+                outputDirectory.Create();
+            }
+
+            await File.WriteAllTextAsync(outputFile.FullName, bundle, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        var outputPath = options.OutputFile.FullName;
+        if (File.Exists(outputPath))
+        {
+            if (!IsW3xPath(outputPath))
+            {
+                Console.Error.WriteLine($"[sf-build] output file is not a .w3x map: {outputPath}");
+                return 2;
+            }
+
+            return await new MapInjector().InjectBundleAsync(outputPath, bundle, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (Directory.Exists(outputPath))
+        {
+            if (IsW3xPath(outputPath))
+            {
+                return await new MapInjector().InjectBundleAsync(outputPath, bundle, cancellationToken).ConfigureAwait(false);
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(outputPath, "bundle.lua"), bundle, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        if (IsW3xPath(outputPath))
+        {
+            Console.Error.WriteLine($"[sf-build] output .w3x target not found: {outputPath}");
+            return 2;
+        }
+
+        if (Path.HasExtension(outputPath))
+        {
+            Console.Error.WriteLine($"[sf-build] output file is not a .w3x map: {outputPath}");
+            return 2;
+        }
+
+        Directory.CreateDirectory(outputPath);
+        await File.WriteAllTextAsync(Path.Combine(outputPath, "bundle.lua"), bundle, cancellationToken).ConfigureAwait(false);
+        return 0;
+    }
+
+    private static bool IsW3xPath(string path)
+        => Path.GetExtension(path).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
+
 }
