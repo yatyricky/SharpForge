@@ -9,7 +9,7 @@
 - `assets/jass/` ships the JASS source for `sf-jassgen`
 
 ## Build
-- .NET 8 SDK (8.0.400). `TreatWarningsAsErrors`, single-file Exe.
+- .NET 10 SDK (10.0.202). Projects target `net8.0`. `TreatWarningsAsErrors`, single-file Exe.
 - Single-file publish needs `Basic.Reference.Assemblies.Net80` (1.7.9) — `typeof(object).Assembly.Location` triggers IL3000.
 
 ## Key packages

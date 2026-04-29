@@ -56,14 +56,17 @@ SharpForge/
 ├── tests/
 │   └── Transpiler.Tests/
 ├── samples/
-│   ├── Hello/        # smallest static-class example
-│   └── Class/        # namespace + instance class + ctor + interpolation (golden)
+│   ├── Samples.csproj # standalone C# project for editor IntelliSense
+│   ├── Hello.cs       # smallest static-class example
+│   └── Hero.cs        # namespace + instance class + ctor + interpolation sample
 └── SharpForge.sln
 ```
 
+`samples/` is intentionally not included in `SharpForge.sln`; open or build `samples/Samples.csproj` directly when editing sample scripts.
+
 ### Build
 
-Requires .NET 8 SDK (verified on 8.0.400).
+Requires .NET 10 SDK (verified on 10.0.202). Projects target `net8.0`.
 
 ```powershell
 dotnet build SharpForge.sln
