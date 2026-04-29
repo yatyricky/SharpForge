@@ -137,14 +137,35 @@ public sealed class IRLowering
                     }
                     break;
                 case PropertyDeclarationSyntax p:
-                    irType.Fields.Add(new IRField
+                    if (IsAutoProperty(p))
                     {
-                        Name = p.Identifier.ValueText,
-                        Initializer = p.Initializer is null
-                            ? LowerDefaultValue(p.Type)
-                            : LowerExpr(p.Initializer.Value, model),
-                        IsStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword),
-                    });
+                        irType.Fields.Add(new IRField
+                        {
+                            Name = p.Identifier.ValueText,
+                            Initializer = p.Initializer is null
+                                ? LowerDefaultValue(p.Type)
+                                : LowerExpr(p.Initializer.Value, model),
+                            IsStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword),
+                        });
+                    }
+                    else
+                    {
+                        irType.Methods.AddRange(LowerProperty(p, model, ct));
+                    }
+                    break;
+                case IndexerDeclarationSyntax indexer:
+                    irType.Methods.AddRange(LowerIndexer(indexer, model, ct));
+                    break;
+                case EventFieldDeclarationSyntax e:
+                    foreach (var v in e.Declaration.Variables)
+                    {
+                        irType.Fields.Add(new IRField
+                        {
+                            Name = v.Identifier.ValueText,
+                            Initializer = new IRLiteral(null, IRLiteralKind.Nil),
+                            IsStatic = e.Modifiers.Any(SyntaxKind.StaticKeyword),
+                        });
+                    }
                     break;
             }
         }
@@ -164,6 +185,10 @@ public sealed class IRLowering
 
         return irType;
     }
+
+    private static bool IsAutoProperty(PropertyDeclarationSyntax property)
+        => property.ExpressionBody is null
+           && property.AccessorList?.Accessors.All(a => a.Body is null && a.ExpressionBody is null) == true;
 
     private static IReadOnlyList<string> GetNamespaceSegments(INamespaceSymbol? ns)
     {
@@ -279,6 +304,94 @@ public sealed class IRLowering
         }
 
         return fn;
+    }
+
+    private IEnumerable<IRFunction> LowerProperty(PropertyDeclarationSyntax p, SemanticModel model, CancellationToken ct)
+    {
+        var isStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword);
+        if (p.ExpressionBody is { } expressionBody)
+        {
+            yield return new IRFunction
+            {
+                Name = "get_" + p.Identifier.ValueText,
+                LuaName = "get_" + p.Identifier.ValueText,
+                IsStatic = isStatic,
+                IsInstance = !isStatic,
+                Body = new IRBlock { Statements = { new IRReturn(LowerExpr(expressionBody.Expression, model)) } },
+            };
+            yield break;
+        }
+
+        foreach (var accessor in p.AccessorList?.Accessors ?? Enumerable.Empty<AccessorDeclarationSyntax>())
+        {
+            if (accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+            {
+                var fn = new IRFunction
+                {
+                    Name = "get_" + p.Identifier.ValueText,
+                    LuaName = "get_" + p.Identifier.ValueText,
+                    IsStatic = isStatic,
+                    IsInstance = !isStatic,
+                };
+                LowerAccessorBody(accessor, fn.Body, model, ct);
+                yield return fn;
+            }
+            else if (accessor.IsKind(SyntaxKind.SetAccessorDeclaration))
+            {
+                var fn = new IRFunction
+                {
+                    Name = "set_" + p.Identifier.ValueText,
+                    LuaName = "set_" + p.Identifier.ValueText,
+                    IsStatic = isStatic,
+                    IsInstance = !isStatic,
+                };
+                fn.Parameters.Add("value");
+                LowerAccessorBody(accessor, fn.Body, model, ct);
+                yield return fn;
+            }
+        }
+    }
+
+    private IEnumerable<IRFunction> LowerIndexer(IndexerDeclarationSyntax indexer, SemanticModel model, CancellationToken ct)
+    {
+        var isStatic = indexer.Modifiers.Any(SyntaxKind.StaticKeyword);
+        foreach (var accessor in indexer.AccessorList?.Accessors ?? Enumerable.Empty<AccessorDeclarationSyntax>())
+        {
+            var isGetter = accessor.IsKind(SyntaxKind.GetAccessorDeclaration);
+            var fn = new IRFunction
+            {
+                Name = isGetter ? "get_Item" : "set_Item",
+                LuaName = isGetter ? "get_Item" : "set_Item",
+                IsStatic = isStatic,
+                IsInstance = !isStatic,
+            };
+
+            foreach (var parameter in indexer.ParameterList.Parameters)
+            {
+                fn.Parameters.Add(parameter.Identifier.ValueText);
+            }
+            if (!isGetter)
+            {
+                fn.Parameters.Add("value");
+            }
+
+            LowerAccessorBody(accessor, fn.Body, model, ct);
+            yield return fn;
+        }
+    }
+
+    private void LowerAccessorBody(AccessorDeclarationSyntax accessor, IRBlock body, SemanticModel model, CancellationToken ct)
+    {
+        if (accessor.Body is { } block)
+        {
+            LowerStatements(block.Statements, body, model, ct);
+        }
+        else if (accessor.ExpressionBody is { } expressionBody)
+        {
+            body.Statements.Add(accessor.IsKind(SyntaxKind.GetAccessorDeclaration)
+                ? new IRReturn(LowerExpr(expressionBody.Expression, model))
+                : new IRExprStmt(LowerExpr(expressionBody.Expression, model)));
+        }
     }
 
     private IRFunction LowerOperator(OperatorDeclarationSyntax o, SemanticModel model, CancellationToken ct)
@@ -453,6 +566,11 @@ public sealed class IRLowering
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
     {
+        if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerAccessorAssignment(ae.Left, ae.Right, model) is { } accessorAssignment)
+        {
+            return accessorAssignment;
+        }
+
         var target = LowerExpr(ae.Left, model);
         var value = LowerExpr(ae.Right, model);
 
@@ -512,9 +630,26 @@ public sealed class IRLowering
                     return new IRLength(LowerExpr(ma.Expression, model));
                 }
 
+                if (TryLowerPropertyGet(ma, model) is { } propertyGet)
+                {
+                    return propertyGet;
+                }
+
                 return new IRMemberAccess(LowerExpr(ma.Expression, model), ma.Name.Identifier.ValueText);
 
             case ElementAccessExpressionSyntax elementAccess:
+                if (IsCollectionElementAccess(elementAccess, model))
+                {
+                    return new IRElementAccess(
+                        LowerExpr(elementAccess.Expression, model),
+                        LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
+                }
+
+                if (TryLowerIndexerGet(elementAccess, model) is { } indexerGet)
+                {
+                    return indexerGet;
+                }
+
                 return new IRElementAccess(
                     LowerExpr(elementAccess.Expression, model),
                     LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
@@ -568,6 +703,11 @@ public sealed class IRLowering
     private IRExpr LowerInvocation(InvocationExpressionSyntax inv, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        if (symbol is { MethodKind: MethodKind.DelegateInvoke })
+        {
+            return new IRInvocation(LowerExpr(inv.Expression, model), args);
+        }
+
         if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
         {
             return new IRInvocation(
@@ -672,9 +812,78 @@ public sealed class IRLowering
         return type is IArrayTypeSymbol || IsListType(type);
     }
 
+    private bool IsCollectionElementAccess(ElementAccessExpressionSyntax access, SemanticModel model)
+    {
+        var type = model.GetTypeInfo(access.Expression).Type;
+        return type is IArrayTypeSymbol || IsListType(type);
+    }
+
     private static bool IsListType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "List", ContainingNamespace: { } ns }
            && ns.ToDisplayString() == "System.Collections.Generic";
+
+    private IRStmt? TryLowerAccessorAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
+    {
+        if (left is IdentifierNameSyntax id && model.GetSymbolInfo(id).Symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
+        {
+            IRExpr target = property.IsStatic ? LowerTypeReference(property.ContainingType) : new IRIdentifier("self");
+            return new IRExprStmt(new IRInvocation(
+                new IRMemberAccess(target, "set_" + property.Name),
+                new[] { LowerExpr(right, model) },
+                UseColon: !property.IsStatic));
+        }
+
+        if (left is MemberAccessExpressionSyntax memberAccess && model.GetSymbolInfo(memberAccess).Symbol is IPropertySymbol memberProperty && !IsAutoPropertySymbol(memberProperty))
+        {
+            return new IRExprStmt(new IRInvocation(
+                new IRMemberAccess(LowerExpr(memberAccess.Expression, model), "set_" + memberProperty.Name),
+                new[] { LowerExpr(right, model) },
+                UseColon: !memberProperty.IsStatic));
+        }
+
+        if (left is ElementAccessExpressionSyntax elementAccess && model.GetSymbolInfo(elementAccess).Symbol is IPropertySymbol { IsIndexer: true } indexer)
+        {
+            var args = elementAccess.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).Append(LowerExpr(right, model)).ToArray();
+            return new IRExprStmt(new IRInvocation(
+                new IRMemberAccess(LowerExpr(elementAccess.Expression, model), "set_Item"),
+                args,
+                UseColon: !indexer.IsStatic));
+        }
+
+        return null;
+    }
+
+    private IRExpr? TryLowerPropertyGet(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol property || property.IsIndexer || IsAutoPropertySymbol(property))
+        {
+            return null;
+        }
+
+        return new IRInvocation(
+            new IRMemberAccess(LowerExpr(access.Expression, model), "get_" + property.Name),
+            Array.Empty<IRExpr>(),
+            UseColon: !property.IsStatic);
+    }
+
+    private IRExpr? TryLowerIndexerGet(ElementAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { IsIndexer: true } indexer)
+        {
+            return null;
+        }
+
+        return new IRInvocation(
+            new IRMemberAccess(LowerExpr(access.Expression, model), "get_Item"),
+            access.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray(),
+            UseColon: !indexer.IsStatic);
+    }
+
+    private static bool IsAutoPropertySymbol(IPropertySymbol property)
+        => property.DeclaringSyntaxReferences
+            .Select(r => r.GetSyntax())
+            .OfType<PropertyDeclarationSyntax>()
+            .Any(IsAutoProperty);
 
     /// <summary>
     /// Resolves bare identifiers via the semantic model. Instance fields/properties/
@@ -684,6 +893,15 @@ public sealed class IRLowering
     private IRExpr LowerIdentifier(IdentifierNameSyntax id, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(id).Symbol;
+        if (symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
+        {
+            IRExpr target = property.IsStatic ? LowerTypeReference(property.ContainingType) : new IRIdentifier("self");
+            return new IRInvocation(
+                new IRMemberAccess(target, "get_" + property.Name),
+                Array.Empty<IRExpr>(),
+                UseColon: !property.IsStatic);
+        }
+
         if (symbol is INamedTypeSymbol type)
         {
             return LowerTypeReference(type);

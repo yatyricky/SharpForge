@@ -561,6 +561,55 @@ public class EmitSmokeTests
         Assert.Contains("local c = SF__.Vector2.op_Addition(a, b)", lua);
     }
 
+    [Fact]
+    public async Task Computed_properties_indexers_delegates_and_events_emit_mvp_shapes()
+    {
+        var src = """
+            using System;
+
+            public class Bag
+            {
+                private int[] values = new[] { 1, 2 };
+                public int Total => values[0] + values[1];
+
+                public int this[int index]
+                {
+                    get { return values[index]; }
+                    set { values[index] = value; }
+                }
+            }
+
+            public static class Signals
+            {
+                public static event Action? Changed;
+
+                public static int Double(int value)
+                {
+                    return value * 2;
+                }
+
+                public static int Run()
+                {
+                    Func<int, int> fn = Double;
+                    var bag = new Bag();
+                    bag[0] = fn(3);
+                    return bag.Total + bag[0];
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Phase7.cs");
+
+        Assert.Contains("function SF__.Bag:get_Total()", lua);
+        Assert.Contains("function SF__.Bag:get_Item(index)", lua);
+        Assert.Contains("function SF__.Bag:set_Item(index, value)", lua);
+        Assert.Contains("values[(index + 1)] = value", lua);
+        Assert.Contains("SF__.Signals.Changed = nil", lua);
+        Assert.Contains("local fn = SF__.Signals.Double", lua);
+        Assert.Contains("bag:set_Item(0, fn(3))", lua);
+        Assert.Contains("return (bag:get_Total() + bag:get_Item(0))", lua);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
