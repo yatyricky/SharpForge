@@ -22,6 +22,7 @@ public sealed class LuaEmitter
     private bool _emitStringConcatHelper;
     private bool _emitDictionaryHelpers;
     private bool _emitListHelpers;
+    private bool _emitCoroutineHelpers;
 
     public LuaEmitter(string rootTable)
     {
@@ -42,6 +43,7 @@ public sealed class LuaEmitter
         _emitStringConcatHelper = UsesStringConcat(module);
         _emitDictionaryHelpers = UsesDictionaryHelpers(module);
         _emitListHelpers = UsesListHelpers(module);
+        _emitCoroutineHelpers = UsesCoroutineHelpers(module);
         _usedIdentifiers.Clear();
         CollectIdentifiers(module);
 
@@ -70,6 +72,10 @@ public sealed class LuaEmitter
             {
                 WriteStringConcatHelper();
             }
+            if (_emitCoroutineHelpers)
+            {
+                WriteCoroutineHelpers();
+            }
             if (_emitDictionaryHelpers)
             {
                 WriteDictionaryHelpers();
@@ -83,8 +89,7 @@ public sealed class LuaEmitter
 
     private void WriteRootTypeHelpers()
     {
-        EnsureModuleEmitted("Type__");
-        WriteLine($"function {_rootTable}.Type__.Is__(obj, target)");
+        WriteLine($"function {_rootTable}.TypeIs__(obj, target)");
         _indent++;
         WriteLine("if obj == nil then return false end");
         WriteLine("local type = obj.__sf_type");
@@ -100,9 +105,9 @@ public sealed class LuaEmitter
         WriteLine("end");
         _sb.Append('\n');
 
-        WriteLine($"function {_rootTable}.Type__.As__(obj, target)");
+        WriteLine($"function {_rootTable}.TypeAs__(obj, target)");
         _indent++;
-        WriteLine($"if {_rootTable}.Type__.Is__(obj, target) then return obj end");
+        WriteLine($"if {_rootTable}.TypeIs__(obj, target) then return obj end");
         WriteLine("return nil");
         _indent--;
         WriteLine("end");
@@ -111,8 +116,7 @@ public sealed class LuaEmitter
 
     private void WriteStringConcatHelper()
     {
-        EnsureModuleEmitted("Str__");
-        WriteLine($"function {_rootTable}.Str__.Concat__(...)");
+        WriteLine($"function {_rootTable}.StrConcat__(...)");
         _indent++;
         WriteLine("local result = \"\"");
         WriteLine("for i = 1, select(\"#\", ...) do");
@@ -131,39 +135,110 @@ public sealed class LuaEmitter
         _sb.Append('\n');
     }
 
+    private void WriteCoroutineHelpers()
+    {
+        WriteLine($"{_rootTable}.CorTimerPool__ = {_rootTable}.CorTimerPool__ or {{}}");
+        WriteLine($"{_rootTable}.CorTimerPoolSize__ = {_rootTable}.CorTimerPoolSize__ or 0");
+        WriteLine($"{_rootTable}.CorMaxTimerPoolSize__ = {_rootTable}.CorMaxTimerPoolSize__ or 256");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.CorAcquireTimer__()");
+        _indent++;
+        WriteLine($"local size = {_rootTable}.CorTimerPoolSize__");
+        WriteLine("if size > 0 then");
+        _indent++;
+        WriteLine($"local timer = {_rootTable}.CorTimerPool__[size]");
+        WriteLine($"{_rootTable}.CorTimerPool__[size] = nil");
+        WriteLine($"{_rootTable}.CorTimerPoolSize__ = size - 1");
+        WriteLine("return timer");
+        _indent--;
+        WriteLine("end");
+        WriteLine("return CreateTimer()");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.CorReleaseTimer__(timer)");
+        _indent++;
+        WriteLine("PauseTimer(timer)");
+        WriteLine($"local size = {_rootTable}.CorTimerPoolSize__");
+        WriteLine($"if size < {_rootTable}.CorMaxTimerPoolSize__ then");
+        _indent++;
+        WriteLine("size = size + 1");
+        WriteLine($"{_rootTable}.CorTimerPool__[size] = timer");
+        WriteLine($"{_rootTable}.CorTimerPoolSize__ = size");
+        _indent--;
+        WriteLine("else");
+        _indent++;
+        WriteLine("DestroyTimer(timer)");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.CorRun__(fn)");
+        _indent++;
+        WriteLine("local thread = coroutine.create(fn)");
+        WriteLine("local ok, err = coroutine.resume(thread)");
+        WriteLine("if not ok then error(err) end");
+        WriteLine("return thread");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.CorWait__(milliseconds)");
+        _indent++;
+        WriteLine("if milliseconds <= 0 then return end");
+        WriteLine("local thread = coroutine.running()");
+        WriteLine("if thread == nil then error(\"CorWait must be called from a coroutine\") end");
+        WriteLine("if coroutine.isyieldable ~= nil and not coroutine.isyieldable() then error(\"CorWait cannot yield from this context\") end");
+        WriteLine($"local timer = {_rootTable}.CorAcquireTimer__()");
+        WriteLine("TimerStart(timer, milliseconds / 1000, false, function()");
+        _indent++;
+        WriteLine("local ok, err = coroutine.resume(thread)");
+        WriteLine($"{_rootTable}.CorReleaseTimer__(timer)");
+        WriteLine("if not ok then error(err) end");
+        _indent--;
+        WriteLine("end)");
+        WriteLine("return coroutine.yield()");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
     private void WriteDictionaryHelpers()
     {
-        EnsureModuleEmitted("Dict__");
-        WriteLine($"{_rootTable}.Dict__.Nil__ = {_rootTable}.Dict__.Nil__ or {{}}");
-        WriteLine($"function {_rootTable}.Dict__.New__()");
+        WriteLine($"{_rootTable}.DictNil__ = {_rootTable}.DictNil__ or {{}}");
+        WriteLine($"function {_rootTable}.DictNew__()");
         _indent++;
         WriteLine("return { data = {}, keys = {} }");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
 
-        WriteLine($"function {_rootTable}.Dict__.Get__(dict, key)");
+        WriteLine($"function {_rootTable}.DictGet__(dict, key)");
         _indent++;
         WriteLine("local value = dict.data[key]");
-        WriteLine($"if value == {_rootTable}.Dict__.Nil__ then return nil end");
+        WriteLine($"if value == {_rootTable}.DictNil__ then return nil end");
         WriteLine("return value");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
 
-        WriteLine($"function {_rootTable}.Dict__.Set__(dict, key, value)");
+        WriteLine($"function {_rootTable}.DictSet__(dict, key, value)");
         _indent++;
         WriteLine("if dict.data[key] == nil then");
         _indent++;
         WriteLine("table.insert(dict.keys, key)");
         _indent--;
         WriteLine("end");
-        WriteLine($"dict.data[key] = value == nil and {_rootTable}.Dict__.Nil__ or value");
+        WriteLine($"dict.data[key] = value == nil and {_rootTable}.DictNil__ or value");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
 
-        WriteLine($"function {_rootTable}.Dict__.Remove__(dict, key)");
+        WriteLine($"function {_rootTable}.DictRemove__(dict, key)");
         _indent++;
         WriteLine("if dict.data[key] ~= nil then");
         _indent++;
@@ -186,7 +261,7 @@ public sealed class LuaEmitter
         WriteLine("end");
         _sb.Append('\n');
 
-        WriteLine($"function {_rootTable}.Dict__.Iterate__(dict)");
+        WriteLine($"function {_rootTable}.DictIterate__(dict)");
         _indent++;
         WriteLine("local i = 0");
         WriteLine("return function()");
@@ -196,7 +271,7 @@ public sealed class LuaEmitter
         WriteLine("if key ~= nil then");
         _indent++;
         WriteLine("local value = dict.data[key]");
-        WriteLine($"if value == {_rootTable}.Dict__.Nil__ then value = nil end");
+        WriteLine($"if value == {_rootTable}.DictNil__ then value = nil end");
         WriteLine("return key, value");
         _indent--;
         WriteLine("end");
@@ -209,8 +284,7 @@ public sealed class LuaEmitter
 
     private void WriteListHelpers()
     {
-        EnsureModuleEmitted("List__");
-        WriteLine($"function {_rootTable}.List__.Sort__(list, less)");
+        WriteLine($"function {_rootTable}.ListSort__(list, less)");
         _indent++;
         WriteLine("local compare = less or function(a, b) return a < b end");
         WriteLine("for i = 2, #list do");
@@ -323,7 +397,18 @@ public sealed class LuaEmitter
         WriteLine($"function {typePath}{sep}{m.LuaName}({paramList})");
         _indent++;
 
-        EmitBlock(m.Body);
+        if (m.IsCoroutine)
+        {
+            WriteLine($"return {_rootTable}.CorRun__(function()");
+            _indent++;
+            EmitBlock(m.Body);
+            _indent--;
+            WriteLine("end)");
+        }
+        else
+        {
+            EmitBlock(m.Body);
+        }
 
         _indent--;
         WriteLine("end");
@@ -594,7 +679,7 @@ public sealed class LuaEmitter
         _sb.Append("local ").Append(dictionaryName).Append(" = ");
         EmitExpr(f.Dictionary);
         _sb.Append('\n');
-        WriteLine($"for {f.KeyName}, {f.ValueName} in {_rootTable}.Dict__.Iterate__({dictionaryName}) do");
+        WriteLine($"for {f.KeyName}, {f.ValueName} in {_rootTable}.DictIterate__({dictionaryName}) do");
         _indent++;
         if (f.ItemName is not null)
         {
@@ -707,7 +792,7 @@ public sealed class LuaEmitter
                 _sb.Append("{}");
                 break;
             case IRStringConcat concat:
-                _sb.Append(_rootTable).Append(".Str__.Concat__(");
+                _sb.Append(_rootTable).Append(".StrConcat__(");
                 for (int i = 0; i < concat.Parts.Count; i++)
                 {
                     if (i > 0)
@@ -719,17 +804,17 @@ public sealed class LuaEmitter
                 _sb.Append(')');
                 break;
             case IRDictionaryNew:
-                _sb.Append(_rootTable).Append(".Dict__.New__()");
+                _sb.Append(_rootTable).Append(".DictNew__()");
                 break;
             case IRDictionaryGet dictionaryGet:
-                _sb.Append(_rootTable).Append(".Dict__.Get__(");
+                _sb.Append(_rootTable).Append(".DictGet__(");
                 EmitExpr(dictionaryGet.Table);
                 _sb.Append(", ");
                 EmitExpr(dictionaryGet.Key);
                 _sb.Append(')');
                 break;
             case IRDictionarySet dictionarySet:
-                _sb.Append(_rootTable).Append(".Dict__.Set__(");
+                _sb.Append(_rootTable).Append(".DictSet__(");
                 EmitExpr(dictionarySet.Table);
                 _sb.Append(", ");
                 EmitExpr(dictionarySet.Key);
@@ -738,19 +823,31 @@ public sealed class LuaEmitter
                 _sb.Append(')');
                 break;
             case IRDictionaryRemove dictionaryRemove:
-                _sb.Append(_rootTable).Append(".Dict__.Remove__(");
+                _sb.Append(_rootTable).Append(".DictRemove__(");
                 EmitExpr(dictionaryRemove.Table);
                 _sb.Append(", ");
                 EmitExpr(dictionaryRemove.Key);
                 _sb.Append(')');
                 break;
             case IRListSort listSort:
-                _sb.Append(_rootTable).Append(".List__.Sort__(");
+                _sb.Append(_rootTable).Append(".ListSort__(");
                 EmitExpr(listSort.List);
                 if (listSort.Comparer is not null)
                 {
                     _sb.Append(", ");
                     EmitExpr(listSort.Comparer);
+                }
+                _sb.Append(')');
+                break;
+            case IRRuntimeInvocation runtimeInvocation:
+                _sb.Append(_rootTable).Append('.').Append(runtimeInvocation.Name).Append('(');
+                for (int i = 0; i < runtimeInvocation.Arguments.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    EmitExpr(runtimeInvocation.Arguments[i]);
                 }
                 _sb.Append(')');
                 break;
@@ -769,12 +866,12 @@ public sealed class LuaEmitter
                 _sb.Append(')');
                 break;
             case IRIs isExpr:
-                _sb.Append(_rootTable).Append(".Type__.Is__(");
+                _sb.Append(_rootTable).Append(".TypeIs__(");
                 EmitExpr(isExpr.Value);
                 _sb.Append(", ").Append(FormatTypeReference(isExpr.Type)).Append(')');
                 break;
             case IRAs asExpr:
-                _sb.Append(_rootTable).Append(".Type__.As__(");
+                _sb.Append(_rootTable).Append(".TypeAs__(");
                 EmitExpr(asExpr.Value);
                 _sb.Append(", ").Append(FormatTypeReference(asExpr.Type)).Append(')');
                 break;
@@ -832,6 +929,9 @@ public sealed class LuaEmitter
     private static bool UsesListHelpers(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesListHelpers(m.Body));
 
+    private static bool UsesCoroutineHelpers(IRModule module)
+        => module.Types.SelectMany(t => t.Methods).Any(m => m.IsCoroutine || BlockUsesCoroutineHelpers(m.Body));
+
     private static bool BlockUsesTypeChecks(IRBlock block)
         => block.Statements.Any(StmtUsesTypeChecks);
 
@@ -843,6 +943,9 @@ public sealed class LuaEmitter
 
     private static bool BlockUsesListHelpers(IRBlock block)
         => block.Statements.Any(StmtUsesListHelpers);
+
+    private static bool BlockUsesCoroutineHelpers(IRBlock block)
+        => block.Statements.Any(StmtUsesCoroutineHelpers);
 
     private static bool StmtUsesTypeChecks(IRStmt stmt)
         => stmt switch
@@ -916,6 +1019,30 @@ public sealed class LuaEmitter
             _ => false,
         };
 
+    private static bool StmtUsesCoroutineHelpers(IRStmt stmt)
+        => stmt switch
+        {
+            IRBlock block => BlockUsesCoroutineHelpers(block),
+            IRLocalDecl local => local.Initializer is not null && ExprUsesCoroutineHelpers(local.Initializer),
+            IRAssign assign => ExprUsesCoroutineHelpers(assign.Target) || ExprUsesCoroutineHelpers(assign.Value),
+            IRExprStmt exprStmt => ExprUsesCoroutineHelpers(exprStmt.Expression),
+            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesCoroutineHelpers),
+            IRReturn ret => ret.Value is not null && ExprUsesCoroutineHelpers(ret.Value),
+            IRIf iff => ExprUsesCoroutineHelpers(iff.Condition) || BlockUsesCoroutineHelpers(iff.Then) || (iff.Else is not null && BlockUsesCoroutineHelpers(iff.Else)),
+            IRWhile wh => ExprUsesCoroutineHelpers(wh.Condition) || BlockUsesCoroutineHelpers(wh.Body),
+            IRFor fr => (fr.Initializer is not null && StmtUsesCoroutineHelpers(fr.Initializer))
+                || (fr.Condition is not null && ExprUsesCoroutineHelpers(fr.Condition))
+                || fr.Incrementors.Any(StmtUsesCoroutineHelpers)
+                || BlockUsesCoroutineHelpers(fr.Body),
+            IRForEach fe => ExprUsesCoroutineHelpers(fe.Collection) || BlockUsesCoroutineHelpers(fe.Body),
+            IRDictionaryForEach fe => ExprUsesCoroutineHelpers(fe.Dictionary) || BlockUsesCoroutineHelpers(fe.Body),
+            IRTry tr => BlockUsesCoroutineHelpers(tr.Try)
+                || (tr.Catch is not null && BlockUsesCoroutineHelpers(tr.Catch))
+                || (tr.Finally is not null && BlockUsesCoroutineHelpers(tr.Finally)),
+            IRThrow th => th.Value is not null && ExprUsesCoroutineHelpers(th.Value),
+            _ => false,
+        };
+
     private static bool StmtUsesStringConcat(IRStmt stmt)
         => stmt switch
         {
@@ -956,6 +1083,7 @@ public sealed class LuaEmitter
             IRDictionarySet dictionarySet => ExprUsesTypeChecks(dictionarySet.Table) || ExprUsesTypeChecks(dictionarySet.Key) || ExprUsesTypeChecks(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesTypeChecks(dictionaryRemove.Table) || ExprUsesTypeChecks(dictionaryRemove.Key),
             IRListSort listSort => ExprUsesTypeChecks(listSort.List) || (listSort.Comparer is not null && ExprUsesTypeChecks(listSort.Comparer)),
+            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
             IRUnary unary => ExprUsesTypeChecks(unary.Operand),
             _ => false,
@@ -970,6 +1098,7 @@ public sealed class LuaEmitter
             IRDictionarySet dictionarySet => ExprUsesStringConcat(dictionarySet.Table) || ExprUsesStringConcat(dictionarySet.Key) || ExprUsesStringConcat(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesStringConcat(dictionaryRemove.Table) || ExprUsesStringConcat(dictionaryRemove.Key),
             IRListSort listSort => ExprUsesStringConcat(listSort.List) || (listSort.Comparer is not null && ExprUsesStringConcat(listSort.Comparer)),
+            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesStringConcat),
             IRMemberAccess member => ExprUsesStringConcat(member.Target),
             IRElementAccess element => ExprUsesStringConcat(element.Target) || ExprUsesStringConcat(element.Index),
             IRLength length => ExprUsesStringConcat(length.Target),
@@ -989,6 +1118,7 @@ public sealed class LuaEmitter
             IRDictionaryGet or IRDictionarySet or IRDictionaryRemove => true,
             IRDictionaryNew => true,
             IRListSort listSort => ExprUsesDictionaryHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesDictionaryHelpers(listSort.Comparer)),
+            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesDictionaryHelpers),
             IRMemberAccess member => ExprUsesDictionaryHelpers(member.Target),
             IRElementAccess element => ExprUsesDictionaryHelpers(element.Target) || ExprUsesDictionaryHelpers(element.Index),
             IRLength length => ExprUsesDictionaryHelpers(length.Target),
@@ -1017,10 +1147,34 @@ public sealed class LuaEmitter
             IRDictionaryGet dictionaryGet => ExprUsesListHelpers(dictionaryGet.Table) || ExprUsesListHelpers(dictionaryGet.Key),
             IRDictionarySet dictionarySet => ExprUsesListHelpers(dictionarySet.Table) || ExprUsesListHelpers(dictionarySet.Key) || ExprUsesListHelpers(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesListHelpers(dictionaryRemove.Table) || ExprUsesListHelpers(dictionaryRemove.Key),
+            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesListHelpers),
             IRBinary binary => ExprUsesListHelpers(binary.Left) || ExprUsesListHelpers(binary.Right),
             IRUnary unary => ExprUsesListHelpers(unary.Operand),
             IRIs isExpr => ExprUsesListHelpers(isExpr.Value),
             IRAs asExpr => ExprUsesListHelpers(asExpr.Value),
+            _ => false,
+        };
+
+    private static bool ExprUsesCoroutineHelpers(IRExpr expr)
+        => expr switch
+        {
+            IRRuntimeInvocation { Name: "CorWait__" } => true,
+            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesCoroutineHelpers),
+            IRMemberAccess member => ExprUsesCoroutineHelpers(member.Target),
+            IRElementAccess element => ExprUsesCoroutineHelpers(element.Target) || ExprUsesCoroutineHelpers(element.Index),
+            IRLength length => ExprUsesCoroutineHelpers(length.Target),
+            IRInvocation invocation => ExprUsesCoroutineHelpers(invocation.Callee) || invocation.Arguments.Any(ExprUsesCoroutineHelpers),
+            IRArrayLiteral array => array.Items.Any(ExprUsesCoroutineHelpers),
+            IRArrayNew arrayNew => ExprUsesCoroutineHelpers(arrayNew.Size),
+            IRStringConcat concat => concat.Parts.Any(ExprUsesCoroutineHelpers),
+            IRDictionaryGet dictionaryGet => ExprUsesCoroutineHelpers(dictionaryGet.Table) || ExprUsesCoroutineHelpers(dictionaryGet.Key),
+            IRDictionarySet dictionarySet => ExprUsesCoroutineHelpers(dictionarySet.Table) || ExprUsesCoroutineHelpers(dictionarySet.Key) || ExprUsesCoroutineHelpers(dictionarySet.Value),
+            IRDictionaryRemove dictionaryRemove => ExprUsesCoroutineHelpers(dictionaryRemove.Table) || ExprUsesCoroutineHelpers(dictionaryRemove.Key),
+            IRListSort listSort => ExprUsesCoroutineHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesCoroutineHelpers(listSort.Comparer)),
+            IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
+            IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
+            IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value),
+            IRAs asExpr => ExprUsesCoroutineHelpers(asExpr.Value),
             _ => false,
         };
 
@@ -1153,6 +1307,9 @@ public sealed class LuaEmitter
             case IRListSort listSort:
                 CollectIdentifiers(listSort.List);
                 if (listSort.Comparer is not null) CollectIdentifiers(listSort.Comparer);
+                break;
+            case IRRuntimeInvocation runtimeInvocation:
+                foreach (var argument in runtimeInvocation.Arguments) CollectIdentifiers(argument);
                 break;
             case IRBinary binary:
                 CollectIdentifiers(binary.Left);

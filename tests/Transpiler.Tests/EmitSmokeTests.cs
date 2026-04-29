@@ -116,12 +116,39 @@ public class EmitSmokeTests
 
         var lua = await TranspileSourceAsync(src, "Strings.cs");
 
-        Assert.Contains("function SF__.Str__.Concat__(...)", lua);
+        Assert.Contains("function SF__.StrConcat__(...)", lua);
         Assert.Contains("if part ~= nil then", lua);
-        Assert.Contains("return SF__.Str__.Concat__(name, \" - HP: \", hp)", lua);
-        Assert.Contains("return SF__.Str__.Concat__(prefix, \":\", value)", lua);
+        Assert.Contains("return SF__.StrConcat__(name, \" - HP: \", hp)", lua);
+        Assert.Contains("return SF__.StrConcat__(prefix, \":\", value)", lua);
         Assert.DoesNotContain("return ((name ..", lua);
         Assert.DoesNotContain("return ((prefix ..", lua);
+    }
+
+    [Fact]
+    public async Task Task_delay_emits_coroutine_timer_runtime_call()
+    {
+        var src = """
+            using System.Threading.Tasks;
+
+            public static class AsyncDemo
+            {
+                public static async Task Tick()
+                {
+                    await Task.Delay(1000);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "AsyncDemo.cs");
+
+        Assert.Contains("SF__.CorTimerPool__ = SF__.CorTimerPool__ or {}", lua);
+        Assert.Contains("function SF__.CorAcquireTimer__()", lua);
+        Assert.Contains("function SF__.CorReleaseTimer__(timer)", lua);
+        Assert.Contains("TimerStart(timer, milliseconds / 1000, false, function()", lua);
+        Assert.Contains("DestroyTimer(timer)", lua);
+        Assert.Contains("return SF__.CorRun__(function()", lua);
+        Assert.Contains("SF__.CorWait__(1000)", lua);
+        Assert.DoesNotContain("Task.Delay", lua);
     }
 
     [Fact]
@@ -496,14 +523,14 @@ public class EmitSmokeTests
 
         var lua = await TranspileSourceAsync(src, "Interfaces.cs");
 
-        Assert.Contains("function SF__.Type__.Is__(obj, target)", lua);
-        Assert.Contains("function SF__.Type__.As__(obj, target)", lua);
+        Assert.Contains("function SF__.TypeIs__(obj, target)", lua);
+        Assert.Contains("function SF__.TypeAs__(obj, target)", lua);
         Assert.Contains("-- Game.INamed", lua);
         Assert.Contains("SF__.Game.Unit.__sf_interfaces = {[SF__.Game.INamed] = true}", lua);
         Assert.Contains("self.__sf_type = SF__.Game.Hero", lua);
-        Assert.Contains("return SF__.Type__.Is__(value, SF__.Game.INamed)", lua);
-        Assert.Matches(@"local named\d* = SF__\.Type__\.As__\(value\d*, SF__\.Game\.INamed\)", lua);
-        Assert.Contains("return SF__.Type__.Is__(hero, SF__.Game.INamed)", lua);
+        Assert.Contains("return SF__.TypeIs__(value, SF__.Game.INamed)", lua);
+        Assert.Matches(@"local named\d* = SF__\.TypeAs__\(value\d*, SF__\.Game\.INamed\)", lua);
+        Assert.Contains("return SF__.TypeIs__(hero, SF__.Game.INamed)", lua);
     }
 
     [Fact]
@@ -618,32 +645,32 @@ public class EmitSmokeTests
 
         var lua = await TranspileSourceAsync(src, "SharpLibCollections.cs");
 
-        Assert.Contains("function SF__.Dict__.New__()", lua);
-        Assert.Contains("function SF__.Dict__.Get__(dict, key)", lua);
-        Assert.Contains("function SF__.Dict__.Set__(dict, key, value)", lua);
-        Assert.Contains("function SF__.Dict__.Remove__(dict, key)", lua);
-        Assert.Contains("function SF__.Dict__.Iterate__(dict)", lua);
-        Assert.Contains("SF__.Dict__.Nil__ = SF__.Dict__.Nil__ or {}", lua);
+        Assert.Contains("function SF__.DictNew__()", lua);
+        Assert.Contains("function SF__.DictGet__(dict, key)", lua);
+        Assert.Contains("function SF__.DictSet__(dict, key, value)", lua);
+        Assert.Contains("function SF__.DictRemove__(dict, key)", lua);
+        Assert.Contains("function SF__.DictIterate__(dict)", lua);
+        Assert.Contains("SF__.DictNil__ = SF__.DictNil__ or {}", lua);
         Assert.Contains("return { data = {}, keys = {} }", lua);
         Assert.Contains("local value = dict.data[key]", lua);
-        Assert.Contains("if value == SF__.Dict__.Nil__ then return nil end", lua);
+        Assert.Contains("if value == SF__.DictNil__ then return nil end", lua);
         Assert.Contains("table.insert(dict.keys, key)", lua);
         Assert.DoesNotContain("keySet", lua);
         Assert.Contains("local values = {}", lua);
         Assert.Contains("table.insert(values, 1)", lua);
-        Assert.Contains("function SF__.List__.Sort__(list, less)", lua);
+        Assert.Contains("function SF__.ListSort__(list, less)", lua);
         Assert.Contains("while j >= 1 and compare(value, list[j]) do", lua);
-        Assert.Contains("SF__.List__.Sort__(values)", lua);
-        Assert.Contains("local KW__table = SF__.Dict__.New__()", lua);
-        Assert.Contains("SF__.Dict__.Set__(KW__table, \"key\", 1)", lua);
-        Assert.Contains("SF__.Dict__.Set__(KW__table, \"k2\", 2)", lua);
-        Assert.Contains("local value = SF__.Dict__.Get__(KW__table, \"key\")", lua);
-        Assert.Contains("SF__.Dict__.Set__(nullable, \"gone\", nil)", lua);
-        Assert.Contains("SF__.Dict__.Remove__(nullable, \"gone\")", lua);
-        Assert.Contains("in SF__.Dict__.Iterate__(dict)", lua);
-        Assert.Contains("for kv__Key, kv__Value in SF__.Dict__.Iterate__(dict) do", lua);
+        Assert.Contains("SF__.ListSort__(values)", lua);
+        Assert.Contains("local KW__table = SF__.DictNew__()", lua);
+        Assert.Contains("SF__.DictSet__(KW__table, \"key\", 1)", lua);
+        Assert.Contains("SF__.DictSet__(KW__table, \"k2\", 2)", lua);
+        Assert.Contains("local value = SF__.DictGet__(KW__table, \"key\")", lua);
+        Assert.Contains("SF__.DictSet__(nullable, \"gone\", nil)", lua);
+        Assert.Contains("SF__.DictRemove__(nullable, \"gone\")", lua);
+        Assert.Contains("in SF__.DictIterate__(dict)", lua);
+        Assert.Contains("for kv__Key, kv__Value in SF__.DictIterate__(dict) do", lua);
         Assert.DoesNotContain("local kv = {", lua);
-        Assert.Contains("local text = SF__.Str__.Concat__(kv__Key, \" = \", kv__Value)", lua);
+        Assert.Contains("local text = SF__.StrConcat__(kv__Key, \" = \", kv__Value)", lua);
         Assert.DoesNotContain("-- SharpLib.List", lua);
         Assert.DoesNotContain("-- SharpLib.Dictionary", lua);
     }

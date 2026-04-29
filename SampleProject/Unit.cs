@@ -13,13 +13,39 @@ public class Unit
         HP = hp;
     }
 
+    private void Update()
+    {
+        BJDebugMsg("Tick");
+    }
+
+    private async Task TheExcitingPart()
+    {
+        while (true)
+        {
+            await Task.Delay(1000);
+            Update();
+        }
+    }
+
     public virtual void LevelUp()
     {
         BJDebugMsg("Level Up!");
 
         var messages = new SharpLib.List<string>();
         messages.Add("You have leveled up!");
-        BJDebugMsg(messages[0]);
+        foreach (var message in messages)
+        {
+            BJDebugMsg(message);
+        }
+
+        for (int i = 0; i < messages.Count;)
+        {
+            BJDebugMsg(messages[i]);
+            if (i < 10)
+            {
+                i++;
+            }
+        }
 
         var dict = new Dictionary<string, int>();
         dict["Level"] = 2;
@@ -27,7 +53,9 @@ public class Unit
         BJDebugMsg($"Level: {dict["Level"]}, HP: {dict["HP"]}");
         foreach (var p in dict)
         {
+            var pair = p;
             BJDebugMsg($"{p.Key}: {p.Value}");
+            var keyValue = pair.Key;
         }
     }
 

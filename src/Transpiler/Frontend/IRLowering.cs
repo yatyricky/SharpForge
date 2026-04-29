@@ -305,6 +305,7 @@ public sealed class IRLowering
             LuaName = symbol is null ? m.Identifier.ValueText : GetLuaMethodName(symbol),
             IsStatic = isStatic,
             IsInstance = !isStatic,
+            IsCoroutine = m.Modifiers.Any(SyntaxKind.AsyncKeyword) && ContainsTaskDelay(m, model),
         };
 
         foreach (var p in m.ParameterList.Parameters)
@@ -792,6 +793,11 @@ public sealed class IRLowering
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
         }
 
+        if (symbol is not null && IsTaskDelay(symbol))
+        {
+            return new IRRuntimeInvocation("CorWait__", args);
+        }
+
         if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
         {
             return new IRInvocation(
@@ -938,6 +944,16 @@ public sealed class IRLowering
     private static bool IsSharpLibKeyValueType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "KeyValue", ContainingNamespace: { } ns }
            && IsSharpLibNamespace(ns);
+
+    private static bool IsTaskDelay(IMethodSymbol symbol)
+        => symbol is { Name: "Delay", IsStatic: true, ContainingType: { Name: "Task", ContainingNamespace: { } ns } }
+           && (IsSharpLibNamespace(ns) || ns.ToDisplayString() == "System.Threading.Tasks");
+
+    private static bool ContainsTaskDelay(SyntaxNode node, SemanticModel model)
+        => node.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Select(invocation => model.GetSymbolInfo(invocation).Symbol as IMethodSymbol)
+            .Any(symbol => symbol is not null && IsTaskDelay(symbol));
 
     private static bool IsSharpLibType(INamedTypeSymbol symbol)
         => symbol.ContainingNamespace.ToDisplayString().StartsWith("SharpLib", StringComparison.Ordinal);

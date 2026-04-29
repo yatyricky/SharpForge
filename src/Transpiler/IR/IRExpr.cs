@@ -30,6 +30,7 @@ public sealed record IRDictionaryGet(IRExpr Table, IRExpr Key) : IRExpr;
 public sealed record IRDictionarySet(IRExpr Table, IRExpr Key, IRExpr Value) : IRExpr;
 public sealed record IRDictionaryRemove(IRExpr Table, IRExpr Key) : IRExpr;
 public sealed record IRListSort(IRExpr List, IRExpr? Comparer) : IRExpr;
+public sealed record IRRuntimeInvocation(string Name, IReadOnlyList<IRExpr> Arguments) : IRExpr;
 public sealed record IRBinary(string Op, IRExpr Left, IRExpr Right) : IRExpr;
 public sealed record IRUnary(string Op, IRExpr Operand) : IRExpr;
 public sealed record IRIs(IRExpr Value, IRTypeReference Type) : IRExpr;

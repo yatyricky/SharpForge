@@ -87,8 +87,8 @@ public class ClassSampleTests
     public async Task Interpolated_string_uses_nil_safe_concat_polyfill()
     {
         var lua = await TranspileSampleAsync();
-        Assert.Contains("function SF__.Str__.Concat__(...)", lua);
-        Assert.Contains("return SF__.Str__.Concat__(self.Name, \" - HP: \", self.HP)", lua);
+        Assert.Contains("function SF__.StrConcat__(...)", lua);
+        Assert.Contains("return SF__.StrConcat__(self.Name, \" - HP: \", self.HP)", lua);
         Assert.DoesNotContain("return ((self.Name ..", lua);
     }
 

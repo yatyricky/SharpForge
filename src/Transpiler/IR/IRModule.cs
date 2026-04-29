@@ -66,4 +66,6 @@ public sealed class IRFunction
     public bool IsConstructor { get; init; }
 
     public bool IsStaticConstructor { get; init; }
+
+    public bool IsCoroutine { get; init; }
 }
