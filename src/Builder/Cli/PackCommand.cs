@@ -22,6 +22,15 @@ internal static class PackCommand
             IsRequired = true,
         };
 
+        var csharpInputOpt = new Option<DirectoryInfo?>(
+            aliases: ["--csharp"],
+            description: "Optional C# source directory to transpile before packing Lua files.");
+
+        var rootTableOpt = new Option<string>(
+            aliases: ["--root-table", "-r"],
+            getDefaultValue: () => SharpForge.Transpiler.Pipeline.TranspileOptions.DefaultRootTable,
+            description: "Top-level Lua table for transpiled C# when --csharp is used.");
+
         var verboseOpt = new Option<bool>(
             aliases: ["--verbose", "-v"],
             description: "Enable verbose diagnostics output.");
@@ -30,16 +39,18 @@ internal static class PackCommand
         {
             inputArg,
             outputOpt,
+            csharpInputOpt,
+            rootTableOpt,
             verboseOpt,
         };
 
-        cmd.SetHandler(async (input, output, verbose) =>
+        cmd.SetHandler(async (input, output, csharpInput, rootTable, verbose) =>
         {
             var packer = new LuaPacker();
             Environment.ExitCode = await packer.RunAsync(
-                new PackOptions(input, output, verbose),
+                new PackOptions(input, output, csharpInput, rootTable, verbose),
                 CancellationToken.None);
-        }, inputArg, outputOpt, verboseOpt);
+        }, inputArg, outputOpt, csharpInputOpt, rootTableOpt, verboseOpt);
 
         return cmd;
     }

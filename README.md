@@ -144,6 +144,11 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
                          [--root-table SF__]
                          [--define SYMBOL]...
                          [--verbose]
+
+sf-build pack <lua-dir> --output <bundle.lua>
+                         [--csharp <cs-dir>]      # transpile C# first, then bundle
+                         [--root-table SF__]
+                         [--verbose]
 ```
 
 #### Currently implemented (lowering & emit)
@@ -175,6 +180,7 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 | Event declarations                 | ✅     | Field-like event backing for current MVP                  |
 | Async/iterator MVP                 | ✅     | Synchronous `await`; simple `yield return` table materialization |
 | Type-check helper optimization     | ✅     | Emits `is` / `as` helpers only when needed                |
+| Toolchain pack integration         | ✅     | `sf-build pack` bundles Lua and optional transpiled C#     |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ⏳     | Planned                                                  |
