@@ -296,6 +296,12 @@ public sealed class IRLowering
             case ForStatementSyntax fs:
                 return LowerFor(fs, model, ct);
 
+            case TryStatementSyntax ts:
+                return LowerTry(ts, model, ct);
+
+            case ThrowStatementSyntax throwStatement:
+                return new IRThrow(throwStatement.Expression is null ? null : LowerExpr(throwStatement.Expression, model));
+
             case ExpressionStatementSyntax es when es.Expression is AssignmentExpressionSyntax ae:
                 return LowerAssignment(ae, model);
 
@@ -364,6 +370,36 @@ public sealed class IRLowering
             _ when IsIncrementOrDecrement(expression) => LowerIncrementOrDecrement(expression, model),
             _ => new IRExprStmt(LowerExpr(expression, model)),
         };
+
+    private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
+    {
+        if (ts.Catches.Count > 1)
+        {
+            AddUnsupportedDiagnostic(ts.Catches[1], "catch");
+        }
+
+        var tryBlock = new IRBlock();
+        LowerStatements(ts.Block.Statements, tryBlock, model, ct);
+
+        IRBlock? catchBlock = null;
+        string? catchVariable = null;
+        if (ts.Catches.Count > 0)
+        {
+            var catchClause = ts.Catches[0];
+            catchVariable = catchClause.Declaration?.Identifier.ValueText;
+            catchBlock = new IRBlock();
+            LowerStatements(catchClause.Block.Statements, catchBlock, model, ct);
+        }
+
+        IRBlock? finallyBlock = null;
+        if (ts.Finally is { } finallyClause)
+        {
+            finallyBlock = new IRBlock();
+            LowerStatements(finallyClause.Block.Statements, finallyBlock, model, ct);
+        }
+
+        return new IRTry(tryBlock, catchVariable, catchBlock, finallyBlock);
+    }
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
     {

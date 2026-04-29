@@ -251,6 +251,22 @@ public sealed class LuaEmitter
             case IRFor f:
                 EmitFor(f);
                 break;
+            case IRTry t:
+                EmitTry(t);
+                break;
+            case IRThrow t:
+                WriteIndent();
+                _sb.Append("error(");
+                if (t.Value is null)
+                {
+                    _sb.Append("nil");
+                }
+                else
+                {
+                    EmitExpr(t.Value);
+                }
+                _sb.Append(")\n");
+                break;
             case IRBreak:
                 WriteLine("break");
                 break;
@@ -332,6 +348,42 @@ public sealed class LuaEmitter
         }
         _indent--;
         WriteLine("end");
+
+        _indent--;
+        WriteLine("end");
+    }
+
+    private void EmitTry(IRTry t)
+    {
+        WriteLine("do");
+        _indent++;
+        WriteLine("local __sf_ok, __sf_err = pcall(function()");
+        _indent++;
+        EmitBlock(t.Try);
+        _indent--;
+        WriteLine("end)");
+
+        if (t.Catch is not null)
+        {
+            WriteLine("if not __sf_ok then");
+            _indent++;
+            if (!string.IsNullOrEmpty(t.CatchVariable))
+            {
+                WriteLine($"local {t.CatchVariable} = __sf_err");
+            }
+            EmitBlock(t.Catch);
+            _indent--;
+            WriteLine("end");
+        }
+        else
+        {
+            WriteLine("if not __sf_ok then error(__sf_err) end");
+        }
+
+        if (t.Finally is not null)
+        {
+            EmitBlock(t.Finally);
+        }
 
         _indent--;
         WriteLine("end");
