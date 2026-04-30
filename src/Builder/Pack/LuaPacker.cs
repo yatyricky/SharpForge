@@ -122,6 +122,11 @@ public sealed class LuaPacker
         var outputPath = options.OutputFile.FullName;
         if (File.Exists(outputPath))
         {
+            if (IsWar3MapLuaPath(outputPath))
+            {
+                return await new MapInjector().InjectBundleAsync(outputPath, bundle, cancellationToken).ConfigureAwait(false);
+            }
+
             if (!IsW3xPath(outputPath))
             {
                 Console.Error.WriteLine($"[sf-build] output file is not a .w3x map: {outputPath}");
@@ -148,6 +153,11 @@ public sealed class LuaPacker
             return 2;
         }
 
+        if (IsWar3MapLuaPath(outputPath))
+        {
+            return await new MapInjector().InjectBundleAsync(outputPath, bundle, cancellationToken).ConfigureAwait(false);
+        }
+
         if (Path.HasExtension(outputPath))
         {
             Console.Error.WriteLine($"[sf-build] output file is not a .w3x map: {outputPath}");
@@ -161,5 +171,8 @@ public sealed class LuaPacker
 
     private static bool IsW3xPath(string path)
         => Path.GetExtension(path).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsWar3MapLuaPath(string path)
+        => Path.GetFileName(path).Equals("war3map.lua", StringComparison.OrdinalIgnoreCase);
 
 }

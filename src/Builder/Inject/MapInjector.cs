@@ -32,6 +32,11 @@ public sealed class MapInjector
 
         if (File.Exists(mapPath))
         {
+            if (IsWar3MapLuaPath(mapPath))
+            {
+                return await InjectScriptFileAsync(mapPath, bundle, cancellationToken).ConfigureAwait(false);
+            }
+
             if (!IsW3xPath(mapPath))
             {
                 Console.Error.WriteLine($"[sf-build] target file is not a .w3x map: {mapPath}");
@@ -39,6 +44,12 @@ public sealed class MapInjector
             }
 
             return await InjectArchiveAsync(mapPath, bundle, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (IsWar3MapLuaPath(mapPath))
+        {
+            Console.Error.WriteLine($"[sf-build] war3map.lua not found: {mapPath}");
+            return 2;
         }
 
         Console.Error.WriteLine($"[sf-build] target map not found: {mapPath}");
@@ -223,6 +234,22 @@ public sealed class MapInjector
         }
     }
 
+    private static async Task<int> InjectScriptFileAsync(string scriptPath, string bundle, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var original = await File.ReadAllTextAsync(scriptPath, cancellationToken).ConfigureAwait(false);
+            var injected = InjectIntoMain(original, bundle);
+            await File.WriteAllTextAsync(scriptPath, injected, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+    }
+
     private static async Task<int> InjectArchiveAsync(string mapFile, string bundle, CancellationToken cancellationToken)
     {
         try
@@ -293,4 +320,7 @@ public sealed class MapInjector
 
     private static bool IsW3xPath(string path)
         => Path.GetExtension(path).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsWar3MapLuaPath(string path)
+        => Path.GetFileName(path).Equals(War3MapLua, StringComparison.OrdinalIgnoreCase);
 }

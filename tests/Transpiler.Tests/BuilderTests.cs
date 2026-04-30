@@ -118,6 +118,34 @@ public sealed class BuilderTests
     }
 
     [Fact]
+    public async Task Pack_injects_existing_war3map_lua_output_file()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-build-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Main.lua"), "print('main')\n");
+        var scriptPath = Path.Combine(dir.FullName, "war3map.lua");
+        await File.WriteAllTextAsync(scriptPath, """
+            function main()
+                print('editor')
+            end
+            """);
+
+        var exitCode = await new LuaPacker().RunAsync(new PackOptions(
+            new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
+            OutputFile: new FileInfo(scriptPath),
+            IncludePaths: Array.Empty<string>(),
+            CSharpInputDirectory: null,
+            RootTable: TranspileOptions.DefaultRootTable,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var result = await File.ReadAllTextAsync(scriptPath);
+        Assert.Contains("function SF__Bundle()", result);
+        Assert.Contains("print('main')", result);
+        Assert.Contains("print('editor')", result);
+        Assert.Contains("local s, m = pcall(SF__Bundle)", result);
+    }
+
+    [Fact]
     public async Task Injector_splices_bundle_at_end_of_main_and_replaces_previous_bundle()
     {
         var map = Directory.CreateDirectory(Path.Combine(Directory.CreateTempSubdirectory("sf-build-test-").FullName, "map.w3x"));
