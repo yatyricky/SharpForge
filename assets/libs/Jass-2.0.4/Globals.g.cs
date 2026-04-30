@@ -5,7 +5,7 @@
 #nullable enable
 #pragma warning disable CS8981, CS1591
 
-public static partial class SF__JASSGEN
+public static partial class JASS
 {
     /// <summary>JASS: <c>constant real bj_PI = 3.14159</c></summary>
     public static readonly float bj_PI = default!;

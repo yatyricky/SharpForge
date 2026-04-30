@@ -179,7 +179,7 @@ public class EmitSmokeTests
         Assert.Contains("hero:ToString()", lua);
         Assert.Contains("BJDebugMsg(hero:ToString())", lua);
         Assert.DoesNotContain("unsupported expr: ObjectCreationExpression", lua);
-        Assert.DoesNotContain("SF__JASSGEN", lua);
+        Assert.DoesNotContain("JASS", lua);
         Assert.DoesNotContain("-- handle", lua);
     }
 
@@ -204,10 +204,141 @@ public class EmitSmokeTests
             PreprocessorSymbols: Array.Empty<string>(),
             RootTable: TranspileOptions.DefaultRootTable,
             IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
             CheckOnly: true,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
+    }
+
+    [Fact]
+    public async Task Pipeline_skips_configured_library_folder_sources_during_lowering()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Demo.cs"), """
+            using ExternalLib;
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    LibMarker marker;
+                    return 1;
+                }
+            }
+            """);
+
+        var libraryDir = Path.Combine(dir.FullName, "stubs");
+        Directory.CreateDirectory(libraryDir);
+        await File.WriteAllTextAsync(Path.Combine(libraryDir, "LibMarker.cs"), """
+            namespace ExternalLib;
+
+            public sealed class LibMarker
+            {
+                public static int UnsupportedIfLowered(int value)
+                {
+                    switch (value)
+                    {
+                        case 1: return 1;
+                        default: return 0;
+                    }
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { "stubs" },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("function SF__.Demo.Run()", lua);
+        Assert.DoesNotContain("ExternalLib.LibMarker", lua);
+        Assert.DoesNotContain("unsupported stmt: SwitchStatement", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_copies_bundled_library_stubs_before_compiling()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static void Main()
+                {
+                    BJDebugMsg("hello");
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "Natives.g.cs")));
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "GlobalUsings.g.cs")));
+
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("BJDebugMsg(\"hello\")", lua);
+        Assert.DoesNotContain("-- JASS", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_overwrites_bundled_library_stubs_but_preserves_other_user_files()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static void Main()
+                {
+                    FourCC("A000");
+                }
+            }
+            """);
+
+        var jassDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "Jass-2.0.4"));
+        var userOwnedNativeStub = "public static partial class JASS { public static void UserOwned() { } }";
+        await File.WriteAllTextAsync(Path.Combine(jassDir.FullName, "Natives.g.cs"), userOwnedNativeStub);
+
+        var customDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "User"));
+        var userLibrary = "namespace UserLib; public static class KeepMe { }";
+        var userLibraryPath = Path.Combine(customDir.FullName, "KeepMe.cs");
+        await File.WriteAllTextAsync(userLibraryPath, userLibrary);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var copiedNatives = await File.ReadAllTextAsync(Path.Combine(jassDir.FullName, "Natives.g.cs"));
+        Assert.NotEqual(userOwnedNativeStub, copiedNatives);
+        Assert.Contains("BJDebugMsg", copiedNatives);
+        Assert.Equal(userLibrary, await File.ReadAllTextAsync(userLibraryPath));
+        Assert.True(File.Exists(Path.Combine(jassDir.FullName, "NativeExt.g.cs")));
+        Assert.True(File.Exists(Path.Combine(jassDir.FullName, "GlobalUsings.g.cs")));
     }
 
     [Fact]
@@ -339,6 +470,7 @@ public class EmitSmokeTests
             PreprocessorSymbols: Array.Empty<string>(),
             RootTable: TranspileOptions.DefaultRootTable,
             IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
             CheckOnly: true,
             Verbose: false), CancellationToken.None);
 
@@ -472,6 +604,7 @@ public class EmitSmokeTests
             PreprocessorSymbols: Array.Empty<string>(),
             RootTable: TranspileOptions.DefaultRootTable,
             IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
             CheckOnly: true,
             Verbose: false), CancellationToken.None);
 
@@ -690,6 +823,7 @@ public class EmitSmokeTests
             PreprocessorSymbols: Array.Empty<string>(),
             RootTable: TranspileOptions.DefaultRootTable,
             IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
             CheckOnly: true,
             Verbose: false), CancellationToken.None);
 
@@ -726,7 +860,7 @@ public class EmitSmokeTests
     public async Task FourCc_native_extension_emits_raw_call()
     {
         var src = """
-            public static partial class SF__JASSGEN
+            public static partial class JASS
             {
                 public static int FourCC(string val) => throw null!;
             }
@@ -735,7 +869,7 @@ public class EmitSmokeTests
             {
                 public static int Run()
                 {
-                    return SF__JASSGEN.FourCC("hfoo");
+                    return JASS.FourCC("hfoo");
                 }
             }
             """;
@@ -743,7 +877,7 @@ public class EmitSmokeTests
         var lua = await TranspileSourceAsync(src, "NativeExt.cs");
 
         Assert.Contains("return FourCC(\"hfoo\")", lua);
-        Assert.DoesNotContain("SF__JASSGEN", lua);
+        Assert.DoesNotContain("JASS", lua);
     }
 
     [Fact]

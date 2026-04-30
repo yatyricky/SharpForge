@@ -5,7 +5,7 @@
 #nullable enable
 #pragma warning disable CS8981, CS1591
 
-public static partial class SF__JASSGEN
+public static partial class JASS
 {
     /// <summary>JASS function <c>BJDebugMsg</c>.</summary>
     public static void BJDebugMsg(string msg) => throw null!;

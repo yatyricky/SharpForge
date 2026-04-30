@@ -15,17 +15,30 @@ namespace SharpForge.Transpiler.Frontend;
 public sealed class IRLowering
 {
     private readonly HashSet<string> _ignoredClasses;
+    private readonly HashSet<string> _libraryFolderNames;
+    private readonly string? _sourceRoot;
     private IRModule? _module;
     private readonly Dictionary<ISymbol, string> _luaNames = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<ISymbol, (string KeyName, string ValueName)> _dictionaryForEachItems = new(SymbolEqualityComparer.Default);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
 
-    public IRLowering(IEnumerable<string>? ignoredClasses = null)
+    public IRLowering(
+        IEnumerable<string>? ignoredClasses = null,
+        DirectoryInfo? sourceRoot = null,
+        IEnumerable<string>? libraryFolders = null)
     {
         _ignoredClasses = ignoredClasses is null
-            ? new HashSet<string>(new[] { "SF__JASSGEN" }, StringComparer.Ordinal)
+            ? new HashSet<string>(new[] { "JASS" }, StringComparer.Ordinal)
             : new HashSet<string>(ignoredClasses, StringComparer.Ordinal);
+        _libraryFolderNames = new HashSet<string>(
+            (libraryFolders ?? Array.Empty<string>())
+                .Select(NormalizeFolderName)
+                .Where(name => !string.IsNullOrWhiteSpace(name)),
+            StringComparer.OrdinalIgnoreCase);
+        _sourceRoot = sourceRoot is null
+            ? null
+            : Path.GetFullPath(sourceRoot.FullName);
     }
 
     public IRModule Lower(CSharpCompilation compilation, CancellationToken cancellationToken)
@@ -40,6 +53,11 @@ public sealed class IRLowering
         foreach (var tree in compilation.SyntaxTrees)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (IsInLibraryFolder(tree))
+            {
+                continue;
+            }
+
             var model = compilation.GetSemanticModel(tree);
             var root = (CompilationUnitSyntax)tree.GetRoot(cancellationToken);
 
@@ -963,6 +981,26 @@ public sealed class IRLowering
         var name = ns.ToDisplayString();
         return name == "SharpLib" || name == "SharpLib.Collections";
     }
+
+    private bool IsInLibraryFolder(SyntaxTree tree)
+    {
+        if (_sourceRoot is null || _libraryFolderNames.Count == 0 || string.IsNullOrWhiteSpace(tree.FilePath))
+        {
+            return false;
+        }
+
+        var relative = Path.GetRelativePath(_sourceRoot, Path.GetFullPath(tree.FilePath));
+        if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        {
+            return false;
+        }
+
+        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return segments.Take(Math.Max(0, segments.Length - 1)).Any(_libraryFolderNames.Contains);
+    }
+
+    private static string NormalizeFolderName(string folder)
+        => Path.GetFileName(Path.TrimEndingDirectorySeparator(folder.Trim()));
 
     private IRStmt? TryLowerDictionaryAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {

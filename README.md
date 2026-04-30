@@ -143,6 +143,7 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
                          [--check]               # lint only, no file written
                          [--root-table SF__]
                          [--define SYMBOL]...
+                         [--library-folder libs]... # compile C# stubs for symbols, skip Lua lowering
                          [--verbose]
 
 sf-build <entry.lua>                              # default output: <entry-dir>/bundle.lua

@@ -26,6 +26,8 @@ public sealed class TranspilePipeline
             return 2;
         }
 
+        await LibraryAssetCopier.CopyBundledLibrariesAsync(options.InputDirectory, cancellationToken);
+
         var sourceFiles = EnumerateSourceFiles(options.InputDirectory).ToArray();
         if (sourceFiles.Length == 0)
         {
@@ -62,7 +64,7 @@ public sealed class TranspilePipeline
         }
 
         // 2. Lower compilation to custom IR.
-        var lowering = new IRLowering(options.IgnoredClasses);
+        var lowering = new IRLowering(options.IgnoredClasses, options.InputDirectory, options.LibraryFolders);
         var module = lowering.Lower(compilation, cancellationToken);
         if (module.Diagnostics.Count > 0)
         {

@@ -69,6 +69,12 @@ internal static class RootCommandFactory
             return 2;
         }
 
+        if (IsSameOrAncestor(output.FullName, input.FullName))
+        {
+            await Console.Error.WriteLineAsync($"Output directory must not be the input directory or one of its parents: {output.FullName}");
+            return 2;
+        }
+
         var sources = input.GetFiles("*.j", SearchOption.AllDirectories);
         if (sources.Length == 0)
         {
@@ -96,17 +102,33 @@ internal static class RootCommandFactory
 
         var result = new CSharpEmitter(hostClass).Emit(allNodes);
 
+        if (Directory.Exists(output.FullName))
+        {
+            Directory.Delete(output.FullName, recursive: true);
+        }
         Directory.CreateDirectory(output.FullName);
+
         await File.WriteAllTextAsync(Path.Combine(output.FullName, "Handles.g.cs"), result.Handles, ct);
         await File.WriteAllTextAsync(Path.Combine(output.FullName, "Natives.g.cs"), result.Natives, ct);
         await File.WriteAllTextAsync(Path.Combine(output.FullName, "Globals.g.cs"), result.Globals, ct);
+        await File.WriteAllTextAsync(Path.Combine(output.FullName, "NativeExt.g.cs"), result.NativeExt, ct);
         await File.WriteAllTextAsync(Path.Combine(output.FullName, "GlobalUsings.g.cs"), result.GlobalUsings, ct);
 
         if (verbose)
         {
-            Console.WriteLine($"[sf-jassgen] Wrote 4 files to {output.FullName}.");
+            Console.WriteLine($"[sf-jassgen] Wrote 5 files to {output.FullName}.");
         }
         // Parse warnings are non-fatal — recovery already skipped past them.
         return 0;
     }
+
+    private static bool IsSameOrAncestor(string possibleAncestor, string path)
+    {
+        string ancestor = WithTrailingSeparator(Path.GetFullPath(possibleAncestor));
+        string child = WithTrailingSeparator(Path.GetFullPath(path));
+        return child.StartsWith(ancestor, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string WithTrailingSeparator(string path) =>
+        Path.TrimEndingDirectorySeparator(path) + Path.DirectorySeparatorChar;
 }

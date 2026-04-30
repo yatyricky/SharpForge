@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 
-namespace SharpLib;
+namespace SFLib;
 
 [AsyncMethodBuilder(typeof(TaskMethodBuilder))]
 public readonly struct Task

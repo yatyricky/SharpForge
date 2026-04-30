@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Transpiler\Transpiler.csproj" />
     <ProjectReference Include="..\..\src\Builder\Builder.csproj" />
+    <ProjectReference Include="..\..\src\JassGen\JassGen.csproj" />
   </ItemGroup>
 
 </Project>

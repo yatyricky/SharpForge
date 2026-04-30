@@ -43,6 +43,14 @@ internal static class RootCommandFactory
             AllowMultipleArgumentsPerToken = true,
         };
 
+        var libraryFolderOpt = new Option<string[]>(
+            aliases: ["--library-folder"],
+            getDefaultValue: () => new[] { TranspileOptions.DefaultLibraryFolder },
+            description: "Folder names containing C# library stubs to compile for symbols but skip during Lua lowering. Repeatable.")
+        {
+            AllowMultipleArgumentsPerToken = true,
+        };
+
         var verboseOpt = new Option<bool>(
             aliases: ["--verbose", "-v"],
             description: "Verbose diagnostics.");
@@ -55,6 +63,7 @@ internal static class RootCommandFactory
             defineOpt,
             rootTableOpt,
             ignoreClassOpt,
+            libraryFolderOpt,
             verboseOpt,
         };
 
@@ -70,6 +79,7 @@ internal static class RootCommandFactory
                 PreprocessorSymbols: context.ParseResult.GetValueForOption(defineOpt) ?? Array.Empty<string>(),
                 RootTable: context.ParseResult.GetValueForOption(rootTableOpt) ?? TranspileOptions.DefaultRootTable,
                 IgnoredClasses: context.ParseResult.GetValueForOption(ignoreClassOpt) ?? Array.Empty<string>(),
+                LibraryFolders: context.ParseResult.GetValueForOption(libraryFolderOpt) ?? Array.Empty<string>(),
                 CheckOnly: context.ParseResult.GetValueForOption(checkOpt),
                 Verbose: context.ParseResult.GetValueForOption(verboseOpt));
 

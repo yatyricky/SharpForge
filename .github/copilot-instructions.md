@@ -3,7 +3,7 @@
 ## Layout
 - `src/Transpiler/` → `sf-transpile.exe` (Roslyn → IR → Lua emitter)
 - `src/Builder/` → `sf-build.exe` (entry Lua bundler + .w3x injector)
-- `src/JassGen/` → `sf-jassgen.exe` (common.j/blizzard.j → C# extern stubs on `static partial class SF__JASSGEN`, plus `global using static SF__JASSGEN;` shim)
+- `src/JassGen/` → `sf-jassgen.exe` (common.j/blizzard.j → C# extern stubs on `static partial class JASS`, plus `global using static JASS;` shim)
 - `tests/Transpiler.Tests/` xUnit
 - `samples/` flat: `Hello.cs`, `Hero.cs` (no nested `cs_src/` or `expected/`)
 - `assets/jass/` ships the JASS source for `sf-jassgen`
@@ -22,12 +22,12 @@
 - Single command, no `build` verb: `sf-transpile <input-dir> [-o out.lua] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [-v]`
 - `--output` optional → defaults to `<input>/sf-out.lua`
 - `--check` → run frontend+lower+emit but do NOT write file (lint mode); exit code reflects diagnostics
-- `--ignore-class`/`-i` → class names to skip during Lua emit; defaults to `[SF__JASSGEN]` so the JASS-binding host class is not lowered. Repeatable.
+- `--ignore-class`/`-i` → class names to skip during Lua emit; defaults to `[JASS]` so the JASS-binding host class is not lowered. Repeatable.
 - Exit codes: 0 ok, 1 compile errors, 2 input/output validation
 
 ## CLI surface (jassgen)
 - `sf-jassgen <input-dir> [-o out-dir] [--host-class NAME] [-v]`
-- `--host-class`/`-c` → name of the static partial class hosting natives + globals; default `SF__JASSGEN`. Must match the transpiler's `--ignore-class`.
+- `--host-class`/`-c` → name of the static partial class hosting natives + globals; default `JASS`. Must match the transpiler's `--ignore-class`.
 
 ## CLI surface (builder)
 - `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [--csharp cs-dir] [-r SF__] [-v]` (no `pack` subcommand)

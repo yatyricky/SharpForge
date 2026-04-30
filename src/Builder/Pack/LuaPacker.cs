@@ -51,6 +51,7 @@ public sealed class LuaPacker
                     PreprocessorSymbols: Array.Empty<string>(),
                     RootTable: options.RootTable,
                     IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+                    LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
                     CheckOnly: false,
                     Verbose: options.Verbose), cancellationToken);
 

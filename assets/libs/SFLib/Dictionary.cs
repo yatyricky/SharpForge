@@ -1,4 +1,4 @@
-namespace SharpLib;
+namespace SFLib;
 
 public sealed class Dictionary<K, V>
 {
