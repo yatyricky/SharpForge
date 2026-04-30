@@ -51,11 +51,13 @@ public sealed class BuilderTests
         Assert.Contains("__sf_modules[\"Side\"]={loader=function()", bundle);
         Assert.Contains("__sf_modules[\"Slash.Module\"]={loader=function()", bundle);
         Assert.Contains("__sf_modules[\"Main\"]={loader=function()", bundle);
+        Assert.Contains("require(\"Main\")", bundle);
         Assert.DoesNotContain("dofile(\"Main\")", bundle);
         Assert.DoesNotContain("__sf_modules[\"Unused\"]", bundle);
         Assert.DoesNotContain("__sf_modules[\"StringOnly\"]", bundle);
         Assert.True(bundle.IndexOf("__sf_modules[\"Lib.B\"]", StringComparison.Ordinal) < bundle.IndexOf("__sf_modules[\"Lib.A\"]", StringComparison.Ordinal));
         Assert.True(bundle.IndexOf("__sf_modules[\"Lib.A\"]", StringComparison.Ordinal) < bundle.IndexOf("__sf_modules[\"Main\"]", StringComparison.Ordinal));
+        Assert.True(bundle.IndexOf("__sf_modules[\"Main\"]", StringComparison.Ordinal) < bundle.IndexOf("require(\"Main\")", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -96,6 +98,38 @@ public sealed class BuilderTests
 
         Assert.Equal(0, exitCode);
         Assert.True(File.Exists(Path.Combine(target.FullName, "bundle.lua")));
+    }
+
+    [Fact]
+    public async Task Pack_injects_w3x_target_folder_with_trailing_separator()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-build-test-");
+        var target = Directory.CreateDirectory(Path.Combine(dir.FullName, "map.w3x"));
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Main.lua"), "print('main')\n");
+        var scriptPath = Path.Combine(target.FullName, "war3map.lua");
+        await File.WriteAllTextAsync(scriptPath, """
+            function main()
+                print('editor')
+            end
+            """);
+
+        var exitCode = await new LuaPacker().RunAsync(new PackOptions(
+            new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
+            OutputFile: new FileInfo(target.FullName + Path.DirectorySeparatorChar),
+            IncludePaths: Array.Empty<string>(),
+            CSharpInputDirectory: null,
+            RootTable: TranspileOptions.DefaultRootTable,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var result = await File.ReadAllTextAsync(scriptPath);
+        Assert.Contains("function SF__Bundle()", result);
+        Assert.Contains("print('main')", result);
+        Assert.Contains("require(\"Main\")", result);
+        Assert.Contains("print('editor')", result);
+        Assert.Contains("local s, m = pcall(SF__Bundle)", result);
+        Assert.True(result.IndexOf("require(\"Main\")", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
+        Assert.False(File.Exists(Path.Combine(target.FullName, "bundle.lua")));
     }
 
     [Fact]
@@ -141,8 +175,10 @@ public sealed class BuilderTests
         var result = await File.ReadAllTextAsync(scriptPath);
         Assert.Contains("function SF__Bundle()", result);
         Assert.Contains("print('main')", result);
+        Assert.Contains("require(\"Main\")", result);
         Assert.Contains("print('editor')", result);
         Assert.Contains("local s, m = pcall(SF__Bundle)", result);
+        Assert.True(result.IndexOf("require(\"Main\")", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -175,5 +211,87 @@ public sealed class BuilderTests
         Assert.True(result.IndexOf("function SF__Bundle()", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
         Assert.True(result.IndexOf("print('editor')", StringComparison.Ordinal) < result.IndexOf("pcall(SF__Bundle)", StringComparison.Ordinal));
         Assert.True(result.IndexOf("pcall(SF__Bundle)", StringComparison.Ordinal) < result.LastIndexOf("end", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Injector_replaces_non_ascii_bundle_without_duplicating_wrapper()
+    {
+        var map = Directory.CreateDirectory(Path.Combine(Directory.CreateTempSubdirectory("sf-build-test-").FullName, "map.w3x"));
+        var scriptPath = Path.Combine(map.FullName, "war3map.lua");
+        await File.WriteAllTextAsync(scriptPath, """
+            function main()
+                print('editor')
+            end
+            """);
+
+        var injector = new MapInjector();
+        var first = await injector.InjectBundleAsync(map.FullName, $"print('{new string('界', 64)}')", CancellationToken.None);
+        var second = await injector.InjectBundleAsync(map.FullName, "print('second')", CancellationToken.None);
+
+        Assert.Equal(0, first);
+        Assert.Equal(0, second);
+        var result = await File.ReadAllTextAsync(scriptPath);
+        Assert.Contains("function main()", result);
+        Assert.Contains("print('second')", result);
+        Assert.DoesNotContain(new string('界', 64), result);
+        Assert.Equal(2, CountOccurrences(result, "--sf-builder:"));
+        Assert.Equal(1, CountOccurrences(result, "function SF__Bundle()"));
+        Assert.Equal(1, CountOccurrences(result, "pcall(SF__Bundle)"));
+    }
+
+    [Fact]
+    public async Task Injector_repairs_dangling_generated_prefix_from_previous_reinjection_bug()
+    {
+        var map = Directory.CreateDirectory(Path.Combine(Directory.CreateTempSubdirectory("sf-build-test-").FullName, "map.w3x"));
+        var scriptPath = Path.Combine(map.FullName, "war3map.lua");
+        await File.WriteAllTextAsync(scriptPath, """
+            --sf-builder:000000001/0123456789abcdef
+            function SF__Bundle()
+            print('old')
+            end
+            --sf-builder:000000001/0123456789abcdef
+            dangling old wrapper tail
+            --sf-builder:000000002/0123456789abcdef
+            function InitGlobals()
+            end
+
+            function main()
+                local s, m = pcall(SF__Bundle)
+                if not s then
+                    print(m)
+                end
+                local s, m = pcall(SF__Bundle)
+                if not s then
+                    print(m)
+                end
+                print('editor')
+            end
+            """);
+
+        var exitCode = await new MapInjector().InjectBundleAsync(map.FullName, "print('new')", CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var result = await File.ReadAllTextAsync(scriptPath);
+        Assert.Contains("print('new')", result);
+        Assert.Contains("function InitGlobals()", result);
+        Assert.Contains("print('editor')", result);
+        Assert.DoesNotContain("dangling old wrapper tail", result);
+        Assert.DoesNotContain("print('old')", result);
+        Assert.Equal(2, CountOccurrences(result, "--sf-builder:"));
+        Assert.Equal(1, CountOccurrences(result, "function SF__Bundle()"));
+        Assert.Equal(1, CountOccurrences(result, "pcall(SF__Bundle)"));
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 }

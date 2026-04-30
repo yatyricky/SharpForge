@@ -170,7 +170,7 @@ public sealed class LuaPacker
     }
 
     private static bool IsW3xPath(string path)
-        => Path.GetExtension(path).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
+        => Path.GetExtension(Path.TrimEndingDirectorySeparator(path)).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWar3MapLuaPath(string path)
         => Path.GetFileName(path).Equals("war3map.lua", StringComparison.OrdinalIgnoreCase);

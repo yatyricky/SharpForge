@@ -222,11 +222,11 @@ Existing Lua exports follow the standard pattern `__SF = __SF or {}; __SF.HeroSy
 
 ### `Builder` (`sf-build.exe`)
 
-1. starts from `<entry.lua>`, recursively follows literal script dependencies, topologically sorts them, and emits one bundle.
+1. starts from `<entry.lua>`, recursively follows literal script dependencies, topologically sorts them, emits one bundle, and loads the entry module when the bundle runs.
 
 Dependency discovery supports literal `require`, `dofile`, `doFile`, `loadfile`, `loadFile`, `package.load`, `include`, `import`, and `load` calls with single or double quoted paths. Module paths may use `/`, `\`, or `.` separators. Regular commented-out calls are ignored; prefix a comment with `!` to force a dependency, for example `-- !require('Path.To.Module')`. Calculated paths are intentionally not evaluated; list extra scripts with `--include path/a.lua;path/b.lua`.
 
-`Injection`: Wrap the whole bundle with `--sf-builder:000106309/7f181df892ea2f9e \nfunction SF__Bundle() <bundle.lua code> end \n--sf-builder:000106309/7f181df892ea2f9e`; splices `local s, m = pcall(SF__Bundle) if not s then print(m) end` into the end of `function main()` in `war3map.lua`, replacing any previous SharpForge bundle block by identifying the `--sf-builder:<script length>/<script checksum>` comments.
+`Injection`: Wrap the whole bundle with `--sf-builder:000106309/7f181df892ea2f9e \nfunction SF__Bundle() <bundle.lua code>; require("Entry") end \n--sf-builder:000106309/7f181df892ea2f9e`; splices `local s, m = pcall(SF__Bundle) if not s then print(m) end` into the end of `function main()` in `war3map.lua`, replacing any previous SharpForge bundle block by identifying the `--sf-builder:<script length>/<script checksum>` comments.
 
 Target behavior:
 

@@ -36,7 +36,7 @@ internal sealed class LuaBundleBuilder
 
         await VisitFileAsync(options.EntryScript, cancellationToken).ConfigureAwait(false);
 
-        return new LuaBundle(EmitBundle(), _ordered.Select(n => n.Key).ToArray());
+        return new LuaBundle(EmitBundle(GetModuleKey(options.EntryScript)), _ordered.Select(n => n.Key).ToArray());
     }
 
     private async Task VisitFileAsync(FileInfo file, CancellationToken cancellationToken)
@@ -140,7 +140,7 @@ internal sealed class LuaBundleBuilder
         return relative.Replace('\\', '.').Replace('/', '.');
     }
 
-    private string EmitBundle()
+    private string EmitBundle(string entryModuleKey)
     {
         // Polyfill block: lua-bundler-compatible loader-table layout so module
         // bodies match byte-for-byte across toolchains. Differences vs lua-bundler
@@ -168,8 +168,7 @@ internal sealed class LuaBundleBuilder
         sb.AppendLine();
 
         // All discovered Lua files (entry + startup + transitive deps) are
-        // registered as modules. Builder never invokes any of them — launching
-        // is the user's responsibility.
+        // registered as modules first, then the entry module is loaded.
         foreach (var node in _ordered)
         {
             sb.Append("__sf_modules[").Append(ToLuaString(node.Key)).AppendLine("]={loader=function()");
@@ -177,6 +176,8 @@ internal sealed class LuaBundleBuilder
             sb.AppendLine("end}");
             sb.AppendLine();
         }
+
+        sb.Append("require(").Append(ToLuaString(entryModuleKey)).AppendLine(")");
 
         return sb.ToString();
     }

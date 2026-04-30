@@ -60,18 +60,12 @@ public sealed class MapInjector
     {
         var newline = war3MapLua.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
 
-        var (cleaned, hadOurWrapper, hadLegacyWrapper) = StripLeadingWrapper(war3MapLua);
+        var (cleaned, _, hadLegacyWrapper) = StripLeadingWrapper(war3MapLua);
         var wrapper = WrapBundle(bundle, newline);
 
-        if (hadOurWrapper)
-        {
-            // Re-injection: only swap the top wrapper, leave main() alone.
-            return wrapper + cleaned;
-        }
-
-        // Clean file or migration from lua-bundler. Walk lines and splice
-        // pcall(SF__Bundle) before main()'s closing `end`. When migrating,
-        // also drop the existing pcall(RunBundle) block from main().
+        // Clean file, re-injection, or migration from lua-bundler. Walk lines
+        // and splice exactly one pcall(SF__Bundle) before main()'s closing
+        // `end`, dropping any generated pcall blocks already present.
         var modified = ProcessMainFunction(cleaned, removeLegacyPcall: hadLegacyWrapper, newline);
         return wrapper + modified;
     }
@@ -101,9 +95,19 @@ public sealed class MapInjector
                 continue;
             }
 
+            if (insideMain && IsSharpForgePcallStart(line))
+            {
+                var skipped = TrySkipPcallBlock(lines, i);
+                if (skipped > 0)
+                {
+                    i += skipped;
+                    continue;
+                }
+            }
+
             if (insideMain && removeLegacyPcall && IsLegacyPcallStart(line))
             {
-                var skipped = TrySkipLegacyPcallBlock(lines, i);
+                var skipped = TrySkipPcallBlock(lines, i);
                 if (skipped > 0)
                 {
                     i += skipped;
@@ -152,9 +156,12 @@ public sealed class MapInjector
     private static bool IsLegacyPcallStart(string line)
         => Regex.IsMatch(line, @"^\s*local\s+s\s*,\s*m\s*=\s*pcall\(RunBundle\)\s*$", RegexOptions.CultureInvariant);
 
-    private static int TrySkipLegacyPcallBlock(string[] lines, int start)
+    private static bool IsSharpForgePcallStart(string line)
+        => Regex.IsMatch(line, @"^\s*local\s+s\s*,\s*m\s*=\s*pcall\(SF__Bundle\)\s*$", RegexOptions.CultureInvariant);
+
+    private static int TrySkipPcallBlock(string[] lines, int start)
     {
-        // Block: local s, m = pcall(RunBundle) / if not s then / print(m) / end
+        // Block: local s, m = pcall(...) / if not s then / print(m) / end
         if (start + 3 >= lines.Length)
         {
             return 0;
@@ -168,17 +175,33 @@ public sealed class MapInjector
 
     private static (string cleaned, bool hadOurs, bool hadLegacy) StripLeadingWrapper(string source)
     {
-        if (TryStripWrapper(source, MarkerPrefix, out var stripped))
-        {
-            return (stripped, true, false);
-        }
+        var cleaned = source;
+        var hadOurs = false;
+        var hadLegacy = false;
 
-        if (TryStripWrapper(source, LegacyMarkerPrefix, out stripped))
+        while (true)
         {
-            return (stripped, false, true);
-        }
+            if (TryStripWrapper(cleaned, MarkerPrefix, out var stripped))
+            {
+                cleaned = stripped;
+                hadOurs = true;
+                continue;
+            }
 
-        return (source, false, false);
+            if (TryStripWrapper(cleaned, LegacyMarkerPrefix, out stripped))
+            {
+                cleaned = stripped;
+                hadLegacy = true;
+                continue;
+            }
+
+            if (hadOurs || hadLegacy)
+            {
+                cleaned = StripDanglingInjectedPrefix(cleaned);
+            }
+
+            return (cleaned, hadOurs, hadLegacy);
+        }
     }
 
     private static bool TryStripWrapper(string source, string prefix, out string stripped)
@@ -189,27 +212,142 @@ public sealed class MapInjector
             return false;
         }
 
-        var tagStart = prefix.Length;
-        if (source.Length < tagStart + LengthDigits + 1 + ChecksumChars)
+        var firstLineEnd = IndexOfLineEnding(source, 0);
+        if (firstLineEnd < 0)
         {
             return false;
         }
 
-        var lengthSpan = source.AsSpan(tagStart, LengthDigits);
-        if (!int.TryParse(lengthSpan, out var length) || length <= 0 || length > source.Length)
+        var markerLine = source[..firstLineEnd].TrimEnd('\r');
+        if (!IsValidMarkerLine(markerLine, prefix))
         {
             return false;
         }
 
-        if (source[tagStart + LengthDigits] != '/')
+        var searchStart = SkipLineEnding(source, firstLineEnd);
+        var closingStart = FindMarkerLine(source, markerLine, searchStart);
+        if (closingStart < 0)
         {
             return false;
         }
 
-        stripped = source.Substring(length);
+        var closingEnd = SkipLineEnding(source, closingStart + markerLine.Length);
+        stripped = source[closingEnd..];
         return true;
     }
 
+    private static bool IsValidMarkerLine(string markerLine, string prefix)
+    {
+        if (markerLine.Length != prefix.Length + LengthDigits + 1 + ChecksumChars)
+        {
+            return false;
+        }
+
+        if (markerLine[prefix.Length + LengthDigits] != '/')
+        {
+            return false;
+        }
+
+        return int.TryParse(markerLine.AsSpan(prefix.Length, LengthDigits), out _);
+    }
+
+    private static int FindMarkerLine(string source, string markerLine, int searchStart)
+    {
+        var index = searchStart;
+        while (index < source.Length)
+        {
+            var match = source.IndexOf(markerLine, index, StringComparison.Ordinal);
+            if (match < 0)
+            {
+                return -1;
+            }
+
+            if (match == 0 || source[match - 1] == '\n')
+            {
+                var afterMarker = match + markerLine.Length;
+                if (afterMarker == source.Length || source[afterMarker] is '\r' or '\n')
+                {
+                    return match;
+                }
+            }
+
+            index = match + markerLine.Length;
+        }
+
+        return -1;
+    }
+
+    private static int IndexOfLineEnding(string source, int start)
+    {
+        for (var i = start; i < source.Length; i++)
+        {
+            if (source[i] is '\r' or '\n')
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int SkipLineEnding(string source, int index)
+    {
+        if (index < source.Length && source[index] == '\r')
+        {
+            index++;
+        }
+
+        if (index < source.Length && source[index] == '\n')
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static string StripDanglingInjectedPrefix(string source)
+    {
+        var mainIndex = source.IndexOf("function main()", StringComparison.Ordinal);
+        var searchLimit = mainIndex >= 0 ? mainIndex : source.Length;
+        var stripEnd = Math.Max(
+            FindLastMarkerLineEnd(source, MarkerPrefix, searchLimit),
+            FindLastMarkerLineEnd(source, LegacyMarkerPrefix, searchLimit));
+
+        return stripEnd > 0 ? source[stripEnd..] : source;
+    }
+
+    private static int FindLastMarkerLineEnd(string source, string prefix, int searchLimit)
+    {
+        var lastEnd = -1;
+        var index = 0;
+        while (index < searchLimit)
+        {
+            var match = source.IndexOf(prefix, index, StringComparison.Ordinal);
+            if (match < 0 || match >= searchLimit)
+            {
+                return lastEnd;
+            }
+
+            if (match == 0 || source[match - 1] == '\n')
+            {
+                var lineEnd = IndexOfLineEnding(source, match);
+                if (lineEnd < 0)
+                {
+                    lineEnd = source.Length;
+                }
+
+                var markerLine = source[match..lineEnd].TrimEnd('\r');
+                if (IsValidMarkerLine(markerLine, prefix))
+                {
+                    lastEnd = SkipLineEnding(source, lineEnd);
+                }
+            }
+
+            index = match + prefix.Length;
+        }
+
+        return lastEnd;
+    }
 
     private static async Task<int> InjectFolderAsync(string mapFolder, string bundle, CancellationToken cancellationToken)
     {
@@ -319,7 +457,7 @@ public sealed class MapInjector
     }
 
     private static bool IsW3xPath(string path)
-        => Path.GetExtension(path).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
+        => Path.GetExtension(Path.TrimEndingDirectorySeparator(path)).Equals(".w3x", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsWar3MapLuaPath(string path)
         => Path.GetFileName(path).Equals(War3MapLua, StringComparison.OrdinalIgnoreCase);
