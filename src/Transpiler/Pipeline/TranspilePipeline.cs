@@ -19,14 +19,23 @@ public sealed class TranspilePipeline
             return 2;
         }
 
+        await LibraryAssetCopier.CopyBundledAssetsAsync(options.InputDirectory, cancellationToken);
+
+        if (options.InitOnly)
+        {
+            if (options.Verbose)
+            {
+                Console.WriteLine($"[sf-transpile] Initialized C# project assets in {options.InputDirectory.FullName}.");
+            }
+            return 0;
+        }
+
         if (Directory.Exists(options.OutputFile.FullName))
         {
             await Console.Error.WriteLineAsync(
                 $"Output path is a directory, expected a file: {options.OutputFile.FullName}");
             return 2;
         }
-
-        await LibraryAssetCopier.CopyBundledLibrariesAsync(options.InputDirectory, cancellationToken);
 
         var sourceFiles = EnumerateSourceFiles(options.InputDirectory).ToArray();
         if (sourceFiles.Length == 0)

@@ -31,6 +31,9 @@
     <EmbeddedResource Include="..\..\assets\libs\**\*.cs">
       <LogicalName>SharpForge.Transpiler.Assets.libs/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="..\..\assets\templates\*.template">
+      <LogicalName>SharpForge.Transpiler.Assets.templates/%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

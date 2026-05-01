@@ -140,6 +140,7 @@ Key decisions:
 
 ```powershell
 sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
+                         [--init]                # initialize editor support only
                          [--check]               # lint only, no file written
                          [--root-table SF__]
                          [--define SYMBOL]...
@@ -153,6 +154,8 @@ sf-build <entry.lua>                              # default output: <entry-dir>/
          [--root-table SF__]
          [--verbose]
 ```
+
+When `sf-transpile` runs, it also initializes editor support in the input folder by copying the bundled library stubs under `libs/` and creating `<FolderName>.csproj` from the bundled template if that project file does not already exist. Use `--init` to do only this initialization step; all transpile-related options are ignored in that mode. The project file is only for IntelliSense and C# syntax checking; SharpForge output still comes from transpiling to Lua.
 
 #### Currently implemented (lowering & emit)
 

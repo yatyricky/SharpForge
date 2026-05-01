@@ -57,6 +57,108 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Static_parameterless_main_is_invoked_at_end_of_lua()
+    {
+        var src = """
+            namespace Game;
+
+            public static class Hello
+            {
+                public static void Main()
+                {
+                }
+            }
+            """;
+
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var file = Path.Combine(dir.FullName, "Hello.cs");
+        await File.WriteAllTextAsync(file, src);
+
+        var compilation = await new RoslynFrontend(Array.Empty<string>())
+            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
+        var module = new IRLowering().Lower(compilation, CancellationToken.None);
+        var lua = new LuaEmitter("MY_ROOT").Emit(module);
+
+        Assert.Contains("function MY_ROOT.Game.Hello.Main()", lua);
+        Assert.EndsWith("\nMY_ROOT.Game.Hello.Main()\n", lua);
+    }
+
+    [Fact]
+    public async Task Static_main_with_args_is_invoked_at_end_of_lua()
+    {
+        var src = """
+            public class Program
+            {
+                public static void Main(string[] args)
+                {
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Program.cs");
+
+        Assert.Contains("function SF__.Program.Main(args)", lua);
+        Assert.EndsWith("\nSF__.Program.Main()\n", lua);
+    }
+
+    [Fact]
+    public async Task Static_task_main_is_invoked_at_end_of_lua()
+    {
+        var src = """
+            using System.Threading.Tasks;
+
+            public static class Program
+            {
+                public static async Task Main()
+                {
+                    await Task.Delay(1);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Program.cs");
+
+        Assert.Contains("function SF__.Program.Main()", lua);
+        Assert.Contains("return SF__.CorRun__(function()", lua);
+        Assert.EndsWith("\nSF__.Program.Main()\n", lua);
+    }
+
+    [Fact]
+    public async Task Multiple_static_main_entry_points_are_diagnostics()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class A
+            {
+                public static void Main()
+                {
+                }
+            }
+
+            public static class B
+            {
+                public static void Main()
+                {
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+        Assert.False(File.Exists(output.FullName));
+    }
+
+    [Fact]
     public async Task Instance_field_initializers_emit_in_constructor()
     {
         var src = """
@@ -296,6 +398,93 @@ public class EmitSmokeTests
         var lua = await File.ReadAllTextAsync(output.FullName);
         Assert.Contains("BJDebugMsg(\"hello\")", lua);
         Assert.DoesNotContain("-- JASS", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_creates_intellisense_project_file_when_missing()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static int Main()
+                {
+                    return 0;
+                }
+            }
+            """);
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var projectFile = Path.Combine(dir.FullName, dir.Name + ".csproj");
+        Assert.True(File.Exists(projectFile));
+        var project = await File.ReadAllTextAsync(projectFile);
+        Assert.Contains("<Project Sdk=\"Microsoft.NET.Sdk\">", project);
+        Assert.Contains("<TargetFramework>net10.0</TargetFramework>", project);
+        Assert.Contains("<ImplicitUsings>false</ImplicitUsings>", project);
+        Assert.DoesNotContain("<OutputType>Exe</OutputType>", project);
+    }
+
+    [Fact]
+    public async Task Pipeline_preserves_existing_intellisense_project_file()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static int Main()
+                {
+                    return 0;
+                }
+            }
+            """);
+        var projectFile = Path.Combine(dir.FullName, dir.Name + ".csproj");
+        var existingProject = "<Project><PropertyGroup><SharpForgeUserFile>true</SharpForgeUserFile></PropertyGroup></Project>";
+        await File.WriteAllTextAsync(projectFile, existingProject);
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(existingProject, await File.ReadAllTextAsync(projectFile));
+    }
+
+    [Fact]
+    public async Task Pipeline_init_only_copies_assets_and_skips_transpile_options()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(dir.FullName),
+            PreprocessorSymbols: new[] { "BROKEN_IF_USED" },
+            RootTable: "CUSTOM_ROOT",
+            IgnoredClasses: Array.Empty<string>(),
+            LibraryFolders: new[] { "not-libs" },
+            CheckOnly: true,
+            Verbose: false,
+            InitOnly: true), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(File.Exists(Path.Combine(dir.FullName, dir.Name + ".csproj")));
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "Natives.g.cs")));
+        Assert.False(File.Exists(Path.Combine(dir.FullName, TranspileOptions.DefaultOutputFileName)));
     }
 
     [Fact]

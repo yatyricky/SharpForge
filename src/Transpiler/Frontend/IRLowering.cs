@@ -92,6 +92,7 @@ public sealed class IRLowering
         }
 
         SortTypesByInheritance(module.Types);
+        ValidateEntryPoints(module);
         _module = null;
         return module;
     }
@@ -324,6 +325,7 @@ public sealed class IRLowering
             IsStatic = isStatic,
             IsInstance = !isStatic,
             IsCoroutine = m.Modifiers.Any(SyntaxKind.AsyncKeyword) && ContainsTaskDelay(m, model),
+            IsEntryPoint = symbol is not null && IsEntryPointCandidate(symbol),
         };
 
         foreach (var p in m.ParameterList.Parameters)
@@ -352,6 +354,57 @@ public sealed class IRLowering
         }
 
         return fn;
+    }
+
+    private void ValidateEntryPoints(IRModule module)
+    {
+        var entries = module.Types
+            .SelectMany(type => type.Methods
+                .Where(method => method.IsEntryPoint)
+                .Select(method => string.Join('.', type.NamespaceSegments.Append(type.Name).Append(method.Name))))
+            .ToArray();
+
+        if (entries.Length <= 1)
+        {
+            return;
+        }
+
+        AddDiagnostic("multiple static Main entry points found: " + string.Join(", ", entries));
+    }
+
+    private static bool IsEntryPointCandidate(IMethodSymbol method)
+        => method.Name == "Main"
+            && method.IsStatic
+            && method.MethodKind == MethodKind.Ordinary
+            && IsSupportedEntryPointReturnType(method.ReturnType)
+            && IsSupportedEntryPointParameters(method.Parameters);
+
+    private static bool IsSupportedEntryPointReturnType(ITypeSymbol returnType)
+    {
+        if (returnType.SpecialType is SpecialType.System_Void or SpecialType.System_Int32)
+        {
+            return true;
+        }
+
+        if (returnType is not INamedTypeSymbol namedType)
+        {
+            return false;
+        }
+
+        var original = namedType.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        return original is "global::System.Threading.Tasks.Task"
+            or "global::System.Threading.Tasks.Task<TResult>";
+    }
+
+    private static bool IsSupportedEntryPointParameters(IReadOnlyList<IParameterSymbol> parameters)
+    {
+        if (parameters.Count == 0)
+        {
+            return true;
+        }
+
+        return parameters.Count == 1
+            && parameters[0].Type is IArrayTypeSymbol { Rank: 1, ElementType.SpecialType: SpecialType.System_String };
     }
 
     private IEnumerable<IRFunction> LowerProperty(PropertyDeclarationSyntax p, SemanticModel model, CancellationToken ct)
@@ -1486,5 +1539,10 @@ public sealed class IRLowering
         var line = span.StartLinePosition.Line + 1;
         var character = span.StartLinePosition.Character + 1;
         _module.Diagnostics.Add($"{span.Path}({line},{character}): {message}");
+    }
+
+    private void AddDiagnostic(string message)
+    {
+        _module?.Diagnostics.Add(message);
     }
 }

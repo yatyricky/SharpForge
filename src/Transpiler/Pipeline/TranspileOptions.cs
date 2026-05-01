@@ -8,10 +8,11 @@ public sealed record TranspileOptions(
     IReadOnlyList<string> IgnoredClasses,
     IReadOnlyList<string> LibraryFolders,
     bool CheckOnly,
-    bool Verbose)
+    bool Verbose,
+    bool InitOnly = false)
 {
     public const string DefaultRootTable = "SF__";
-    public const string DefaultOutputFileName = "sf-out.lua";
+    public const string DefaultOutputFileName = "sharpforge.lua";
     public const string DefaultIgnoredClass = "JASS";
     public const string DefaultLibraryFolder = "libs";
 }

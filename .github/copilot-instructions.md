@@ -1,59 +1,44 @@
-# SharpForge — repo facts (Copilot instructions)
+# SharpForge Agent Notes
+
+For product context and user-facing behavior, start with [README.md](../README.md). Treat source and tests as the source of truth when README roadmap text disagrees with implementation.
 
 ## Layout
-- `src/Transpiler/` → `sf-transpile.exe` (Roslyn → IR → Lua emitter)
-- `src/Builder/` → `sf-build.exe` (entry Lua bundler + .w3x injector)
-- `src/JassGen/` → `sf-jassgen.exe` (common.j/blizzard.j → C# extern stubs on `static partial class JASS`, plus `global using static JASS;` shim)
-- `tests/Transpiler.Tests/` xUnit
-- `samples/` flat: `Hello.cs`, `Hero.cs` (no nested `cs_src/` or `expected/`)
-- `assets/jass/` ships the JASS source for `sf-jassgen`
+- `src/Transpiler/`: `sf-transpile.exe`, Roslyn frontend -> SharpForge IR -> Lua emitter.
+- `src/Builder/`: `sf-build.exe`, Lua dependency bundler plus `.w3x`/`war3map.lua` injector.
+- `src/JassGen/`: `sf-jassgen.exe`, parses `common.j`/`blizzard.j` into C# JASS stubs.
+- `tests/Transpiler.Tests/`: xUnit coverage for all three tools.
+- `samples/CSProject/` and `samples/LuaProject/`: runnable sample inputs and generated outputs.
+- `assets/jass/`: checked-in JASS source. `assets/libs/`: bundled C# library stubs copied into user projects.
 
-## Build
-- .NET 10 SDK (10.0.202+). Projects target `net10.0`. `TreatWarningsAsErrors`, single-file Exe.
-- Single-file publish needs `Basic.Reference.Assemblies.Net100` (1.8.5) — `typeof(object).Assembly.Location` triggers IL3000.
+## Commands
+- Build: `dotnet build SharpForge.sln`
+- Test: `dotnet test tests\Transpiler.Tests\Transpiler.Tests.csproj`
+- Publish: `./publish-all.ps1`
 
-## Key packages
-- Microsoft.CodeAnalysis.CSharp 5.3.0 + .Workspaces 5.3.0
-- System.CommandLine 2.0.0-beta4.22272.1 → use context-based `cmd.SetHandler(async ctx => { ... ctx.ExitCode = ... })`
-- War3Net.IO.Mpq 6.0.2 for managed `.w3x` MPQ archive mutation
-- xUnit 2.9.2 + Microsoft.NET.Test.Sdk 18.5.1
+The SDK is pinned by [global.json](../global.json) to .NET 10.0.202 with `rollForward: latestFeature`. Projects target `net10.0`, enable nullable/implicit usings/latest language version, and treat warnings as errors.
 
-## CLI surface (transpiler)
-- Single command, no `build` verb: `sf-transpile <input-dir> [-o out.lua] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [-v]`
-- `--output` optional → defaults to `<input>/sf-out.lua`
-- `--check` → run frontend+lower+emit but do NOT write file (lint mode); exit code reflects diagnostics
-- `--ignore-class`/`-i` → class names to skip during Lua emit; defaults to `[JASS]` so the JASS-binding host class is not lowered. Repeatable.
-- Exit codes: 0 ok, 1 compile errors, 2 input/output validation
+## CLI Contracts
+- `sf-transpile <input-dir> [-o out.lua] [--init] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [--library-folder libs]... [-v]`; there is no `build` subcommand. Output defaults to `<input>/sf-out.lua`; `--check` does not write a file; `--init` only copies the project template and bundled libs, then exits.
+- `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [--csharp cs-dir] [-r SF__] [-v]`; there is no `pack` subcommand. No output writes `bundle.lua` next to the entry script. `.w3x` files/folders and existing `war3map.lua` targets are injected; other folders receive `bundle.lua`; other files exit 2.
+- `sf-jassgen <input-dir> [-o out-dir] [--host-class NAME] [-v]`; default host class is `JASS`, which must stay aligned with transpiler `--ignore-class` defaults.
 
-## CLI surface (jassgen)
-- `sf-jassgen <input-dir> [-o out-dir] [--host-class NAME] [-v]`
-- `--host-class`/`-c` → name of the static partial class hosting natives + globals; default `JASS`. Must match the transpiler's `--ignore-class`.
+Use the existing System.CommandLine beta style in CLI factories. Context-based handlers set `context.ExitCode`; delegate handlers in `sf-build` currently set `Environment.ExitCode`.
 
-## CLI surface (builder)
-- `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [--csharp cs-dir] [-r SF__] [-v]` (no `pack` subcommand)
-- No output/target → writes `<entry-dir>/bundle.lua`.
-- `-o <map.w3x>` → injects into MPQ `war3map.lua`; `-o <.w3x-folder>` → injects into folder `war3map.lua`; `-o <non-w3x-folder>` → writes `<folder>/bundle.lua`; `-o <non-w3x-file>` → exit 2.
-- Dependencies: literal `require`/`dofile`/`doFile`/`loadfile`/`loadFile`/`package.load`/`include`/`import`/`load`, single or double quotes, slash/backslash/dot module separators.
-- Commented calls ignored except forced line comments like `-- !require('Path.To.Module')`; calculated paths require `--include`.
-- Bundle emits dependency-first module loaders/polyfills and tree-shakes unreachable Lua files.
-- Injection wraps bundle code as tagged `function SF__Bundle()` comments (`--sf-builder:<length>/<checksum>`) and splices `pcall(SF__Bundle)` at the end of `function main()`.
+## Lua And Builder Semantics
+- All transpiled globals live under one root table, default `SF__`, configurable with `--root-table`.
+- Namespace/type tables are idempotent (`ROOT.NS = ROOT.NS or {}`); static methods use dot syntax, instance methods use colon syntax, constructors emit `.New(...)` and return `self`.
+- Roslyn semantic lowering rewrites implicit `this` field access; binary/unary expressions are deliberately parenthesized because Lua precedence differs from C#.
+- String concatenation/interpolation uses the nil-safe `StrConcat__` helper when needed.
+- Builder dependency scanning follows literal `require`, `dofile`, `doFile`, `loadfile`, `loadFile`, `package.load`, `include`, `import`, and `load`; plain commented calls are ignored, `-- !require(...)` is forced, and dynamic paths need `--include`.
+- Injection wraps generated bundles between `--sf-builder:<length>/<checksum>` markers, emits `function SF__Bundle()`, and splices a single `pcall(SF__Bundle)` into `function main()`.
 
-## Lua emission contract
-- ALL globals live under one root table (default `SF__`, configurable via `--root-table`)
-- Namespace tables emitted idempotently: `SF__.X = SF__.X or {}` (each prefix once)
-- Static methods → `function ROOT.NS.T.M(args)`
-- Instance classes → `setmetatable({}, { __index = ROOT.NS.T })` + `function ROOT.NS.T:Method()` colon syntax
-- Constructors → `.New(...)` returning `self`
-- Implicit `this` field access rewritten via Roslyn semantic model in `IRLowering.LowerIdentifier`
-- Binary/unary expressions ALWAYS parenthesized (Lua precedence differs from C# for `..`, `and`/`or`, bitwise)
-- String interpolation → `..` chain, empty parts dropped (no `"" ..` prefix)
-- Compound assignment expanded to `x = x op v`
+## Testing Style
+- Prefer focused xUnit tests near the affected tool: `EmitSmokeTests`, `BuilderTests`, `JassGenTests`, or `ClassSampleTests`.
+- Assert structural behavior with `Assert.Contains` / `Assert.Matches`; avoid byte-for-byte golden assertions for emitted Lua.
+- Tests commonly create temporary source trees and call pipelines directly instead of shelling out to published executables.
 
-## Test style
-- Structural assertions only (`Assert.Contains` / `Assert.Matches` with regex tolerating parens)
-- No byte-equal golden file checks
-- `ClassSampleTests` reads `samples/Hero.cs` via `FindRepoRoot()` helper
-
-## Output path validation
-- Reject when `-o` points to existing directory (exit 2)
-- Guard `Directory.CreateDirectory(null!)` when output is a bare filename
+## Pitfalls
+- Do not edit `bin/`, `obj/`, or `publish/` outputs unless explicitly asked.
+- Avoid hand-editing generated `*.g.cs` stubs in `assets/libs/Jass-2.0.4/` unless the task is specifically about the checked-in generated baseline; normally regenerate with `sf-jassgen`.
+- `Basic.Reference.Assemblies.Net100` is used for Roslyn references; avoid `typeof(object).Assembly.Location` because single-file publish triggers IL3000.
+- Keep changes surgical. The repo has intentionally separate tools, so avoid cross-project abstractions unless tests or repeated local patterns justify them.

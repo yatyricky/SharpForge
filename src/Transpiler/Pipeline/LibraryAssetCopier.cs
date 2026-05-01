@@ -4,17 +4,20 @@ namespace SharpForge.Transpiler.Pipeline;
 
 internal static class LibraryAssetCopier
 {
-    private const string ResourcePrefix = "SharpForge.Transpiler.Assets.libs/";
+    private const string LibraryResourcePrefix = "SharpForge.Transpiler.Assets.libs/";
+    private const string ProjectTemplateResourceName = "SharpForge.Transpiler.Assets.templates/SharpForge.Project.csproj.template";
 
-    public static async Task CopyBundledLibrariesAsync(DirectoryInfo inputDirectory, CancellationToken cancellationToken)
+    public static async Task CopyBundledAssetsAsync(DirectoryInfo inputDirectory, CancellationToken cancellationToken)
     {
         var assembly = typeof(LibraryAssetCopier).Assembly;
+        await CopyProjectTemplateAsync(assembly, inputDirectory, cancellationToken);
+
         foreach (var resourceName in assembly.GetManifestResourceNames()
-                     .Where(name => name.StartsWith(ResourcePrefix, StringComparison.Ordinal)))
+                     .Where(name => name.StartsWith(LibraryResourcePrefix, StringComparison.Ordinal)))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var relativePath = resourceName[ResourcePrefix.Length..]
+            var relativePath = resourceName[LibraryResourcePrefix.Length..]
                 .Replace('/', Path.DirectorySeparatorChar)
                 .Replace('\\', Path.DirectorySeparatorChar);
             var outputPath = Path.Combine(inputDirectory.FullName, TranspileOptions.DefaultLibraryFolder, relativePath);
@@ -29,5 +32,22 @@ internal static class LibraryAssetCopier
             await using var output = File.Create(outputPath);
             await resource.CopyToAsync(output, cancellationToken);
         }
+    }
+
+    private static async Task CopyProjectTemplateAsync(
+        Assembly assembly,
+        DirectoryInfo inputDirectory,
+        CancellationToken cancellationToken)
+    {
+        var outputPath = Path.Combine(inputDirectory.FullName, inputDirectory.Name + ".csproj");
+        if (File.Exists(outputPath))
+        {
+            return;
+        }
+
+        await using var resource = assembly.GetManifestResourceStream(ProjectTemplateResourceName)
+            ?? throw new InvalidOperationException($"Bundled project template resource not found: {ProjectTemplateResourceName}");
+        await using var output = File.Create(outputPath);
+        await resource.CopyToAsync(output, cancellationToken);
     }
 }

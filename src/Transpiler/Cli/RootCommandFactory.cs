@@ -23,6 +23,10 @@ internal static class RootCommandFactory
             aliases: ["--check", "-c"],
             description: "Lint only: parse, lower and emit but do not write the output file.");
 
+        var initOpt = new Option<bool>(
+            aliases: ["--init"],
+            description: "Initialize editor support only: copy the csproj template and bundled libs, then exit.");
+
         var defineOpt = new Option<string[]>(
             aliases: ["--define", "-d"],
             description: "Preprocessor symbols (repeatable).")
@@ -60,6 +64,7 @@ internal static class RootCommandFactory
             inputArg,
             outputOpt,
             checkOpt,
+            initOpt,
             defineOpt,
             rootTableOpt,
             ignoreClassOpt,
@@ -81,7 +86,8 @@ internal static class RootCommandFactory
                 IgnoredClasses: context.ParseResult.GetValueForOption(ignoreClassOpt) ?? Array.Empty<string>(),
                 LibraryFolders: context.ParseResult.GetValueForOption(libraryFolderOpt) ?? Array.Empty<string>(),
                 CheckOnly: context.ParseResult.GetValueForOption(checkOpt),
-                Verbose: context.ParseResult.GetValueForOption(verboseOpt));
+                Verbose: context.ParseResult.GetValueForOption(verboseOpt),
+                InitOnly: context.ParseResult.GetValueForOption(initOpt));
 
             var pipeline = new TranspilePipeline();
             context.ExitCode = await pipeline.RunAsync(options, context.GetCancellationToken());

@@ -54,6 +54,8 @@ public sealed class LuaEmitter
             EmitType(module.Types[i]);
         }
 
+        EmitEntryPointCall(module);
+
         // Trim trailing blank lines, keep exactly one terminating newline.
         var s = _sb.ToString().TrimEnd('\n', '\r');
         return s + "\n";
@@ -412,6 +414,21 @@ public sealed class LuaEmitter
 
         _indent--;
         WriteLine("end");
+    }
+
+    private void EmitEntryPointCall(IRModule module)
+    {
+        var entry = module.Types
+            .SelectMany(type => type.Methods.Select(method => new { Type = type, Method = method }))
+            .FirstOrDefault(candidate => candidate.Method.IsEntryPoint);
+
+        if (entry is null)
+        {
+            return;
+        }
+
+        _sb.Append('\n');
+        WriteLine($"{FormatTypePath(entry.Type)}.{entry.Method.LuaName}()");
     }
 
     private void EmitConstructor(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
@@ -907,6 +924,17 @@ public sealed class LuaEmitter
     }
 
     private string FormatTypeReference(IRTypeReference type)
+    {
+        var sb = new StringBuilder(_rootTable);
+        foreach (var segment in type.NamespaceSegments)
+        {
+            sb.Append('.').Append(segment);
+        }
+        sb.Append('.').Append(type.Name);
+        return sb.ToString();
+    }
+
+    private string FormatTypePath(IRType type)
     {
         var sb = new StringBuilder(_rootTable);
         foreach (var segment in type.NamespaceSegments)
