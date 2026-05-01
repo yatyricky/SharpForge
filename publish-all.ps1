@@ -37,6 +37,11 @@ $projects = @(
         Name = "JassGen"
         Project = "src\JassGen\JassGen.csproj"
         Binary = "sf-jassgen"
+    },
+    @{
+        Name = "Gui"
+        Project = "src\Gui\Gui.csproj"
+        Binary = "sf-gui"
     }
 )
 
