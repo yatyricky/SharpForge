@@ -228,7 +228,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _logBuffer.Clear();
         await RunToolAsync("sf-transpile", CSharpPathBox.Text.Trim(), "--init");
+        ShowLogDialog();
     }
 
     private async void RunTranspileCheck(object sender, RoutedEventArgs e)
@@ -239,7 +241,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _logBuffer.Clear();
         await RunToolAsync("sf-transpile", BuildTranspileArguments(checkOnly: true));
+        ShowLogDialog();
     }
 
     private async void RunTranspile(object sender, RoutedEventArgs e)
@@ -250,7 +254,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _logBuffer.Clear();
         await RunTranspilerStepAsync();
+        ShowLogDialog();
     }
 
     private async void RunBuild(object sender, RoutedEventArgs e)
@@ -264,7 +270,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _logBuffer.Clear();
         await RunBuilderStepAsync();
+        ShowLogDialog();
     }
 
     private async void RunJassGen(object sender, RoutedEventArgs e)

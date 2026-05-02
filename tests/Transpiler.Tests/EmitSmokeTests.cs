@@ -807,18 +807,19 @@ public class EmitSmokeTests
         Assert.Contains("for i, value in ipairs(collection) do", lua);
         Assert.Matches(@"values\[\(?\s*0\s*\+\s*1\s*\)?\]", lua);
         Assert.Contains("#values", lua);
-        Assert.Matches(@"local values\d* = \{4, 5\}", lua);
-        Assert.Matches(@"table\.insert\(values\d*, 6\)", lua);
-        Assert.Matches(@"values\d*\[\(?\s*1\s*\+\s*1\s*\)?\]", lua);
+        Assert.Matches(@"local values\d* = SF__\.ListNew__\(\{4, 5\}\)", lua);
+        Assert.Matches(@"SF__\.ListAdd__\(values\d*, 6\)", lua);
+        Assert.Matches(@"SF__\.ListGet__\(values\d*, 1\)", lua);
+        Assert.Matches(@"SF__\.ListCount__\(values\d*\)", lua);
     }
 
     [Fact]
-    public async Task SharpLib_collections_emit_stub_backed_lua_helpers()
+    public async Task SFLib_collections_emit_stub_backed_lua_helpers()
     {
         var src = """
-            using SharpLib;
+            using SFLib;
 
-            namespace SharpLib
+            namespace SFLib
             {
                 public class List<T>
                 {
@@ -882,7 +883,7 @@ public class EmitSmokeTests
             }
             """;
 
-        var lua = await TranspileSourceAsync(src, "SharpLibCollections.cs");
+        var lua = await TranspileSourceAsync(src, "SFLibCollections.cs");
 
         Assert.Contains("function SF__.DictNew__()", lua);
         Assert.Contains("function SF__.DictGet__(dict, key)", lua);
@@ -890,15 +891,24 @@ public class EmitSmokeTests
         Assert.Contains("function SF__.DictRemove__(dict, key)", lua);
         Assert.Contains("function SF__.DictIterate__(dict)", lua);
         Assert.Contains("SF__.DictNil__ = SF__.DictNil__ or {}", lua);
-        Assert.Contains("return { data = {}, keys = {} }", lua);
+        Assert.Contains("return { data = {}, keys = {}, version = 0 }", lua);
         Assert.Contains("local value = dict.data[key]", lua);
         Assert.Contains("if value == SF__.DictNil__ then return nil end", lua);
         Assert.Contains("table.insert(dict.keys, key)", lua);
+        Assert.Contains("dict.version = dict.version + 1", lua);
+        Assert.Contains("local version = dict.version", lua);
+        Assert.Contains("if dict.version ~= version then error(\"collection was modified during iteration\") end", lua);
         Assert.DoesNotContain("keySet", lua);
-        Assert.Contains("local values = {}", lua);
-        Assert.Contains("table.insert(values, 1)", lua);
+        Assert.Contains("function SF__.ListNew__(items)", lua);
+        Assert.Contains("return { items = items or {}, version = 0 }", lua);
+        Assert.Contains("function SF__.ListAdd__(list, value)", lua);
+        Assert.Contains("function SF__.ListIterate__(list)", lua);
+        Assert.Contains("if list.version ~= version then error(\"collection was modified during iteration\") end", lua);
+        Assert.Contains("local values = SF__.ListNew__({})", lua);
+        Assert.Contains("SF__.ListAdd__(values, 1)", lua);
         Assert.Contains("function SF__.ListSort__(list, less)", lua);
-        Assert.Contains("while j >= 1 and compare(value, list[j]) do", lua);
+        Assert.Contains("local items = list.items", lua);
+        Assert.Contains("while j >= 1 and compare(value, items[j]) do", lua);
         Assert.Contains("SF__.ListSort__(values)", lua);
         Assert.Contains("local KW__table = SF__.DictNew__()", lua);
         Assert.Contains("SF__.DictSet__(KW__table, \"key\", 1)", lua);
@@ -910,8 +920,85 @@ public class EmitSmokeTests
         Assert.Contains("for kv__Key, kv__Value in SF__.DictIterate__(dict) do", lua);
         Assert.DoesNotContain("local kv = {", lua);
         Assert.Contains("local text = SF__.StrConcat__(kv__Key, \" = \", kv__Value)", lua);
-        Assert.DoesNotContain("-- SharpLib.List", lua);
-        Assert.DoesNotContain("-- SharpLib.Dictionary", lua);
+        Assert.DoesNotContain("-- SFLib.List", lua);
+        Assert.DoesNotContain("-- SFLib.Dictionary", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_lowers_bundled_SFLib_list_to_lua_table()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using SFLib;
+
+            public class Program
+            {
+                public static void Main(string[] args)
+                {
+                    var list = new List<string>();
+                    list.Add("Hello");
+                    list.Add("World");
+
+                    foreach (var item in list)
+                    {
+                        BJDebugMsg(item);
+                    }
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("local list = SF__.ListNew__({})", lua);
+        Assert.Contains("SF__.ListAdd__(list, \"Hello\")", lua);
+        Assert.Contains("SF__.ListAdd__(list, \"World\")", lua);
+        Assert.Contains("for i, item in SF__.ListIterate__(collection) do", lua);
+        Assert.Contains("if list.version ~= version then error(\"collection was modified during iteration\") end", lua);
+        Assert.DoesNotContain("SF__.SFLib.List.New()", lua);
+        Assert.DoesNotContain("list:Add", lua);
+        Assert.DoesNotContain("-- SFLib.List", lua);
+    }
+
+    [Fact]
+    public async Task Nested_types_with_same_name_keep_parent_type_path()
+    {
+        var src = """
+            namespace Demo;
+
+            public class First
+            {
+                public class Enumerator
+                {
+                    public int Value() { return 1; }
+                }
+            }
+
+            public class Second
+            {
+                public class Enumerator
+                {
+                    public int Value() { return 2; }
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "NestedEnumerators.cs");
+
+        Assert.Contains("-- Demo.First.Enumerator", lua);
+        Assert.Contains("SF__.Demo.First.Enumerator = SF__.Demo.First.Enumerator or {}", lua);
+        Assert.Contains("-- Demo.Second.Enumerator", lua);
+        Assert.Contains("SF__.Demo.Second.Enumerator = SF__.Demo.Second.Enumerator or {}", lua);
     }
 
     [Fact]

@@ -111,7 +111,7 @@ public sealed class IRLowering
 
     private IRType LowerType(TypeDeclarationSyntax typeDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
     {
-        var nsSegments = GetNamespaceSegments(symbol.ContainingNamespace);
+        var nsSegments = GetTypeContainerSegments(symbol);
         var irType = new IRType
         {
             NamespaceSegments = nsSegments,
@@ -236,6 +236,19 @@ public sealed class IRLowering
             stack.Push(n.Name);
         }
         return stack.ToArray();
+    }
+
+    private static IReadOnlyList<string> GetTypeContainerSegments(INamedTypeSymbol type)
+    {
+        var segments = new List<string>(GetNamespaceSegments(type.ContainingNamespace));
+        var containingTypes = new Stack<string>();
+        for (var current = type.ContainingType; current is not null; current = current.ContainingType)
+        {
+            containingTypes.Push(current.Name);
+        }
+
+        segments.AddRange(containingTypes);
+        return segments;
     }
 
     private IRFunction LowerConstructor(ConstructorDeclarationSyntax c, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
@@ -632,14 +645,15 @@ public sealed class IRLowering
 
     private IRStmt LowerForEach(ForEachStatementSyntax fe, SemanticModel model, CancellationToken ct)
     {
+        var collectionType = model.GetTypeInfo(fe.Expression).Type;
         var collection = LowerExpr(fe.Expression, model);
         var itemSymbol = model.GetDeclaredSymbol(fe, ct);
         var body = new IRBlock();
-        if (!IsDictionaryType(model.GetTypeInfo(fe.Expression).Type))
+        if (!IsDictionaryType(collectionType))
         {
             var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
             LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
-            return new IRForEach(itemName, collection, body);
+            return new IRForEach(itemName, collection, body, UseListIterator: IsListType(collectionType));
         }
 
         var itemBaseName = EscapeLuaKeyword(fe.Identifier.ValueText);
@@ -702,6 +716,11 @@ public sealed class IRLowering
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerDictionaryAssignment(ae.Left, ae.Right, model) is { } dictionaryAssignment)
         {
             return dictionaryAssignment;
+        }
+
+        if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerListAssignment(ae.Left, ae.Right, model) is { } listAssignment)
+        {
+            return listAssignment;
         }
 
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerAccessorAssignment(ae.Left, ae.Right, model) is { } accessorAssignment)
@@ -768,9 +787,9 @@ public sealed class IRLowering
                     return keyValueAccess;
                 }
 
-                if (IsCollectionLengthAccess(ma, model))
+                if (TryLowerCollectionLengthAccess(ma, model) is { } collectionLength)
                 {
-                    return new IRLength(LowerExpr(ma.Expression, model));
+                    return collectionLength;
                 }
 
                 if (TryLowerPropertyGet(ma, model) is { } propertyGet)
@@ -784,6 +803,11 @@ public sealed class IRLowering
                 if (TryLowerDictionaryGet(elementAccess, model) is { } dictionaryGet)
                 {
                     return dictionaryGet;
+                }
+
+                if (TryLowerListGet(elementAccess, model) is { } listGet)
+                {
+                    return listGet;
                 }
 
                 if (IsCollectionElementAccess(elementAccess, model))
@@ -871,9 +895,7 @@ public sealed class IRLowering
 
         if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
         {
-            return new IRInvocation(
-                new IRMemberAccess(new IRIdentifier("table"), "insert"),
-                new[] { LowerExpr(addAccess.Expression, model), args[0] });
+            return new IRListAdd(LowerExpr(addAccess.Expression, model), args[0]);
         }
 
         if (symbol is { Name: "Sort", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax sortAccess && args.Count <= 1)
@@ -979,29 +1001,44 @@ public sealed class IRLowering
 
         if (IsListType(type))
         {
-            return new IRArrayLiteral(obj.Initializer?.Expressions.Select(item => LowerExpr(item, model)).ToArray() ?? Array.Empty<IRExpr>());
+            return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerExpr(item, model)).ToArray() ?? Array.Empty<IRExpr>());
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
         return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args);
     }
 
-    private bool IsCollectionLengthAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    private IRExpr? TryLowerCollectionLengthAccess(MemberAccessExpressionSyntax access, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(access).Symbol;
         if (symbol is not IPropertySymbol { Name: "Length" or "Count" })
         {
-            return false;
+            return null;
         }
 
         var type = model.GetTypeInfo(access.Expression).Type;
-        return type is IArrayTypeSymbol || IsListType(type) || IsDictionaryType(type);
+        if (type is IArrayTypeSymbol)
+        {
+            return new IRLength(LowerExpr(access.Expression, model));
+        }
+
+        if (IsListType(type))
+        {
+            return new IRListCount(LowerExpr(access.Expression, model));
+        }
+
+        if (IsDictionaryType(type))
+        {
+            return new IRDictionaryCount(LowerExpr(access.Expression, model));
+        }
+
+        return null;
     }
 
     private bool IsCollectionElementAccess(ElementAccessExpressionSyntax access, SemanticModel model)
     {
         var type = model.GetTypeInfo(access.Expression).Type;
-        return type is IArrayTypeSymbol || IsListType(type);
+        return type is IArrayTypeSymbol;
     }
 
     private static bool IsListType(ITypeSymbol? type)
@@ -1027,12 +1064,14 @@ public sealed class IRLowering
             .Any(symbol => symbol is not null && IsTaskDelay(symbol));
 
     private static bool IsSharpLibType(INamedTypeSymbol symbol)
-        => symbol.ContainingNamespace.ToDisplayString().StartsWith("SharpLib", StringComparison.Ordinal);
+        => IsSharpLibNamespace(symbol.ContainingNamespace);
 
     private static bool IsSharpLibNamespace(INamespaceSymbol ns)
     {
         var name = ns.ToDisplayString();
-        return name == "SharpLib" || name == "SharpLib.Collections";
+        return name == "SFLib"
+               || name == "SharpLib"
+               || name == "SharpLib.Collections";
     }
 
     private bool IsInLibraryFolder(SyntaxTree tree)
@@ -1068,11 +1107,32 @@ public sealed class IRLowering
             LowerExpr(right, model)));
     }
 
+    private IRStmt? TryLowerListAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
+    {
+        if (left is not ElementAccessExpressionSyntax elementAccess || model.GetTypeInfo(elementAccess.Expression).Type is not { } type || !IsListType(type))
+        {
+            return null;
+        }
+
+        return new IRExprStmt(new IRListSet(
+            LowerExpr(elementAccess.Expression, model),
+            LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model),
+            LowerExpr(right, model)));
+    }
+
     private IRExpr? TryLowerDictionaryGet(ElementAccessExpressionSyntax access, SemanticModel model)
     {
         var type = model.GetTypeInfo(access.Expression).Type;
         return IsDictionaryType(type)
             ? new IRDictionaryGet(LowerExpr(access.Expression, model), LowerExpr(access.ArgumentList.Arguments[0].Expression, model))
+            : null;
+    }
+
+    private IRExpr? TryLowerListGet(ElementAccessExpressionSyntax access, SemanticModel model)
+    {
+        var type = model.GetTypeInfo(access.Expression).Type;
+        return IsListType(type)
+            ? new IRListGet(LowerExpr(access.Expression, model), LowerExpr(access.ArgumentList.Arguments[0].Expression, model))
             : null;
     }
 
@@ -1335,7 +1395,7 @@ public sealed class IRLowering
         => GetLuaMethodName(method).Replace("New", "__Init", StringComparison.Ordinal);
 
     private static IRTypeReference LowerTypeReference(INamedTypeSymbol type)
-        => new(GetNamespaceSegments(type.ContainingNamespace), type.Name);
+        => new(GetTypeContainerSegments(type), type.Name);
 
     private IRBaseConstructorCall? GetImplicitBaseConstructorCall(INamedTypeSymbol owner)
     {

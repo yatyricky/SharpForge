@@ -214,7 +214,14 @@ public sealed class LuaEmitter
         WriteLine($"{_rootTable}.DictNil__ = {_rootTable}.DictNil__ or {{}}");
         WriteLine($"function {_rootTable}.DictNew__()");
         _indent++;
-        WriteLine("return { data = {}, keys = {} }");
+        WriteLine("return { data = {}, keys = {}, version = 0 }");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.DictCount__(dict)");
+        _indent++;
+        WriteLine("return #dict.keys");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
@@ -236,6 +243,7 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         WriteLine($"dict.data[key] = value == nil and {_rootTable}.DictNil__ or value");
+        WriteLine("dict.version = dict.version + 1");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
@@ -255,6 +263,7 @@ public sealed class LuaEmitter
         WriteLine("end");
         _indent--;
         WriteLine("end");
+        WriteLine("dict.version = dict.version + 1");
         WriteLine("return true");
         _indent--;
         WriteLine("end");
@@ -265,9 +274,11 @@ public sealed class LuaEmitter
 
         WriteLine($"function {_rootTable}.DictIterate__(dict)");
         _indent++;
+        WriteLine("local version = dict.version");
         WriteLine("local i = 0");
         WriteLine("return function()");
         _indent++;
+        WriteLine("if dict.version ~= version then error(\"collection was modified during iteration\") end");
         WriteLine("i = i + 1");
         WriteLine("local key = dict.keys[i]");
         WriteLine("if key ~= nil then");
@@ -286,22 +297,77 @@ public sealed class LuaEmitter
 
     private void WriteListHelpers()
     {
+        WriteLine($"function {_rootTable}.ListNew__(items)");
+        _indent++;
+        WriteLine("return { items = items or {}, version = 0 }");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.ListCount__(list)");
+        _indent++;
+        WriteLine("return #list.items");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.ListGet__(list, index)");
+        _indent++;
+        WriteLine("return list.items[index + 1]");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.ListSet__(list, index, value)");
+        _indent++;
+        WriteLine("list.items[index + 1] = value");
+        WriteLine("list.version = list.version + 1");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.ListAdd__(list, value)");
+        _indent++;
+        WriteLine("table.insert(list.items, value)");
+        WriteLine("list.version = list.version + 1");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
+        WriteLine($"function {_rootTable}.ListIterate__(list)");
+        _indent++;
+        WriteLine("local version = list.version");
+        WriteLine("local i = 0");
+        WriteLine("return function()");
+        _indent++;
+        WriteLine("if list.version ~= version then error(\"collection was modified during iteration\") end");
+        WriteLine("i = i + 1");
+        WriteLine("local value = list.items[i]");
+        WriteLine("if value ~= nil then return i, value end");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+
         WriteLine($"function {_rootTable}.ListSort__(list, less)");
         _indent++;
         WriteLine("local compare = less or function(a, b) return a < b end");
-        WriteLine("for i = 2, #list do");
+        WriteLine("local items = list.items");
+        WriteLine("for i = 2, #items do");
         _indent++;
-        WriteLine("local value = list[i]");
+        WriteLine("local value = items[i]");
         WriteLine("local j = i - 1");
-        WriteLine("while j >= 1 and compare(value, list[j]) do");
+        WriteLine("while j >= 1 and compare(value, items[j]) do");
         _indent++;
-        WriteLine("list[j + 1] = list[j]");
+        WriteLine("items[j + 1] = items[j]");
         WriteLine("j = j - 1");
         _indent--;
         WriteLine("end");
-        WriteLine("list[j + 1] = value");
+        WriteLine("items[j + 1] = value");
         _indent--;
         WriteLine("end");
+        WriteLine("list.version = list.version + 1");
         WriteLine("return list");
         _indent--;
         WriteLine("end");
@@ -677,7 +743,8 @@ public sealed class LuaEmitter
         _sb.Append("local ").Append(collectionName).Append(" = ");
         EmitExpr(f.Collection);
         _sb.Append('\n');
-        WriteLine($"for {indexName}, {f.ItemName} in ipairs({collectionName}) do");
+        var iterator = f.UseListIterator ? $"{_rootTable}.ListIterate__({collectionName})" : $"ipairs({collectionName})";
+        WriteLine($"for {indexName}, {f.ItemName} in {iterator} do");
         _indent++;
         EmitBlock(f.Body);
         _indent--;
@@ -823,6 +890,11 @@ public sealed class LuaEmitter
             case IRDictionaryNew:
                 _sb.Append(_rootTable).Append(".DictNew__()");
                 break;
+            case IRDictionaryCount dictionaryCount:
+                _sb.Append(_rootTable).Append(".DictCount__(");
+                EmitExpr(dictionaryCount.Table);
+                _sb.Append(')');
+                break;
             case IRDictionaryGet dictionaryGet:
                 _sb.Append(_rootTable).Append(".DictGet__(");
                 EmitExpr(dictionaryGet.Table);
@@ -844,6 +916,46 @@ public sealed class LuaEmitter
                 EmitExpr(dictionaryRemove.Table);
                 _sb.Append(", ");
                 EmitExpr(dictionaryRemove.Key);
+                _sb.Append(')');
+                break;
+            case IRListNew listNew:
+                _sb.Append(_rootTable).Append(".ListNew__({");
+                for (int i = 0; i < listNew.Items.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    EmitExpr(listNew.Items[i]);
+                }
+                _sb.Append("})");
+                break;
+            case IRListCount listCount:
+                _sb.Append(_rootTable).Append(".ListCount__(");
+                EmitExpr(listCount.List);
+                _sb.Append(')');
+                break;
+            case IRListGet listGet:
+                _sb.Append(_rootTable).Append(".ListGet__(");
+                EmitExpr(listGet.List);
+                _sb.Append(", ");
+                EmitExpr(listGet.Index);
+                _sb.Append(')');
+                break;
+            case IRListSet listSet:
+                _sb.Append(_rootTable).Append(".ListSet__(");
+                EmitExpr(listSet.List);
+                _sb.Append(", ");
+                EmitExpr(listSet.Index);
+                _sb.Append(", ");
+                EmitExpr(listSet.Value);
+                _sb.Append(')');
+                break;
+            case IRListAdd listAdd:
+                _sb.Append(_rootTable).Append(".ListAdd__(");
+                EmitExpr(listAdd.List);
+                _sb.Append(", ");
+                EmitExpr(listAdd.Value);
                 _sb.Append(')');
                 break;
             case IRListSort listSort:
@@ -1038,7 +1150,7 @@ public sealed class LuaEmitter
                 || (fr.Condition is not null && ExprUsesListHelpers(fr.Condition))
                 || fr.Incrementors.Any(StmtUsesListHelpers)
                 || BlockUsesListHelpers(fr.Body),
-            IRForEach fe => ExprUsesListHelpers(fe.Collection) || BlockUsesListHelpers(fe.Body),
+            IRForEach fe => fe.UseListIterator || ExprUsesListHelpers(fe.Collection) || BlockUsesListHelpers(fe.Body),
             IRDictionaryForEach fe => ExprUsesListHelpers(fe.Dictionary) || BlockUsesListHelpers(fe.Body),
             IRTry tr => BlockUsesListHelpers(tr.Try)
                 || (tr.Catch is not null && BlockUsesListHelpers(tr.Catch))
@@ -1107,9 +1219,15 @@ public sealed class LuaEmitter
             IRArrayNew arrayNew => ExprUsesTypeChecks(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesTypeChecks),
             IRDictionaryNew => false,
+            IRDictionaryCount dictionaryCount => ExprUsesTypeChecks(dictionaryCount.Table),
             IRDictionaryGet dictionaryGet => ExprUsesTypeChecks(dictionaryGet.Table) || ExprUsesTypeChecks(dictionaryGet.Key),
             IRDictionarySet dictionarySet => ExprUsesTypeChecks(dictionarySet.Table) || ExprUsesTypeChecks(dictionarySet.Key) || ExprUsesTypeChecks(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesTypeChecks(dictionaryRemove.Table) || ExprUsesTypeChecks(dictionaryRemove.Key),
+            IRListNew listNew => listNew.Items.Any(ExprUsesTypeChecks),
+            IRListCount listCount => ExprUsesTypeChecks(listCount.List),
+            IRListGet listGet => ExprUsesTypeChecks(listGet.List) || ExprUsesTypeChecks(listGet.Index),
+            IRListSet listSet => ExprUsesTypeChecks(listSet.List) || ExprUsesTypeChecks(listSet.Index) || ExprUsesTypeChecks(listSet.Value),
+            IRListAdd listAdd => ExprUsesTypeChecks(listAdd.List) || ExprUsesTypeChecks(listAdd.Value),
             IRListSort listSort => ExprUsesTypeChecks(listSort.List) || (listSort.Comparer is not null && ExprUsesTypeChecks(listSort.Comparer)),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
@@ -1122,9 +1240,15 @@ public sealed class LuaEmitter
         {
             IRStringConcat => true,
             IRDictionaryNew => false,
+            IRDictionaryCount dictionaryCount => ExprUsesStringConcat(dictionaryCount.Table),
             IRDictionaryGet dictionaryGet => ExprUsesStringConcat(dictionaryGet.Table) || ExprUsesStringConcat(dictionaryGet.Key),
             IRDictionarySet dictionarySet => ExprUsesStringConcat(dictionarySet.Table) || ExprUsesStringConcat(dictionarySet.Key) || ExprUsesStringConcat(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesStringConcat(dictionaryRemove.Table) || ExprUsesStringConcat(dictionaryRemove.Key),
+            IRListNew listNew => listNew.Items.Any(ExprUsesStringConcat),
+            IRListCount listCount => ExprUsesStringConcat(listCount.List),
+            IRListGet listGet => ExprUsesStringConcat(listGet.List) || ExprUsesStringConcat(listGet.Index),
+            IRListSet listSet => ExprUsesStringConcat(listSet.List) || ExprUsesStringConcat(listSet.Index) || ExprUsesStringConcat(listSet.Value),
+            IRListAdd listAdd => ExprUsesStringConcat(listAdd.List) || ExprUsesStringConcat(listAdd.Value),
             IRListSort listSort => ExprUsesStringConcat(listSort.List) || (listSort.Comparer is not null && ExprUsesStringConcat(listSort.Comparer)),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesStringConcat),
             IRMemberAccess member => ExprUsesStringConcat(member.Target),
@@ -1143,8 +1267,13 @@ public sealed class LuaEmitter
     private static bool ExprUsesDictionaryHelpers(IRExpr expr)
         => expr switch
         {
-            IRDictionaryGet or IRDictionarySet or IRDictionaryRemove => true,
+            IRDictionaryCount or IRDictionaryGet or IRDictionarySet or IRDictionaryRemove => true,
             IRDictionaryNew => true,
+            IRListNew listNew => listNew.Items.Any(ExprUsesDictionaryHelpers),
+            IRListCount listCount => ExprUsesDictionaryHelpers(listCount.List),
+            IRListGet listGet => ExprUsesDictionaryHelpers(listGet.List) || ExprUsesDictionaryHelpers(listGet.Index),
+            IRListSet listSet => ExprUsesDictionaryHelpers(listSet.List) || ExprUsesDictionaryHelpers(listSet.Index) || ExprUsesDictionaryHelpers(listSet.Value),
+            IRListAdd listAdd => ExprUsesDictionaryHelpers(listAdd.List) || ExprUsesDictionaryHelpers(listAdd.Value),
             IRListSort listSort => ExprUsesDictionaryHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesDictionaryHelpers(listSort.Comparer)),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesDictionaryHelpers),
             IRMemberAccess member => ExprUsesDictionaryHelpers(member.Target),
@@ -1164,7 +1293,7 @@ public sealed class LuaEmitter
     private static bool ExprUsesListHelpers(IRExpr expr)
         => expr switch
         {
-            IRListSort => true,
+            IRListNew or IRListCount or IRListGet or IRListSet or IRListAdd or IRListSort => true,
             IRMemberAccess member => ExprUsesListHelpers(member.Target),
             IRElementAccess element => ExprUsesListHelpers(element.Target) || ExprUsesListHelpers(element.Index),
             IRLength length => ExprUsesListHelpers(length.Target),
@@ -1172,6 +1301,7 @@ public sealed class LuaEmitter
             IRArrayLiteral array => array.Items.Any(ExprUsesListHelpers),
             IRArrayNew arrayNew => ExprUsesListHelpers(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesListHelpers),
+            IRDictionaryCount dictionaryCount => ExprUsesListHelpers(dictionaryCount.Table),
             IRDictionaryGet dictionaryGet => ExprUsesListHelpers(dictionaryGet.Table) || ExprUsesListHelpers(dictionaryGet.Key),
             IRDictionarySet dictionarySet => ExprUsesListHelpers(dictionarySet.Table) || ExprUsesListHelpers(dictionarySet.Key) || ExprUsesListHelpers(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesListHelpers(dictionaryRemove.Table) || ExprUsesListHelpers(dictionaryRemove.Key),
@@ -1195,9 +1325,15 @@ public sealed class LuaEmitter
             IRArrayLiteral array => array.Items.Any(ExprUsesCoroutineHelpers),
             IRArrayNew arrayNew => ExprUsesCoroutineHelpers(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesCoroutineHelpers),
+            IRDictionaryCount dictionaryCount => ExprUsesCoroutineHelpers(dictionaryCount.Table),
             IRDictionaryGet dictionaryGet => ExprUsesCoroutineHelpers(dictionaryGet.Table) || ExprUsesCoroutineHelpers(dictionaryGet.Key),
             IRDictionarySet dictionarySet => ExprUsesCoroutineHelpers(dictionarySet.Table) || ExprUsesCoroutineHelpers(dictionarySet.Key) || ExprUsesCoroutineHelpers(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesCoroutineHelpers(dictionaryRemove.Table) || ExprUsesCoroutineHelpers(dictionaryRemove.Key),
+            IRListNew listNew => listNew.Items.Any(ExprUsesCoroutineHelpers),
+            IRListCount listCount => ExprUsesCoroutineHelpers(listCount.List),
+            IRListGet listGet => ExprUsesCoroutineHelpers(listGet.List) || ExprUsesCoroutineHelpers(listGet.Index),
+            IRListSet listSet => ExprUsesCoroutineHelpers(listSet.List) || ExprUsesCoroutineHelpers(listSet.Index) || ExprUsesCoroutineHelpers(listSet.Value),
+            IRListAdd listAdd => ExprUsesCoroutineHelpers(listAdd.List) || ExprUsesCoroutineHelpers(listAdd.Value),
             IRListSort listSort => ExprUsesCoroutineHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesCoroutineHelpers(listSort.Comparer)),
             IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
             IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
