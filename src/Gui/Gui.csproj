@@ -9,7 +9,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
 
     <!-- Framework-dependent single-file publish defaults -->
     <PublishSingleFile>true</PublishSingleFile>
