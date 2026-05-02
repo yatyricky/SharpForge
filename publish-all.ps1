@@ -89,7 +89,7 @@ foreach ($project in $projects) {
 }
 
 Write-Host ""
-Write-Host "Published single-file executables:" -ForegroundColor Green
+Write-Host "Published framework-dependent single-file executables (requires .NET runtime):" -ForegroundColor Green
 Get-ChildItem -LiteralPath $runtimeOutputDir -File |
     Sort-Object Name |
     ForEach-Object { Write-Host "  $($_.FullName)" }

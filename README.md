@@ -73,7 +73,7 @@ dotnet build SharpForge.sln
 dotnet test  tests\Transpiler.Tests\Transpiler.Tests.csproj
 ```
 
-Single-file publish:
+Framework-dependent single-file publish:
 
 ```powershell
 .\publish-all.ps1
@@ -106,7 +106,7 @@ Legacy Lua interop uses the same convention (`__SF = __SF or {}; __SF.HeroSystem
 
 ## Sub-projects
 
-> Each sub-project compiles to a single, self-contained `.exe`.
+> Each sub-project compiles to a single `.exe` that uses the installed .NET runtime.
 
 ### `Transpiler` (`sf-transpile.exe`)
 
