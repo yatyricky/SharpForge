@@ -19,8 +19,11 @@ The SDK is pinned by [global.json](../global.json) to .NET 10.0.202 with `rollFo
 
 ## CLI Contracts
 - `sf-transpile <input-dir> [-o out.lua] [--init] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [--library-folder libs]... [-v]`; there is no `build` subcommand. Output defaults to `<input>/sf-out.lua`; `--check` does not write a file; `--init` only copies the project template and bundled libs, then exits.
-- `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [--csharp cs-dir] [-r SF__] [-v]`; there is no `pack` subcommand. No output writes `bundle.lua` next to the entry script. `.w3x` files/folders and existing `war3map.lua` targets are injected; other folders receive `bundle.lua`; other files exit 2.
+- `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [-v]`; there is no `pack` subcommand. No output writes `bundle.lua` next to the entry script. `.w3x` files/folders and existing `war3map.lua` targets are injected; other folders receive `bundle.lua`; other files exit 2.
 - `sf-jassgen <input-dir> [-o out-dir] [--host-class NAME] [-v]`; default host class is `JASS`, which must stay aligned with transpiler `--ignore-class` defaults.
+
+## Design Philosophy
+- Do one thing and do it well. Keep tool responsibilities separate: Builder owns Lua dependency bundling and `.w3x`/`war3map.lua` injection only; it must not invoke or reference Transpiler. C# -> Lua belongs to `sf-transpile` and GUI orchestration.
 
 Use the existing System.CommandLine beta style in CLI factories. Context-based handlers set `context.ExitCode`; delegate handlers in `sf-build` currently set `Environment.ExitCode`.
 

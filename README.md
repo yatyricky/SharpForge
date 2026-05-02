@@ -150,8 +150,6 @@ sf-transpile <input-dir> [--output <out.lua>]   # default: <input>/sf-out.lua
 sf-build <entry.lua>                              # default output: <entry-dir>/bundle.lua
          [--output <map.w3x | map.w3x-folder | folder>]
          [--include <path1.lua;path2.lua>]
-         [--csharp <cs-dir>]                      # transpile C# first, then bundle
-         [--root-table SF__]
          [--verbose]
 ```
 
@@ -186,7 +184,7 @@ When `sf-transpile` runs, it also initializes editor support in the input folder
 | Event declarations                 | ✅     | Field-like event backing for current MVP                  |
 | Async/iterator MVP                 | ✅     | Synchronous `await`; simple `yield return` table materialization |
 | Type-check helper optimization     | ✅     | Emits `is` / `as` helpers only when needed                |
-| Toolchain pack integration         | ✅     | `sf-build` bundles Lua and optional transpiled C#          |
+| Toolchain pack integration         | ✅     | `sf-transpile` emits Lua; `sf-build` bundles and injects it |
 | Custom root-table name             | ✅     | `--root-table` (default `SF__`)                          |
 | Unsupported syntax diagnostics     | ✅     | `--check` exits non-zero with source locations           |
 | Topological multi-file ordering    | ✅     | Entry-script dependency graph ordered dependency-first    |

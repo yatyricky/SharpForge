@@ -1,6 +1,5 @@
 using SharpForge.Builder.Inject;
 using SharpForge.Builder.Pack;
-using SharpForge.Transpiler.Pipeline;
 using Xunit;
 
 namespace SharpForge.Transpiler.Tests;
@@ -38,8 +37,6 @@ public sealed class BuilderTests
             new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
             OutputFile: null,
             IncludePaths: Array.Empty<string>(),
-            CSharpInputDirectory: null,
-            RootTable: TranspileOptions.DefaultRootTable,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
@@ -71,8 +68,6 @@ public sealed class BuilderTests
             new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
             OutputFile: null,
             IncludePaths: new[] { "Manual.lua" },
-            CSharpInputDirectory: null,
-            RootTable: TranspileOptions.DefaultRootTable,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
@@ -92,8 +87,6 @@ public sealed class BuilderTests
             new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
             OutputFile: new FileInfo(target.FullName),
             IncludePaths: Array.Empty<string>(),
-            CSharpInputDirectory: null,
-            RootTable: TranspileOptions.DefaultRootTable,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
@@ -117,8 +110,6 @@ public sealed class BuilderTests
             new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
             OutputFile: new FileInfo(target.FullName + Path.DirectorySeparatorChar),
             IncludePaths: Array.Empty<string>(),
-            CSharpInputDirectory: null,
-            RootTable: TranspileOptions.DefaultRootTable,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
@@ -144,8 +135,6 @@ public sealed class BuilderTests
             new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
             OutputFile: new FileInfo(target),
             IncludePaths: Array.Empty<string>(),
-            CSharpInputDirectory: null,
-            RootTable: TranspileOptions.DefaultRootTable,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(2, exitCode);
@@ -167,8 +156,6 @@ public sealed class BuilderTests
             new FileInfo(Path.Combine(dir.FullName, "Main.lua")),
             OutputFile: new FileInfo(scriptPath),
             IncludePaths: Array.Empty<string>(),
-            CSharpInputDirectory: null,
-            RootTable: TranspileOptions.DefaultRootTable,
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);

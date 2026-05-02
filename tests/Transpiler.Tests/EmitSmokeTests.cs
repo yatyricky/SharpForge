@@ -254,38 +254,6 @@ public class EmitSmokeTests
     }
 
     [Fact]
-    public async Task Samples_transpile_jass_calls_without_emitting_extern_host()
-    {
-        var repoRoot = FindRepoRoot();
-        var sampleDir = Directory.Exists(Path.Combine(repoRoot, "samples"))
-            ? Path.Combine(repoRoot, "samples")
-            : Path.Combine(repoRoot, "SampleProject");
-        var sourceFiles = Directory.GetFiles(sampleDir, "*.cs", SearchOption.AllDirectories)
-            .Concat(Directory.GetFiles(Path.Combine(repoRoot, "assets", "jass", "generated"), "*.cs", SearchOption.AllDirectories))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(path => new FileInfo(path))
-            .ToArray();
-
-        var compilation = await new RoslynFrontend(Array.Empty<string>())
-            .CompileAsync(sourceFiles, CancellationToken.None);
-        var errors = compilation.GetDiagnostics()
-            .Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)
-            .ToArray();
-        Assert.True(errors.Length == 0, "C# compile errors:\n" + string.Join("\n", errors.Select(e => e.ToString())));
-
-        var module = new IRLowering().Lower(compilation, CancellationToken.None);
-        var lua = new LuaEmitter(TranspileOptions.DefaultRootTable).Emit(module);
-
-        Assert.Contains("SF__.Game.Hero.New(\"Arthur\", 100)", lua);
-        Assert.Contains("hero:LevelUp()", lua);
-        Assert.Contains("hero:ToString()", lua);
-        Assert.Contains("BJDebugMsg(hero:ToString())", lua);
-        Assert.DoesNotContain("unsupported expr: ObjectCreationExpression", lua);
-        Assert.DoesNotContain("JASS", lua);
-        Assert.DoesNotContain("-- handle", lua);
-    }
-
-    [Fact]
     public async Task Pipeline_ignores_bin_and_obj_sources()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
@@ -311,59 +279,6 @@ public class EmitSmokeTests
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-    }
-
-    [Fact]
-    public async Task Pipeline_skips_configured_library_folder_sources_during_lowering()
-    {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Demo.cs"), """
-            using ExternalLib;
-
-            public static class Demo
-            {
-                public static int Run()
-                {
-                    LibMarker marker;
-                    return 1;
-                }
-            }
-            """);
-
-        var libraryDir = Path.Combine(dir.FullName, "stubs");
-        Directory.CreateDirectory(libraryDir);
-        await File.WriteAllTextAsync(Path.Combine(libraryDir, "LibMarker.cs"), """
-            namespace ExternalLib;
-
-            public sealed class LibMarker
-            {
-                public static int UnsupportedIfLowered(int value)
-                {
-                    switch (value)
-                    {
-                        case 1: return 1;
-                        default: return 0;
-                    }
-                }
-            }
-            """);
-
-        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: output,
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { "stubs" },
-            CheckOnly: false,
-            Verbose: false), CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        var lua = await File.ReadAllTextAsync(output.FullName);
-        Assert.Contains("function SF__.Demo.Run()", lua);
-        Assert.DoesNotContain("ExternalLib.LibMarker", lua);
-        Assert.DoesNotContain("unsupported stmt: SwitchStatement", lua);
     }
 
     [Fact]

@@ -1,14 +1,11 @@
 namespace SharpForge.Builder.Pack;
 
 using SharpForge.Builder.Inject;
-using SharpForge.Transpiler.Pipeline;
 
 public sealed record PackOptions(
     FileInfo InputScript,
     FileInfo? OutputFile,
     IReadOnlyList<string> IncludePaths,
-    DirectoryInfo? CSharpInputDirectory,
-    string RootTable,
     bool Verbose);
 
 /// <summary>
@@ -30,42 +27,11 @@ public sealed class LuaPacker
             return 2;
         }
 
-        var startupFiles = new List<FileInfo>();
-        string? tempDirectory = null;
         try
         {
-            if (options.CSharpInputDirectory is not null)
-            {
-                if (!options.CSharpInputDirectory.Exists)
-                {
-                    Console.Error.WriteLine($"[sf-build] C# input directory not found: {options.CSharpInputDirectory.FullName}");
-                    return 2;
-                }
-
-                tempDirectory = Path.Combine(Path.GetTempPath(), "sf-build-" + Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(tempDirectory);
-                var transpiledFile = new FileInfo(Path.Combine(tempDirectory, "transpiled.lua"));
-                var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-                    InputDirectory: options.CSharpInputDirectory,
-                    OutputFile: transpiledFile,
-                    PreprocessorSymbols: Array.Empty<string>(),
-                    RootTable: options.RootTable,
-                    IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-                    LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
-                    CheckOnly: false,
-                    Verbose: options.Verbose), cancellationToken);
-
-                if (exitCode != 0)
-                {
-                    return exitCode;
-                }
-
-                startupFiles.Add(transpiledFile);
-            }
-
             var includeFiles = ResolveIncludeFiles(options.InputScript.Directory!, options.IncludePaths).ToArray();
             var bundle = await new LuaBundleBuilder().BuildAsync(
-                new LuaBundleOptions(options.InputScript, includeFiles, startupFiles),
+                new LuaBundleOptions(options.InputScript, includeFiles, Array.Empty<FileInfo>()),
                 cancellationToken).ConfigureAwait(false);
 
             var outputExit = await WriteOutputAsync(options, bundle.Text, cancellationToken).ConfigureAwait(false);
@@ -85,13 +51,6 @@ public sealed class LuaPacker
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
-        }
-        finally
-        {
-            if (tempDirectory is not null && Directory.Exists(tempDirectory))
-            {
-                Directory.Delete(tempDirectory, recursive: true);
-            }
         }
     }
 
