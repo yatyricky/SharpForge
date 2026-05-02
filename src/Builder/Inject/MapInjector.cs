@@ -43,7 +43,7 @@ public sealed class MapInjector
                 return 2;
             }
 
-            return await InjectArchiveAsync(mapPath, bundle, cancellationToken).ConfigureAwait(false);
+            return await InjectArchiveCopyAsync(mapPath, bundle, cancellationToken).ConfigureAwait(false);
         }
 
         if (IsWar3MapLuaPath(mapPath))
@@ -388,36 +388,60 @@ public sealed class MapInjector
         }
     }
 
-    private static async Task<int> InjectArchiveAsync(string mapFile, string bundle, CancellationToken cancellationToken)
+    private static async Task<int> InjectArchiveCopyAsync(string mapFile, string bundle, CancellationToken cancellationToken)
     {
+        var copyPath = GetArchiveCopyPath(mapFile);
         try
         {
-            using var archive = MpqArchive.Open(mapFile, loadListFile: true);
-            var scriptName = TryReadArchiveFile(archive, War3MapLua, out var original)
-                ? War3MapLua
-                : TryReadArchiveFile(archive, ScriptsWar3MapLua, out original)
-                    ? ScriptsWar3MapLua
-                    : null;
-
-            if (scriptName is null)
+            File.Copy(mapFile, copyPath, overwrite: true);
+            var exitCode = await InjectArchiveAsync(copyPath, bundle, cancellationToken).ConfigureAwait(false);
+            if (exitCode == 0)
             {
-                Console.Error.WriteLine("[sf-build] war3map.lua not found in .w3x archive.");
-                return 2;
+                Console.WriteLine($"[sf-build] wrote map copy: {copyPath}");
             }
 
-            var injected = InjectIntoMain(original, bundle);
-            var bytes = Encoding.UTF8.GetBytes(injected);
-            await using var scriptStream = new MemoryStream(bytes);
-            using var newFile = MpqFile.New(scriptStream, scriptName);
-            newFile.TargetFlags = MpqFileFlags.Exists | MpqFileFlags.CompressedMulti;
+            return exitCode;
+        }
+        catch (IOException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+    }
 
-            var builder = new MpqArchiveBuilder(archive);
-            builder.RemoveFile(scriptName);
-            builder.AddFile(newFile);
+    private static async Task<int> InjectArchiveAsync(string mapFile, string bundle, CancellationToken cancellationToken)
+    {
+        var tempPath = mapFile + ".sf-tmp";
+        try
+        {
+            var mapBytes = await File.ReadAllBytesAsync(mapFile, cancellationToken).ConfigureAwait(false);
+            using (var archiveStream = new MemoryStream(mapBytes, writable: false))
+            using (var archive = MpqArchive.Open(archiveStream, loadListFile: true))
+            {
+                var scriptName = TryReadArchiveFile(archive, War3MapLua, out var original)
+                    ? War3MapLua
+                    : TryReadArchiveFile(archive, ScriptsWar3MapLua, out original)
+                        ? ScriptsWar3MapLua
+                        : null;
 
-            var tempPath = mapFile + ".sf-tmp";
-            builder.SaveTo(tempPath);
-            archive.Dispose();
+                if (scriptName is null)
+                {
+                    Console.Error.WriteLine("[sf-build] war3map.lua not found in .w3x archive.");
+                    return 2;
+                }
+
+                var injected = InjectIntoMain(original, bundle);
+                var bytes = Encoding.UTF8.GetBytes(injected);
+                await using var scriptStream = new MemoryStream(bytes);
+                using var newFile = MpqFile.New(scriptStream, scriptName);
+                newFile.TargetFlags = MpqFileFlags.Exists | MpqFileFlags.CompressedMulti;
+
+                var builder = new MpqArchiveBuilder(archive);
+                builder.AddFile(newFile);
+
+                builder.SaveTo(tempPath);
+            }
+
             File.Copy(tempPath, mapFile, overwrite: true);
             File.Delete(tempPath);
             return 0;
@@ -426,6 +450,13 @@ public sealed class MapInjector
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
         }
     }
 
@@ -461,4 +492,12 @@ public sealed class MapInjector
 
     private static bool IsWar3MapLuaPath(string path)
         => Path.GetFileName(path).Equals(War3MapLua, StringComparison.OrdinalIgnoreCase);
+
+    internal static string GetArchiveCopyPath(string mapFile)
+    {
+        var directory = Path.GetDirectoryName(mapFile) ?? string.Empty;
+        var fileName = Path.GetFileNameWithoutExtension(mapFile);
+        var extension = Path.GetExtension(mapFile);
+        return Path.Combine(directory, fileName + ".sf-build" + extension);
+    }
 }

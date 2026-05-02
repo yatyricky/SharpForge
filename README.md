@@ -233,7 +233,7 @@ Dependency discovery supports literal `require`, `dofile`, `doFile`, `loadfile`,
 Target behavior:
 
 - No `-o, --output` writes `bundle.lua` next to the entry script.
-- `-o, --output <map.w3x>` runs `Injection` into `war3map.lua` inside the MPQ archive.
+- `-o, --output <map.w3x>` copies the archive to `<map>.sf-build.w3x`, then runs `Injection` into the copied archive so an editor-open source map can stay locked/read-only.
 - `-o, --output <map.w3x-folder>` runs `Injection` into `<map.w3x-folder>/war3map.lua` for folder maps.
 - `-o, --output <folder>` writes `<folder>/bundle.lua` when the folder is not a `.w3x` folder.
 - `-o, --output <**/war3map.lua>` runs `Injection` into the file.

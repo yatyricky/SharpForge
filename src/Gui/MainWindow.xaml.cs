@@ -24,6 +24,11 @@ public sealed partial class MainWindow : Window
     private const int DwmWindowAttributeWindowCornerPreference = 33;
     private const int DwmBackdropTypeMica = 2;
     private const int DwmCornerPreferenceRound = 2;
+    private const string RunMarkerPrefix = "__SHARPFORGE_RUN_";
+    private const string RunMarkerBeginTranspiler = RunMarkerPrefix + "BEGIN_TRANSPILER__";
+    private const string RunMarkerEndTranspiler = RunMarkerPrefix + "END_TRANSPILER__";
+    private const string RunMarkerBeginBuilder = RunMarkerPrefix + "BEGIN_BUILDER__";
+    private const string RunMarkerEndBuilder = RunMarkerPrefix + "END_BUILDER__";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly Regex LuaIdentifier = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -105,9 +110,11 @@ public sealed partial class MainWindow : Window
             RootTableBox.Text = string.IsNullOrWhiteSpace(settings.RootTable) ? "SF__" : settings.RootTable;
             IgnoreClassBox.Text = string.IsNullOrWhiteSpace(settings.IgnoreClass) ? "JASS" : settings.IgnoreClass;
             LibraryFolderBox.Text = string.IsNullOrWhiteSpace(settings.LibraryFolder) ? "libs" : settings.LibraryFolder;
+            EnableTranspilerBox.IsChecked = settings.RunTranspiler;
             MainLuaBox.Text = settings.MainLua;
             BuilderOutputBox.Text = settings.BuilderOutput;
             IncludeBox.Text = settings.Include;
+            EnableBuilderBox.IsChecked = settings.RunBuilder;
             JassInputBox.Text = settings.JassInput;
             JassOutputBox.Text = settings.JassOutput;
             JassHostClassBox.Text = string.IsNullOrWhiteSpace(settings.JassHostClass) ? "JASS" : settings.JassHostClass;
@@ -132,9 +139,11 @@ public sealed partial class MainWindow : Window
             RootTableBox.Text = "SF__";
             IgnoreClassBox.Text = "JASS";
             LibraryFolderBox.Text = "libs";
+            EnableTranspilerBox.IsChecked = true;
             MainLuaBox.Clear();
             BuilderOutputBox.Clear();
             IncludeBox.Clear();
+            EnableBuilderBox.IsChecked = true;
             FillDefaultsFromMap();
         }
         finally
@@ -202,9 +211,11 @@ public sealed partial class MainWindow : Window
                 RootTable = RootTableBox.Text.Trim(),
                 IgnoreClass = IgnoreClassBox.Text.Trim(),
                 LibraryFolder = LibraryFolderBox.Text.Trim(),
+                RunTranspiler = EnableTranspilerBox.IsChecked == true,
                 MainLua = MainLuaBox.Text.Trim(),
                 BuilderOutput = BuilderOutputBox.Text.Trim(),
                 Include = IncludeBox.Text.Trim(),
+                RunBuilder = EnableBuilderBox.IsChecked == true,
                 JassInput = JassInputBox.Text.Trim(),
                 JassOutput = JassOutputBox.Text.Trim(),
                 JassHostClass = JassHostClassBox.Text.Trim(),
@@ -229,7 +240,7 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
-        await RunToolAsync("sf-transpile", CSharpPathBox.Text.Trim(), "--init");
+        await RunTranspilerStepAsync([CSharpPathBox.Text.Trim(), "--init"]);
         ShowLogDialog();
     }
 
@@ -242,7 +253,7 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
-        await RunToolAsync("sf-transpile", BuildTranspileArguments(checkOnly: true));
+        await RunTranspilerStepAsync(BuildTranspileArguments(checkOnly: true));
         ShowLogDialog();
     }
 
@@ -255,7 +266,7 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
-        await RunTranspilerStepAsync();
+        await RunTranspilerStepAsync(BuildTranspileArguments(checkOnly: false));
         ShowLogDialog();
     }
 
@@ -295,26 +306,13 @@ public sealed partial class MainWindow : Window
     private async void RunWarcraft(object sender, RoutedEventArgs e)
     {
         SaveSettingsFromFields();
-        if (!ValidateRunInputs())
+        if (!ValidateRunCommands())
         {
             return;
         }
 
         _logBuffer.Clear();
-
-        if (await RunTranspilerStepAsync() != 0)
-        {
-            ShowLogDialog();
-            return;
-        }
-
-        if (await RunBuilderStepAsync() != 0)
-        {
-            ShowLogDialog();
-            return;
-        }
-
-        StartDetached(WarcraftExePath(), ["-launch", "-window", "-loadfile", MapPathBox.Text.Trim()]);
+        await RunPreviewCommandsAsync();
         ShowLogDialog();
     }
 
@@ -355,40 +353,27 @@ public sealed partial class MainWindow : Window
         return args.ToArray();
     }
 
-    private string[] BuildBuildArguments(string mainLua, string map)
+    private string[] BuildBuildArguments(string mainLua, string output)
     {
         var args = new List<string> { mainLua };
-        AddOptional(args, "-o", map);
+        AddOptional(args, "-o", output);
         AddOptional(args, "--include", IncludeBox.Text.Trim());
         return args.ToArray();
     }
 
-    private bool ValidateRunInputs()
+    private bool ValidateRunCommands()
     {
-        var exe = WarcraftExePath();
-        var map = MapPathBox.Text.Trim();
         ClearValidationErrors();
         var messages = new List<string>();
-
-        AddRequiredTextError(messages, WarcraftPathBox, "Warcraft installation path is required.");
-        if (!File.Exists(exe))
-        {
-            AddValidationError(messages, WarcraftPathBox, "Warcraft III.exe was not found under the configured installation path.");
-        }
-        AddRequiredTextError(messages, MapPathBox, "Map path is required.");
-        if (!File.Exists(map) && !Directory.Exists(map))
-        {
-            AddValidationError(messages, MapPathBox, "Map file or folder was not found.");
-        }
-        AddTranspilerValidationErrors(messages);
+        AddRequiredTextError(messages, RunCommandsBox, "At least one Run command is required.");
 
         return ShowValidationErrors(messages);
     }
 
-    private Task<int> RunTranspilerStepAsync()
+    private Task<int> RunTranspilerStepAsync(string[] args)
         => RunCardStepAsync(
             "sf-transpile",
-            BuildTranspileArguments(checkOnly: false),
+            args,
             TranspilerBusyOverlay,
             TranspilerProgress,
             TranspilerStatusText,
@@ -429,6 +414,205 @@ public sealed partial class MainWindow : Window
         return exitCode;
     }
 
+    private async Task<int> RunPreviewCommandsAsync()
+    {
+        var shellLines = new List<string>();
+        foreach (var line in RunCommandLines())
+        {
+            if (TryParseCommandLine(line, out var executable, out var args, out _) && IsWarcraftCommand(executable))
+            {
+                var exitCode = await RunShellLinesAsync(shellLines);
+                if (exitCode != 0)
+                {
+                    return exitCode;
+                }
+
+                shellLines.Clear();
+                StartDetached(executable, args);
+                continue;
+            }
+
+            shellLines.Add(ToShellRunLine(line));
+        }
+
+        return await RunShellLinesAsync(shellLines);
+    }
+
+    private async Task<int> RunShellLinesAsync(IReadOnlyList<string> shellLines)
+    {
+        if (shellLines.Count == 0)
+        {
+            return 0;
+        }
+
+        return await RunShellChainAsync(string.Join(" && ", shellLines));
+    }
+
+    private async Task<int> RunShellChainAsync(string command)
+    {
+        var exe = CommandShellPath();
+        var args = new[] { "/D", "/C", command };
+        Log($"> {Quote(exe)} {string.Join(' ', args.Select(Quote))}");
+
+        var start = new ProcessStartInfo(exe)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (var arg in args)
+        {
+            start.ArgumentList.Add(arg);
+        }
+
+        Process? process;
+        try
+        {
+            process = Process.Start(start);
+        }
+        catch (Win32Exception ex)
+        {
+            Log(ex.Message);
+            return 1;
+        }
+        if (process is null)
+        {
+            Log("Failed to start process.");
+            return 1;
+        }
+
+        using (process)
+        {
+            var stdout = ReadRunShellOutputAsync(process.StandardOutput);
+            var stderr = ReadProcessOutputAsync(process.StandardError);
+            await process.WaitForExitAsync();
+            await stdout;
+            await stderr;
+            ResetRunCardOverlays();
+            Log($"Exit code: {process.ExitCode}");
+            return process.ExitCode;
+        }
+    }
+
+    private async Task ReadRunShellOutputAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync() is { } line)
+        {
+            if (ApplyRunMarker(line.Trim()))
+            {
+                continue;
+            }
+
+            Log(line);
+        }
+    }
+
+    private async Task ReadProcessOutputAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync() is { } line)
+        {
+            Log(line);
+        }
+    }
+
+    private bool ApplyRunMarker(string line)
+    {
+        switch (line)
+        {
+            case RunMarkerBeginTranspiler:
+                ShowRunCardOverlay(TranspilerBusyOverlay, TranspilerProgress, TranspilerStatusText, "Executing transpiler...");
+                return true;
+            case RunMarkerEndTranspiler:
+                HideRunCardOverlay(TranspilerBusyOverlay);
+                return true;
+            case RunMarkerBeginBuilder:
+                ShowRunCardOverlay(BuilderBusyOverlay, BuilderProgress, BuilderStatusText, "Executing builder...");
+                return true;
+            case RunMarkerEndBuilder:
+                HideRunCardOverlay(BuilderBusyOverlay);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void ShowRunCardOverlay(UIElement overlay, UIElement progress, TextBlock statusText, string runningText)
+    {
+        progress.Visibility = Visibility.Visible;
+        statusText.Text = runningText;
+        statusText.Foreground = (System.Windows.Media.Brush)FindResource("TextBrush");
+        overlay.Visibility = Visibility.Visible;
+    }
+
+    private static void HideRunCardOverlay(UIElement overlay)
+    {
+        overlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void ResetRunCardOverlays()
+    {
+        HideRunCardOverlay(TranspilerBusyOverlay);
+        HideRunCardOverlay(BuilderBusyOverlay);
+    }
+
+    private IEnumerable<string> RunCommandLines()
+        => RunCommandsBox.Text
+            .Split(["\r\n", "\n"], StringSplitOptions.None)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0);
+
+    private bool IsWarcraftCommand(string executable)
+        => string.Equals(NormalizePath(executable), NormalizePath(WarcraftExePath()), StringComparison.OrdinalIgnoreCase);
+
+    private string ToShellRunLine(string line)
+    {
+        return TryParseCommandLine(line, out var executable, out _, out _)
+            ? WrapToolRunLine(line, executable)
+            : line;
+    }
+
+    private string WrapToolRunLine(string line, string executable)
+    {
+        if (IsToolCommand(executable, "sf-transpile"))
+        {
+            return $"echo {RunMarkerBeginTranspiler} && call {line} && echo {RunMarkerEndTranspiler}";
+        }
+
+        if (IsToolCommand(executable, "sf-build"))
+        {
+            return $"echo {RunMarkerBeginBuilder} && call {line} && echo {RunMarkerEndBuilder}";
+        }
+
+        return line;
+    }
+
+    private static bool IsToolCommand(string executable, string toolName)
+    {
+        var exeName = toolName + ".exe";
+        return string.Equals(Path.GetFileName(executable), exeName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Path.GetFileNameWithoutExtension(executable), toolName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CommandShellPath()
+        => Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec ? comSpec : "cmd.exe";
+
+    private static string NormalizePath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (ArgumentException)
+        {
+            return path;
+        }
+        catch (NotSupportedException)
+        {
+            return path;
+        }
+    }
+
     private void UpdateRunCommandPreview()
     {
         if (!_controlsReady || _loadingSettings || _updatingRunCommandPreview)
@@ -440,19 +624,74 @@ public sealed partial class MainWindow : Window
         try
         {
             var mainLua = RunMainLuaPath();
-            var map = MapPathBox.Text.Trim();
-            var lines = new[]
+            var output = BuildOutputPath();
+            var lines = new List<string>();
+
+            if (EnableTranspilerBox.IsChecked == true)
             {
-                FormatCommand(ResolveTool("sf-transpile"), BuildTranspileArguments(checkOnly: false)),
-                FormatCommand(ResolveTool("sf-build"), BuildBuildArguments(mainLua, map)),
-                FormatCommand(WarcraftExePath(), ["-launch", "-window", "-loadfile", map]),
-            };
+                lines.Add(FormatCommand(ResolveTool("sf-transpile"), BuildTranspileArguments(checkOnly: false)));
+            }
+
+            if (EnableBuilderBox.IsChecked == true)
+            {
+                lines.Add(FormatCommand(ResolveTool("sf-build"), BuildBuildArguments(mainLua, output)));
+            }
+
+            var launchMap = LaunchMapPath();
+            if (!string.IsNullOrWhiteSpace(launchMap))
+            {
+                lines.Add(FormatCommand(WarcraftExePath(), ["-launch", "-window", "-loadfile", launchMap]));
+            }
+
             RunCommandsBox.Text = string.Join(Environment.NewLine, lines);
         }
         finally
         {
             _updatingRunCommandPreview = false;
         }
+    }
+
+    private string BuildOutputPath()
+    {
+        var output = BuilderOutputBox.Text.Trim();
+        return output.Length == 0 ? MapPathBox.Text.Trim() : output;
+    }
+
+    private string LaunchMapPath()
+    {
+        var map = MapPathBox.Text.Trim();
+        if (EnableBuilderBox.IsChecked != true)
+        {
+            return map;
+        }
+
+        var output = BuildOutputPath();
+        if (output.Length == 0)
+        {
+            return map;
+        }
+
+        if (IsW3xFileTarget(output))
+        {
+            return GetArchiveCopyPath(output);
+        }
+
+        return IsW3xMapPath(output) ? output : map;
+    }
+
+    private static bool IsW3xFileTarget(string path)
+        => IsW3xMapPath(path) && !Directory.Exists(path);
+
+    private static bool IsW3xMapPath(string path)
+        => string.Equals(Path.GetExtension(path), ".w3x", StringComparison.OrdinalIgnoreCase);
+
+    private static string GetArchiveCopyPath(string mapFile)
+    {
+        var directory = Path.GetDirectoryName(mapFile);
+        var fileName = Path.GetFileNameWithoutExtension(mapFile);
+        var extension = Path.GetExtension(mapFile);
+        var copyName = fileName + ".sf-build" + extension;
+        return string.IsNullOrEmpty(directory) ? copyName : Path.Combine(directory, copyName);
     }
 
     private string RunMainLuaPath()
@@ -833,6 +1072,17 @@ public sealed partial class MainWindow : Window
         {
             ClearValidationError(RunCommandsBox);
         }
+    }
+
+    private void PipelineOptionChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_controlsReady)
+        {
+            return;
+        }
+
+        SaveSettingsFromFields();
+        UpdateRunCommandPreview();
     }
 
     private void MapPathChanged(object sender, SelectionChangedEventArgs e)
@@ -1271,9 +1521,11 @@ public sealed partial class MainWindow : Window
         public string RootTable { get; set; } = "SF__";
         public string IgnoreClass { get; set; } = "JASS";
         public string LibraryFolder { get; set; } = "libs";
+        public bool RunTranspiler { get; set; } = true;
         public string MainLua { get; set; } = string.Empty;
         public string BuilderOutput { get; set; } = string.Empty;
         public string Include { get; set; } = string.Empty;
+        public bool RunBuilder { get; set; } = true;
         public string JassInput { get; set; } = string.Empty;
         public string JassOutput { get; set; } = string.Empty;
         public string JassHostClass { get; set; } = "JASS";

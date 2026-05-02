@@ -70,7 +70,10 @@
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Transpiler" Style="{StaticResource CardTitle}" />
-                                            <Button Grid.Column="1" Content="Edit" Click="EditTranspiler" />
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                <CheckBox x:Name="EnableTranspilerBox" Content="Enabled" IsChecked="True" VerticalAlignment="Center" Margin="0,0,12,0" Checked="PipelineOptionChanged" Unchecked="PipelineOptionChanged" ToolTip="Include the transpiler command in Run." />
+                                                <Button Content="Edit" Click="EditTranspiler" />
+                                            </StackPanel>
                                         </Grid>
                                         <Grid Style="{StaticResource FieldGrid}">
                                             <Grid.ColumnDefinitions>
@@ -112,7 +115,10 @@
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Builder" Style="{StaticResource CardTitle}" />
-                                            <Button Grid.Column="1" Content="Edit" Click="EditBuilder" />
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                <CheckBox x:Name="EnableBuilderBox" Content="Enabled" IsChecked="True" VerticalAlignment="Center" Margin="0,0,12,0" Checked="PipelineOptionChanged" Unchecked="PipelineOptionChanged" ToolTip="Include the builder command in Run." />
+                                                <Button Content="Edit" Click="EditBuilder" />
+                                            </StackPanel>
                                         </Grid>
                                         <Grid Style="{StaticResource FieldGrid}">
                                             <Grid.ColumnDefinitions>

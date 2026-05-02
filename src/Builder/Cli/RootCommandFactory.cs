@@ -34,13 +34,18 @@ internal static class RootCommandFactory
         root.AddOption(includeOpt);
         root.AddOption(verboseOpt);
 
-        root.SetHandler(async (input, output, include, verbose) =>
+        root.SetHandler(async (context) =>
         {
+            var input = context.ParseResult.GetValueForArgument(inputArg);
+            var output = context.ParseResult.GetValueForOption(outputOpt);
+            var include = context.ParseResult.GetValueForOption(includeOpt);
+            var verbose = context.ParseResult.GetValueForOption(verboseOpt);
+
             var packer = new LuaPacker();
-            Environment.ExitCode = await packer.RunAsync(
+            context.ExitCode = await packer.RunAsync(
                 new PackOptions(input, output, SplitIncludes(include), verbose),
-                CancellationToken.None);
-        }, inputArg, outputOpt, includeOpt, verboseOpt);
+                context.GetCancellationToken());
+        });
 
         return root;
     }

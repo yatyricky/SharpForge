@@ -1,5 +1,9 @@
+using System.CommandLine;
+using System.Text;
+using SharpForge.Builder.Cli;
 using SharpForge.Builder.Inject;
 using SharpForge.Builder.Pack;
+using War3Net.IO.Mpq;
 using Xunit;
 
 namespace SharpForge.Transpiler.Tests;
@@ -141,6 +145,22 @@ public sealed class BuilderTests
     }
 
     [Fact]
+    public async Task Cli_returns_nonzero_when_packer_rejects_target()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-build-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Main.lua"), "print('main')\n");
+        var missingMap = Path.Combine(dir.FullName, "missing.w3x");
+
+        var exitCode = await RootCommandFactory.Create().InvokeAsync([
+            Path.Combine(dir.FullName, "Main.lua"),
+            "-o",
+            missingMap,
+        ]);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    [Fact]
     public async Task Pack_injects_existing_war3map_lua_output_file()
     {
         var dir = Directory.CreateTempSubdirectory("sf-build-test-");
@@ -166,6 +186,35 @@ public sealed class BuilderTests
         Assert.Contains("print('editor')", result);
         Assert.Contains("local s, m = pcall(SF__Bundle)", result);
         Assert.True(result.IndexOf("require(\"Main\")", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Injector_injects_w3x_archive_copy_without_modifying_original()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-build-test-");
+        var mapPath = Path.Combine(dir.FullName, "map.w3x");
+        await CreateArchiveAsync(mapPath, "war3map.lua", """
+            function main()
+                print('editor')
+            end
+            """);
+        var originalBytes = await File.ReadAllBytesAsync(mapPath);
+
+        var exitCode = await new MapInjector().InjectBundleAsync(mapPath, "print('bundle')", CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var copyPath = MapInjector.GetArchiveCopyPath(mapPath);
+        Assert.True(File.Exists(copyPath));
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(mapPath));
+        Assert.NotEqual(originalBytes, await File.ReadAllBytesAsync(copyPath));
+
+        using var archive = MpqArchive.Open(copyPath, loadListFile: true);
+        using var stream = archive.OpenFile("war3map.lua");
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var injected = await reader.ReadToEndAsync();
+        Assert.Contains("function SF__Bundle()", injected);
+        Assert.Contains("print('bundle')", injected);
+        Assert.Contains("print('editor')", injected);
     }
 
     [Fact]
@@ -280,5 +329,18 @@ public sealed class BuilderTests
         }
 
         return count;
+    }
+
+    private static async Task CreateArchiveAsync(string mapPath, string scriptName, string script)
+    {
+        var bytes = Encoding.UTF8.GetBytes(script);
+        var listFileBytes = Encoding.UTF8.GetBytes(scriptName + "\r\n");
+        await using var scriptStream = new MemoryStream(bytes);
+        await using var listFileStream = new MemoryStream(listFileBytes);
+        using var file = MpqFile.New(scriptStream, scriptName);
+        using var listFile = MpqFile.New(listFileStream, "(listfile)");
+        file.TargetFlags = MpqFileFlags.Exists | MpqFileFlags.CompressedMulti;
+        listFile.TargetFlags = MpqFileFlags.Exists | MpqFileFlags.CompressedMulti;
+        using var archive = MpqArchive.Create(mapPath, [file, listFile], new MpqArchiveCreateOptions());
     }
 }
