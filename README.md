@@ -114,6 +114,8 @@ Core thesis: *let WC3R authors write logic with industrial tooling — no workfl
 
 A C# → Lua transpiler. Authors write strongly-typed C# with full IDE support, static type checking, and AI-assisted editing; SharpForge bundles many `.cs` files into a single `.lua` with dependency analysis, topological sort, conditional compilation, and tree-shaking that significantly shrinks the final script.
 
+C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.
+
 #### Pipeline
 
 ```

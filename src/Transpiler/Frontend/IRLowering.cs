@@ -122,6 +122,7 @@ public sealed class IRLowering
             IsStruct = symbol.TypeKind == TypeKind.Struct,
             BaseType = GetLowerableBaseType(symbol),
         };
+        irType.Comments.AddRange(ExtractComments(typeDecl.GetLeadingTrivia()));
 
         foreach (var iface in symbol.Interfaces.Where(i => !IsIgnoredClass(i)))
         {
@@ -144,42 +145,50 @@ public sealed class IRLowering
                     irType.Methods.Add(LowerOperator(o, model, ct));
                     break;
                 case FieldDeclarationSyntax f when f.Modifiers.Any(SyntaxKind.StaticKeyword):
+                    var staticFieldComments = ExtractComments(f.GetLeadingTrivia());
                     foreach (var v in f.Declaration.Variables)
                     {
-                        irType.Fields.Add(new IRField
+                        var field = new IRField
                         {
                             Name = v.Identifier.ValueText,
                             Initializer = v.Initializer is null
                                 ? LowerDefaultValue(f.Declaration.Type)
                                 : LowerExpr(v.Initializer.Value, model),
                             IsStatic = true,
-                        });
+                        };
+                        field.Comments.AddRange(staticFieldComments);
+                        irType.Fields.Add(field);
                     }
                     break;
                 case FieldDeclarationSyntax f:
+                    var fieldComments = ExtractComments(f.GetLeadingTrivia());
                     foreach (var v in f.Declaration.Variables)
                     {
-                        irType.Fields.Add(new IRField
+                        var field = new IRField
                         {
                             Name = v.Identifier.ValueText,
                             Initializer = v.Initializer is null
                                 ? LowerDefaultValue(f.Declaration.Type)
                                 : LowerExpr(v.Initializer.Value, model),
                             IsStatic = false,
-                        });
+                        };
+                        field.Comments.AddRange(fieldComments);
+                        irType.Fields.Add(field);
                     }
                     break;
                 case PropertyDeclarationSyntax p:
                     if (IsAutoProperty(p))
                     {
-                        irType.Fields.Add(new IRField
+                        var field = new IRField
                         {
                             Name = p.Identifier.ValueText,
                             Initializer = p.Initializer is null
                                 ? LowerDefaultValue(p.Type)
                                 : LowerExpr(p.Initializer.Value, model),
                             IsStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword),
-                        });
+                        };
+                        field.Comments.AddRange(ExtractComments(p.GetLeadingTrivia()));
+                        irType.Fields.Add(field);
                     }
                     else
                     {
@@ -190,14 +199,17 @@ public sealed class IRLowering
                     irType.Methods.AddRange(LowerIndexer(indexer, model, ct));
                     break;
                 case EventFieldDeclarationSyntax e:
+                    var eventComments = ExtractComments(e.GetLeadingTrivia());
                     foreach (var v in e.Declaration.Variables)
                     {
-                        irType.Fields.Add(new IRField
+                        var field = new IRField
                         {
                             Name = v.Identifier.ValueText,
                             Initializer = new IRLiteral(null, IRLiteralKind.Nil),
                             IsStatic = e.Modifiers.Any(SyntaxKind.StaticKeyword),
-                        });
+                        };
+                        field.Comments.AddRange(eventComments);
+                        irType.Fields.Add(field);
                     }
                     break;
             }
@@ -222,6 +234,92 @@ public sealed class IRLowering
     private static bool IsAutoProperty(PropertyDeclarationSyntax property)
         => property.ExpressionBody is null
            && property.AccessorList?.Accessors.All(a => a.Body is null && a.ExpressionBody is null) == true;
+
+    private static IReadOnlyList<string> ExtractComments(SyntaxTriviaList triviaList)
+    {
+        var comments = new List<string>();
+        foreach (var trivia in triviaList)
+        {
+            switch (trivia.Kind())
+            {
+                case SyntaxKind.SingleLineCommentTrivia:
+                    comments.Add(StripSingleLineComment(trivia.ToFullString(), "//"));
+                    break;
+                case SyntaxKind.SingleLineDocumentationCommentTrivia:
+                    comments.AddRange(StripPrefixedCommentLines(trivia.ToFullString(), "///"));
+                    break;
+                case SyntaxKind.MultiLineCommentTrivia:
+                case SyntaxKind.MultiLineDocumentationCommentTrivia:
+                    comments.AddRange(StripMultiLineComment(trivia.ToFullString()));
+                    break;
+            }
+        }
+
+        return comments;
+    }
+
+    private static string StripSingleLineComment(string text, string prefix)
+    {
+        var line = text.Trim();
+        return line.StartsWith(prefix, StringComparison.Ordinal)
+            ? line[prefix.Length..].TrimStart()
+            : line;
+    }
+
+    private static IEnumerable<string> StripPrefixedCommentLines(string text, string prefix)
+    {
+        foreach (var rawLine in SplitCommentLines(text))
+        {
+            var line = rawLine.TrimStart();
+            yield return line.StartsWith(prefix, StringComparison.Ordinal)
+                ? line[prefix.Length..].TrimStart()
+                : line;
+        }
+    }
+
+    private static IEnumerable<string> StripMultiLineComment(string text)
+    {
+        var body = text.Trim();
+        if (body.StartsWith("/**", StringComparison.Ordinal))
+        {
+            body = body[3..];
+        }
+        else if (body.StartsWith("/*", StringComparison.Ordinal))
+        {
+            body = body[2..];
+        }
+
+        if (body.EndsWith("*/", StringComparison.Ordinal))
+        {
+            body = body[..^2];
+        }
+
+        var lines = SplitCommentLines(body)
+            .Select(line =>
+            {
+                var trimmed = line.Trim();
+                return trimmed.StartsWith("*", StringComparison.Ordinal)
+                    ? trimmed[1..].TrimStart()
+                    : trimmed;
+            })
+            .ToArray();
+
+        if (lines.Length == 0)
+        {
+            yield return string.Empty;
+            yield break;
+        }
+
+        foreach (var line in lines)
+        {
+            yield return line;
+        }
+    }
+
+    private static string[] SplitCommentLines(string text)
+        => text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
 
     private static IReadOnlyList<string> GetNamespaceSegments(INamespaceSymbol? ns)
     {
@@ -263,10 +361,11 @@ public sealed class IRLowering
                 IsStatic = true,
                 IsStaticConstructor = true,
             };
+            staticFn.Comments.AddRange(ExtractComments(c.GetLeadingTrivia()));
 
             if (c.Body is { } staticBody)
             {
-                LowerStatements(staticBody.Statements, staticFn.Body, model, ct);
+                LowerBlock(staticBody, staticFn.Body, model, ct);
             }
 
             return staticFn;
@@ -285,6 +384,7 @@ public sealed class IRLowering
             IsConstructor = true,
             IsInstance = false, // emit with `.` because we create `self` ourselves
         };
+        fn.Comments.AddRange(ExtractComments(c.GetLeadingTrivia()));
 
         foreach (var parameter in parameters)
         {
@@ -293,7 +393,7 @@ public sealed class IRLowering
 
         if (c.Body is { } body)
         {
-            LowerStatements(body.Statements, fn.Body, model, ct);
+            LowerBlock(body, fn.Body, model, ct);
         }
         else if (c.ExpressionBody is { } arrow)
         {
@@ -340,6 +440,7 @@ public sealed class IRLowering
             IsCoroutine = m.Modifiers.Any(SyntaxKind.AsyncKeyword) && ContainsTaskDelay(m, model),
             IsEntryPoint = symbol is not null && IsEntryPointCandidate(symbol),
         };
+        fn.Comments.AddRange(ExtractComments(m.GetLeadingTrivia()));
 
         foreach (var p in m.ParameterList.Parameters)
         {
@@ -359,7 +460,7 @@ public sealed class IRLowering
 
         if (m.Body is { } body)
         {
-            LowerStatements(body.Statements, fn.Body, model, ct);
+            LowerBlock(body, fn.Body, model, ct);
         }
         else if (m.ExpressionBody is { } arrow)
         {
@@ -500,7 +601,7 @@ public sealed class IRLowering
     {
         if (accessor.Body is { } block)
         {
-            LowerStatements(block.Statements, body, model, ct);
+            LowerBlock(block, body, model, ct);
         }
         else if (accessor.ExpressionBody is { } expressionBody)
         {
@@ -528,7 +629,7 @@ public sealed class IRLowering
 
         if (o.Body is { } body)
         {
-            LowerStatements(body.Statements, fn.Body, model, ct);
+            LowerBlock(body, fn.Body, model, ct);
         }
         else if (o.ExpressionBody is { } arrow)
         {
@@ -543,7 +644,17 @@ public sealed class IRLowering
         foreach (var s in stmts)
         {
             ct.ThrowIfCancellationRequested();
+            foreach (var comment in ExtractComments(s.GetLeadingTrivia()))
+            {
+                target.Statements.Add(new IRRawComment(comment));
+            }
+
             target.Statements.Add(LowerStatement(s, model, ct));
+
+            foreach (var comment in ExtractComments(s.GetTrailingTrivia()))
+            {
+                target.Statements.Add(new IRRawComment(comment));
+            }
         }
     }
 
@@ -553,7 +664,7 @@ public sealed class IRLowering
         {
             case BlockSyntax b:
                 var blk = new IRBlock();
-                LowerStatements(b.Statements, blk, model, ct);
+                LowerBlock(b, blk, model, ct);
                 return blk;
 
             case LocalDeclarationStatementSyntax ld:
@@ -591,18 +702,18 @@ public sealed class IRLowering
 
             case IfStatementSyntax ifs:
                 var thenBlk = new IRBlock();
-                LowerStatements(UnwrapBlock(ifs.Statement), thenBlk, model, ct);
+                LowerBlock(ifs.Statement, thenBlk, model, ct);
                 IRBlock? elseBlk = null;
                 if (ifs.Else is { } el)
                 {
                     elseBlk = new IRBlock();
-                    LowerStatements(UnwrapBlock(el.Statement), elseBlk, model, ct);
+                    LowerBlock(el.Statement, elseBlk, model, ct);
                 }
                 return new IRIf(LowerExpr(ifs.Condition, model), thenBlk, elseBlk);
 
             case WhileStatementSyntax ws:
                 var whileBody = new IRBlock();
-                LowerStatements(UnwrapBlock(ws.Statement), whileBody, model, ct);
+                LowerBlock(ws.Statement, whileBody, model, ct);
                 return new IRWhile(LowerExpr(ws.Condition, model), whileBody);
 
             case BreakStatementSyntax:
@@ -632,7 +743,7 @@ public sealed class IRLowering
         }
 
         var body = new IRBlock();
-        LowerStatements(UnwrapBlock(fs.Statement), body, model, ct);
+        LowerBlock(fs.Statement, body, model, ct);
         var incrementors = fs.Incrementors.Select(i => LowerForExpression(i, model)).ToArray();
 
         return new IRFor(initializer, fs.Condition is null ? null : LowerExpr(fs.Condition, model), incrementors, body);
@@ -655,7 +766,7 @@ public sealed class IRLowering
         if (!IsDictionaryType(collectionType))
         {
             var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
-            LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
+            LowerBlock(fe.Statement, body, model, ct);
             return new IRForEach(itemName, collection, body, UseListIterator: IsListType(collectionType));
         }
 
@@ -667,7 +778,7 @@ public sealed class IRLowering
             _dictionaryForEachItems[itemSymbol] = (keyName, valueName);
             try
             {
-                LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
+                LowerBlock(fe.Statement, body, model, ct);
             }
             finally
             {
@@ -678,7 +789,7 @@ public sealed class IRLowering
         }
 
         var dictionaryItemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
-        LowerStatements(UnwrapBlock(fe.Statement), body, model, ct);
+        LowerBlock(fe.Statement, body, model, ct);
         return new IRDictionaryForEach(dictionaryItemName, keyName, valueName, collection, body);
     }
 
@@ -690,7 +801,7 @@ public sealed class IRLowering
         }
 
         var tryBlock = new IRBlock();
-        LowerStatements(ts.Block.Statements, tryBlock, model, ct);
+        LowerBlock(ts.Block, tryBlock, model, ct);
 
         IRBlock? catchBlock = null;
         string? catchVariable = null;
@@ -701,14 +812,14 @@ public sealed class IRLowering
                 ? null
                 : DeclareLuaName(model.GetDeclaredSymbol(catchClause.Declaration), catchClause.Declaration.Identifier.ValueText);
             catchBlock = new IRBlock();
-            LowerStatements(catchClause.Block.Statements, catchBlock, model, ct);
+            LowerBlock(catchClause.Block, catchBlock, model, ct);
         }
 
         IRBlock? finallyBlock = null;
         if (ts.Finally is { } finallyClause)
         {
             finallyBlock = new IRBlock();
-            LowerStatements(finallyClause.Block.Statements, finallyBlock, model, ct);
+            LowerBlock(finallyClause.Block, finallyBlock, model, ct);
         }
 
         return new IRTry(tryBlock, catchVariable, catchBlock, finallyBlock);
@@ -765,8 +876,30 @@ public sealed class IRLowering
         return new IRAssign(target, new IRBinary(op, target, new IRLiteral(1, IRLiteralKind.Integer)));
     }
 
-    private static IEnumerable<StatementSyntax> UnwrapBlock(StatementSyntax s)
-        => s is BlockSyntax b ? b.Statements : new[] { s };
+    private void LowerBlock(BlockSyntax block, IRBlock target, SemanticModel model, CancellationToken ct)
+    {
+        LowerStatements(block.Statements, target, model, ct);
+        AddCommentStatements(block.CloseBraceToken.LeadingTrivia, target);
+    }
+
+    private void LowerBlock(StatementSyntax statement, IRBlock target, SemanticModel model, CancellationToken ct)
+    {
+        if (statement is BlockSyntax block)
+        {
+            LowerBlock(block, target, model, ct);
+            return;
+        }
+
+        LowerStatements([statement], target, model, ct);
+    }
+
+    private static void AddCommentStatements(SyntaxTriviaList triviaList, IRBlock target)
+    {
+        foreach (var comment in ExtractComments(triviaList))
+        {
+            target.Statements.Add(new IRRawComment(comment));
+        }
+    }
 
     private IRExpr LowerExpr(ExpressionSyntax e, SemanticModel model)
     {
@@ -832,6 +965,15 @@ public sealed class IRLowering
             case InvocationExpressionSyntax inv:
                 var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
                 return LowerInvocation(inv, args, model);
+
+            case ParenthesizedLambdaExpressionSyntax lambda:
+                return LowerAnonymousFunction(lambda, model);
+
+            case SimpleLambdaExpressionSyntax lambda:
+                return LowerAnonymousFunction(lambda, model);
+
+            case AnonymousMethodExpressionSyntax anonymousMethod:
+                return LowerAnonymousFunction(anonymousMethod, model);
 
             case ObjectCreationExpressionSyntax obj:
                 return LowerObjectCreation(obj, model);
@@ -976,6 +1118,59 @@ public sealed class IRLowering
         return new IRInvocation(LowerExpr(inv.Expression, model), args);
     }
 
+    private IRExpr LowerAnonymousFunction(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
+    {
+        var parameters = GetAnonymousFunctionParameters(anonymousFunction)
+            .Select(parameter => DeclareLuaName(model.GetDeclaredSymbol(parameter), parameter.Identifier.ValueText))
+            .ToArray();
+        var body = new IRBlock();
+
+        switch (anonymousFunction)
+        {
+            case ParenthesizedLambdaExpressionSyntax { Block: { } block }:
+                LowerBlock(block, body, model, CancellationToken.None);
+                break;
+            case ParenthesizedLambdaExpressionSyntax { ExpressionBody: { } expressionBody }:
+                LowerExpressionAnonymousFunctionBody(expressionBody, body, model, anonymousFunction);
+                break;
+            case SimpleLambdaExpressionSyntax { Block: { } block }:
+                LowerBlock(block, body, model, CancellationToken.None);
+                break;
+            case SimpleLambdaExpressionSyntax { ExpressionBody: { } expressionBody }:
+                LowerExpressionAnonymousFunctionBody(expressionBody, body, model, anonymousFunction);
+                break;
+            case AnonymousMethodExpressionSyntax { Block: { } block }:
+                LowerBlock(block, body, model, CancellationToken.None);
+                break;
+        }
+
+        return new IRFunctionExpression(parameters, body);
+    }
+
+    private static IEnumerable<ParameterSyntax> GetAnonymousFunctionParameters(AnonymousFunctionExpressionSyntax anonymousFunction)
+        => anonymousFunction switch
+        {
+            ParenthesizedLambdaExpressionSyntax lambda => lambda.ParameterList.Parameters,
+            SimpleLambdaExpressionSyntax lambda => new[] { lambda.Parameter },
+            AnonymousMethodExpressionSyntax { ParameterList: { } parameterList } => parameterList.Parameters,
+            _ => Array.Empty<ParameterSyntax>(),
+        };
+
+    private void LowerExpressionAnonymousFunctionBody(ExpressionSyntax expressionBody, IRBlock body, SemanticModel model, AnonymousFunctionExpressionSyntax anonymousFunction)
+    {
+        var expression = LowerExpr(expressionBody, model);
+        if (AnonymousFunctionReturnsVoid(anonymousFunction, model))
+        {
+            body.Statements.Add(new IRExprStmt(expression));
+            return;
+        }
+
+        body.Statements.Add(new IRReturn(expression));
+    }
+
+    private static bool AnonymousFunctionReturnsVoid(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
+        => (model.GetTypeInfo(anonymousFunction).ConvertedType as INamedTypeSymbol)?.DelegateInvokeMethod?.ReturnsVoid == true;
+
     private IRExpr LowerTypeTest(ExpressionSyntax value, ExpressionSyntax typeSyntax, SemanticModel model, bool isAsExpression)
     {
         var type = model.GetTypeInfo(typeSyntax).Type as INamedTypeSymbol;
@@ -1092,6 +1287,7 @@ public sealed class IRLowering
 
         return symbol.Name switch
         {
+            "CreateTable" when args.Count == 0 => new IRLuaTable(),
             "Require" when args.Count == 1 => new IRLuaRequire(args[0]),
             "Get" when args.Count == 2 => new IRLuaAccess(args[0], args[1]),
             "GetGlobal" when args.Count == 1 => new IRLuaGlobal(args[0]),

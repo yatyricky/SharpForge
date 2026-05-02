@@ -22,6 +22,7 @@ public sealed record IRMemberAccess(IRExpr Target, string Member) : IRExpr;
 public sealed record IRElementAccess(IRExpr Target, IRExpr Index) : IRExpr;
 public sealed record IRLength(IRExpr Target) : IRExpr;
 public sealed record IRInvocation(IRExpr Callee, IReadOnlyList<IRExpr> Arguments, bool UseColon = false) : IRExpr;
+public sealed record IRFunctionExpression(IReadOnlyList<string> Parameters, IRBlock Body) : IRExpr;
 public sealed record IRArrayLiteral(IReadOnlyList<IRExpr> Items) : IRExpr;
 public sealed record IRArrayNew(IRExpr Size) : IRExpr;
 public sealed record IRStringConcat(IReadOnlyList<IRExpr> Parts) : IRExpr;
@@ -37,6 +38,7 @@ public sealed record IRListSet(IRExpr List, IRExpr Index, IRExpr Value) : IRExpr
 public sealed record IRListAdd(IRExpr List, IRExpr Value) : IRExpr;
 public sealed record IRListSort(IRExpr List, IRExpr? Comparer) : IRExpr;
 public sealed record IRLuaRequire(IRExpr ModuleName) : IRExpr;
+public sealed record IRLuaTable : IRExpr;
 public sealed record IRLuaGlobal(IRExpr Name) : IRExpr;
 public sealed record IRLuaAccess(IRExpr Target, IRExpr Name) : IRExpr;
 public sealed record IRLuaMethodInvocation(IRExpr Target, IRExpr Name, IReadOnlyList<IRExpr> Arguments) : IRExpr;

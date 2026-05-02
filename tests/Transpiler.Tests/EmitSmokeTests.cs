@@ -562,6 +562,51 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Source_comments_emit_as_lua_comments()
+    {
+        var src = """
+            /// <summary>
+            /// Demo type docs
+            /// </summary>
+            public class Commented
+            {
+                // Hit points field
+                public int Hp = 1;
+
+                /* Constructor docs */
+                public Commented()
+                {
+                    // Before assignment
+                    Hp = 2; // After assignment
+                    /* Block body comment */
+                }
+
+                /// <summary>
+                /// Run docs
+                /// </summary>
+                public int Run()
+                {
+                    return Hp;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Comments.cs");
+
+        Assert.Contains("-- <summary>", lua);
+        Assert.Contains("-- Demo type docs", lua);
+        Assert.Contains("-- Hit points field", lua);
+        Assert.Contains("-- Constructor docs", lua);
+        Assert.Contains("-- Before assignment", lua);
+        Assert.Contains("-- After assignment", lua);
+        Assert.Contains("-- Block body comment", lua);
+        Assert.Contains("-- Run docs", lua);
+        Assert.True(lua.IndexOf("-- Demo type docs", StringComparison.Ordinal) < lua.IndexOf("-- Commented", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("-- Constructor docs", StringComparison.Ordinal) < lua.IndexOf("function SF__.Commented.__Init", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("-- Run docs", StringComparison.Ordinal) < lua.IndexOf("function SF__.Commented:Run()", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Unsupported_syntax_returns_pipeline_error()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
@@ -981,6 +1026,7 @@ public class EmitSmokeTests
             {
                 public static void Main(string[] args)
                 {
+                    LuaObject table = LuaInterop.CreateTable();
                     LuaObject frameTimer = LuaInterop.Require("Lib.FrameTimer");
                     LuaObject systems = LuaInterop.Require("System.ItemSystem");
                     LuaObject created = LuaInterop.Call<LuaObject>(systems, "new", 7);
@@ -1008,6 +1054,7 @@ public class EmitSmokeTests
 
         Assert.Equal(0, exitCode);
         var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("local KW__table = {}", lua);
         Assert.Contains("local frameTimer = require(\"Lib.FrameTimer\")", lua);
         Assert.Contains("local systems = require(\"System.ItemSystem\")", lua);
         Assert.Contains("local created = systems.new(7)", lua);
@@ -1120,6 +1167,59 @@ public class EmitSmokeTests
 
         Assert.Contains("return FourCC(\"hfoo\")", lua);
         Assert.DoesNotContain("JASS", lua);
+    }
+
+    [Fact]
+    public async Task Jass_filter_lambda_emits_lua_function_argument()
+    {
+        var src = """
+            using System;
+            using SFLib;
+            using static JASS;
+
+            namespace SFLib
+            {
+                public sealed class LuaObject { }
+
+                public static class LuaInterop
+                {
+                    public static LuaObject CallGlobal(string name, object arg) => throw null!;
+                }
+            }
+
+            public static partial class JASS
+            {
+                public static object bj_mapInitialPlayableArea = null!;
+                public static object CreateGroup() => throw null!;
+                public static object Filter(Func<bool> func) => throw null!;
+                public static void GroupEnumUnitsInRect(object group, object rect, object filter) => throw null!;
+                public static void DestroyGroup(object group) => throw null!;
+                public static object GetFilterUnit() => throw null!;
+            }
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    var group = CreateGroup();
+                    GroupEnumUnitsInRect(group, bj_mapInitialPlayableArea, Filter(() =>
+                    {
+                        LuaInterop.CallGlobal("ExTriggerRegisterNewUnitExec", GetFilterUnit());
+                        return true;
+                    }));
+                    DestroyGroup(group);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "FilterLambda.cs");
+
+        Assert.Contains("local group = CreateGroup()", lua);
+        Assert.Contains("GroupEnumUnitsInRect(group, bj_mapInitialPlayableArea, Filter(function()", lua);
+        Assert.Contains("ExTriggerRegisterNewUnitExec(GetFilterUnit())", lua);
+        Assert.Contains("return true", lua);
+        Assert.Contains("end))", lua);
+        Assert.DoesNotContain("unsupported expression: ParenthesizedLambdaExpression", lua);
     }
 
     [Fact]

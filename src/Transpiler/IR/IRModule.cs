@@ -12,6 +12,8 @@ public sealed class IRModule
 
 public sealed class IRType
 {
+    public List<string> Comments { get; } = new();
+
     /// <summary>Namespace segments, in declaration order. Empty for global types.</summary>
     public required IReadOnlyList<string> NamespaceSegments { get; init; }
 
@@ -37,6 +39,8 @@ public sealed class IRType
 
 public sealed class IRField
 {
+    public List<string> Comments { get; } = new();
+
     public required string Name { get; init; }
     public IRExpr? Initializer { get; init; }
     public bool IsStatic { get; init; }
@@ -44,6 +48,8 @@ public sealed class IRField
 
 public sealed class IRFunction
 {
+    public List<string> Comments { get; } = new();
+
     public required string Name { get; init; }
     public required string LuaName { get; init; }
     public List<string> Parameters { get; } = new();

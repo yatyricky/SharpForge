@@ -390,6 +390,8 @@ public sealed class LuaEmitter
 
     private void EmitType(IRType type)
     {
+        EmitComments(type.Comments);
+
         // Walk namespace segments and emit each level once.
         var path = _rootTable;
         foreach (var seg in type.NamespaceSegments)
@@ -428,6 +430,7 @@ public sealed class LuaEmitter
         // Static field initializers.
         foreach (var f in type.Fields.Where(f => f.IsStatic))
         {
+            EmitComments(f.Comments);
             WriteIndent();
             _sb.Append(typePath).Append('.').Append(f.Name).Append(" = ");
             if (f.Initializer is null)
@@ -459,6 +462,8 @@ public sealed class LuaEmitter
 
     private void EmitMethod(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
     {
+        EmitComments(m.Comments);
+
         if (m.IsConstructor)
         {
             EmitConstructor(typePath, m, instanceFields);
@@ -516,6 +521,7 @@ public sealed class LuaEmitter
         WriteLine($"self.__sf_type = {typePath}");
         foreach (var field in instanceFields)
         {
+            EmitComments(field.Comments);
             WriteIndent();
             _sb.Append("self.").Append(field.Name).Append(" = ");
             if (field.Initializer is null)
@@ -658,8 +664,30 @@ public sealed class LuaEmitter
                 WriteLine("goto continue"); // Lua 5.3 has no `continue`
                 break;
             case IRRawComment c:
-                WriteLine($"-- {c.Text}");
+                EmitComment(c.Text);
                 break;
+        }
+    }
+
+    private void EmitComments(IEnumerable<string> comments)
+    {
+        foreach (var comment in comments)
+        {
+            EmitComment(comment);
+        }
+    }
+
+    private void EmitComment(string comment)
+    {
+        foreach (var line in comment.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+        {
+            WriteIndent();
+            _sb.Append("--");
+            if (line.Length > 0)
+            {
+                _sb.Append(' ').Append(line);
+            }
+            _sb.Append('\n');
         }
     }
 
@@ -865,6 +893,14 @@ public sealed class LuaEmitter
                 }
                 _sb.Append(')');
                 break;
+            case IRFunctionExpression functionExpression:
+                _sb.Append("function(").Append(string.Join(", ", functionExpression.Parameters)).Append(")\n");
+                _indent++;
+                EmitBlock(functionExpression.Body);
+                _indent--;
+                WriteIndent();
+                _sb.Append("end");
+                break;
             case IRArrayLiteral array:
                 _sb.Append('{');
                 for (int i = 0; i < array.Items.Count; i++)
@@ -977,6 +1013,9 @@ public sealed class LuaEmitter
                 _sb.Append("require(");
                 EmitExpr(luaRequire.ModuleName);
                 _sb.Append(')');
+                break;
+            case IRLuaTable:
+                _sb.Append("{}");
                 break;
             case IRLuaGlobal luaGlobal:
                 EmitLuaGlobal(luaGlobal.Name);
@@ -1325,6 +1364,7 @@ public sealed class LuaEmitter
             IRElementAccess element => ExprUsesTypeChecks(element.Target) || ExprUsesTypeChecks(element.Index),
             IRLength length => ExprUsesTypeChecks(length.Target),
             IRInvocation invocation => ExprUsesTypeChecks(invocation.Callee) || invocation.Arguments.Any(ExprUsesTypeChecks),
+            IRFunctionExpression functionExpression => BlockUsesTypeChecks(functionExpression.Body),
             IRArrayLiteral array => array.Items.Any(ExprUsesTypeChecks),
             IRArrayNew arrayNew => ExprUsesTypeChecks(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesTypeChecks),
@@ -1373,6 +1413,7 @@ public sealed class LuaEmitter
             IRElementAccess element => ExprUsesStringConcat(element.Target) || ExprUsesStringConcat(element.Index),
             IRLength length => ExprUsesStringConcat(length.Target),
             IRInvocation invocation => ExprUsesStringConcat(invocation.Callee) || invocation.Arguments.Any(ExprUsesStringConcat),
+            IRFunctionExpression functionExpression => BlockUsesStringConcat(functionExpression.Body),
             IRArrayLiteral array => array.Items.Any(ExprUsesStringConcat),
             IRArrayNew arrayNew => ExprUsesStringConcat(arrayNew.Size),
             IRBinary binary => ExprUsesStringConcat(binary.Left) || ExprUsesStringConcat(binary.Right),
@@ -1402,6 +1443,7 @@ public sealed class LuaEmitter
             IRElementAccess element => ExprUsesDictionaryHelpers(element.Target) || ExprUsesDictionaryHelpers(element.Index),
             IRLength length => ExprUsesDictionaryHelpers(length.Target),
             IRInvocation invocation => ExprUsesDictionaryHelpers(invocation.Callee) || invocation.Arguments.Any(ExprUsesDictionaryHelpers),
+            IRFunctionExpression functionExpression => BlockUsesDictionaryHelpers(functionExpression.Body),
             IRArrayLiteral array => array.Items.Any(ExprUsesDictionaryHelpers),
             IRArrayNew arrayNew => ExprUsesDictionaryHelpers(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesDictionaryHelpers),
@@ -1420,6 +1462,7 @@ public sealed class LuaEmitter
             IRElementAccess element => ExprUsesListHelpers(element.Target) || ExprUsesListHelpers(element.Index),
             IRLength length => ExprUsesListHelpers(length.Target),
             IRInvocation invocation => ExprUsesListHelpers(invocation.Callee) || invocation.Arguments.Any(ExprUsesListHelpers),
+            IRFunctionExpression functionExpression => BlockUsesListHelpers(functionExpression.Body),
             IRArrayLiteral array => array.Items.Any(ExprUsesListHelpers),
             IRArrayNew arrayNew => ExprUsesListHelpers(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesListHelpers),
@@ -1448,6 +1491,7 @@ public sealed class LuaEmitter
             IRElementAccess element => ExprUsesCoroutineHelpers(element.Target) || ExprUsesCoroutineHelpers(element.Index),
             IRLength length => ExprUsesCoroutineHelpers(length.Target),
             IRInvocation invocation => ExprUsesCoroutineHelpers(invocation.Callee) || invocation.Arguments.Any(ExprUsesCoroutineHelpers),
+            IRFunctionExpression functionExpression => BlockUsesCoroutineHelpers(functionExpression.Body),
             IRArrayLiteral array => array.Items.Any(ExprUsesCoroutineHelpers),
             IRArrayNew arrayNew => ExprUsesCoroutineHelpers(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesCoroutineHelpers),
@@ -1575,6 +1619,10 @@ public sealed class LuaEmitter
             case IRInvocation invocation:
                 CollectIdentifiers(invocation.Callee);
                 foreach (var argument in invocation.Arguments) CollectIdentifiers(argument);
+                break;
+            case IRFunctionExpression functionExpression:
+                foreach (var parameter in functionExpression.Parameters) _usedIdentifiers.Add(parameter);
+                CollectIdentifiers(functionExpression.Body);
                 break;
             case IRArrayLiteral array:
                 foreach (var item in array.Items) CollectIdentifiers(item);

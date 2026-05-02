@@ -12,6 +12,8 @@ public sealed class LuaObject
 
 public static class LuaInterop
 {
+    public static LuaObject CreateTable() => default!;
+
     public static LuaObject Require(string moduleName) => default!;
 
     public static T Require<T>(string moduleName) => default!;

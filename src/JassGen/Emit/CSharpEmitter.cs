@@ -98,7 +98,7 @@ internal sealed class CSharpEmitter
         foreach (var f in funcs)
         {
             string ret = MapType(f.ReturnType, isReturn: true);
-            string args = string.Join(", ", f.Params.Select(p => $"{MapType(p.Type)} {Escape(p.Name)}"));
+            string args = string.Join(", ", f.Params.Select(p => $"{MapParameterType(f, p)} {Escape(p.Name)}"));
             string kind = f.IsNative ? "native" : "function";
             sb.AppendLine($"    /// <summary>JASS {kind} <c>{f.Name}</c>.</summary>");
             sb.AppendLine($"    public static {ret} {Escape(f.Name)}({args}) => throw null!;");
@@ -181,6 +181,16 @@ internal sealed class CSharpEmitter
             "code" => "global::System.Action",
             _ => Escape(jassType),
         };
+    }
+
+    private static string MapParameterType(FuncDecl function, JassParam parameter)
+    {
+        if (parameter.Type == "code" && function.Name is "Filter" or "Condition")
+        {
+            return "global::System.Func<bool>";
+        }
+
+        return MapType(parameter.Type);
     }
 
     private static readonly HashSet<string> CSharpKeywords = new(StringComparer.Ordinal)

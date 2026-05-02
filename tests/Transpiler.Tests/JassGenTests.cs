@@ -52,4 +52,34 @@ public sealed class JassGenTests
         Assert.True(File.Exists(Path.Combine(outputDir.FullName, "Handles.g.cs")));
         Assert.True(File.Exists(Path.Combine(outputDir.FullName, "NativeExt.g.cs")));
     }
+
+    [Fact]
+    public async Task Cli_maps_filter_and_condition_code_parameters_to_boolean_delegates()
+    {
+        var inputDir = Directory.CreateTempSubdirectory("sf-jassgen-input-");
+        var outputDir = Directory.CreateTempSubdirectory("sf-jassgen-output-");
+        outputDir.Delete();
+
+        await File.WriteAllTextAsync(Path.Combine(inputDir.FullName, "common.j"), """
+            type boolexpr extends agent
+            type conditionfunc extends boolexpr
+            type filterfunc extends boolexpr
+            native Condition takes code func returns conditionfunc
+            native Filter takes code func returns filterfunc
+            native TimerStart takes timer whichTimer, real timeout, boolean periodic, code handlerFunc returns nothing
+            """);
+
+        var exitCode = await RootCommandFactory.Create().InvokeAsync([
+            inputDir.FullName,
+            "-o",
+            outputDir.FullName,
+        ]);
+
+        Assert.Equal(0, exitCode);
+
+        var natives = await File.ReadAllTextAsync(Path.Combine(outputDir.FullName, "Natives.g.cs"));
+        Assert.Contains("public static conditionfunc Condition(global::System.Func<bool> func) => throw null!;", natives);
+        Assert.Contains("public static filterfunc Filter(global::System.Func<bool> func) => throw null!;", natives);
+        Assert.Contains("public static void TimerStart(timer whichTimer, float timeout, bool periodic, global::System.Action handlerFunc) => throw null!;", natives);
+    }
 }

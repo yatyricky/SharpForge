@@ -300,7 +300,9 @@ public sealed partial class MainWindow : Window
         var args = new List<string> { JassInputBox.Text.Trim() };
         AddOptional(args, "-o", JassOutputBox.Text.Trim());
         AddOptional(args, "--host-class", JassHostClassBox.Text.Trim());
+        _logBuffer.Clear();
         await RunToolAsync("sf-jassgen", args.ToArray());
+        ShowLogDialog();
     }
 
     private async void RunWarcraft(object sender, RoutedEventArgs e)
