@@ -12,6 +12,11 @@ namespace SharpForge.Transpiler.Emitter;
 /// </summary>
 public sealed class LuaEmitter
 {
+    private static readonly HashSet<string> LuaReservedIdentifiers = new(StringComparer.Ordinal)
+    {
+        "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "table",
+    };
+
     private readonly string _rootTable;
     private readonly StringBuilder _sb = new();
     private readonly HashSet<string> _emittedTablePaths = new(StringComparer.Ordinal);
@@ -968,6 +973,20 @@ public sealed class LuaEmitter
                 }
                 _sb.Append(')');
                 break;
+            case IRLuaRequire luaRequire:
+                _sb.Append("require(");
+                EmitExpr(luaRequire.ModuleName);
+                _sb.Append(')');
+                break;
+            case IRLuaGlobal luaGlobal:
+                EmitLuaGlobal(luaGlobal.Name);
+                break;
+            case IRLuaAccess luaAccess:
+                EmitLuaAccess(luaAccess.Target, luaAccess.Name);
+                break;
+            case IRLuaMethodInvocation luaMethodInvocation:
+                EmitLuaMethodInvocation(luaMethodInvocation);
+                break;
             case IRRuntimeInvocation runtimeInvocation:
                 _sb.Append(_rootTable).Append('.').Append(runtimeInvocation.Name).Append('(');
                 for (int i = 0; i < runtimeInvocation.Arguments.Count; i++)
@@ -1033,6 +1052,97 @@ public sealed class LuaEmitter
             }
         }
         return sb.ToString();
+    }
+
+    private void EmitLuaGlobal(IRExpr name)
+    {
+        if (TryGetLuaIdentifierName(name, out var identifier))
+        {
+            _sb.Append(identifier);
+            return;
+        }
+
+        _sb.Append("_G[");
+        EmitExpr(name);
+        _sb.Append(']');
+    }
+
+    private void EmitLuaAccess(IRExpr target, IRExpr name)
+    {
+        EmitExpr(target);
+        if (TryGetLuaIdentifierName(name, out var identifier))
+        {
+            _sb.Append('.').Append(identifier);
+            return;
+        }
+
+        _sb.Append('[');
+        EmitExpr(name);
+        _sb.Append(']');
+    }
+
+    private void EmitLuaMethodInvocation(IRLuaMethodInvocation invocation)
+    {
+        if (TryGetLuaIdentifierName(invocation.Name, out var identifier))
+        {
+            EmitExpr(invocation.Target);
+            _sb.Append(':').Append(identifier).Append('(');
+            EmitArguments(invocation.Arguments);
+            _sb.Append(')');
+            return;
+        }
+
+        EmitLuaAccess(invocation.Target, invocation.Name);
+        _sb.Append('(');
+        EmitExpr(invocation.Target);
+        if (invocation.Arguments.Count > 0)
+        {
+            _sb.Append(", ");
+            EmitArguments(invocation.Arguments);
+        }
+        _sb.Append(')');
+    }
+
+    private void EmitArguments(IReadOnlyList<IRExpr> arguments)
+    {
+        for (int i = 0; i < arguments.Count; i++)
+        {
+            if (i > 0)
+            {
+                _sb.Append(", ");
+            }
+            EmitExpr(arguments[i]);
+        }
+    }
+
+    private static bool TryGetLuaIdentifierName(IRExpr expr, out string identifier)
+    {
+        if (expr is IRLiteral { Kind: IRLiteralKind.String, Value: string value } && IsLuaIdentifier(value))
+        {
+            identifier = value;
+            return true;
+        }
+
+        identifier = string.Empty;
+        return false;
+    }
+
+    private static bool IsLuaIdentifier(string value)
+    {
+        if (value.Length == 0 || !(char.IsLetter(value[0]) || value[0] == '_'))
+        {
+            return false;
+        }
+
+        for (int i = 1; i < value.Length; i++)
+        {
+            if (!(char.IsLetterOrDigit(value[i]) || value[i] == '_'))
+            {
+                return false;
+            }
+        }
+
+        return !LuaReservedIdentifiers.Contains(value);
     }
 
     private string FormatTypeReference(IRTypeReference type)
@@ -1229,6 +1339,10 @@ public sealed class LuaEmitter
             IRListSet listSet => ExprUsesTypeChecks(listSet.List) || ExprUsesTypeChecks(listSet.Index) || ExprUsesTypeChecks(listSet.Value),
             IRListAdd listAdd => ExprUsesTypeChecks(listAdd.List) || ExprUsesTypeChecks(listAdd.Value),
             IRListSort listSort => ExprUsesTypeChecks(listSort.List) || (listSort.Comparer is not null && ExprUsesTypeChecks(listSort.Comparer)),
+            IRLuaRequire luaRequire => ExprUsesTypeChecks(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesTypeChecks(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesTypeChecks(luaAccess.Target) || ExprUsesTypeChecks(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesTypeChecks(luaMethodInvocation.Target) || ExprUsesTypeChecks(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
             IRUnary unary => ExprUsesTypeChecks(unary.Operand),
@@ -1250,6 +1364,10 @@ public sealed class LuaEmitter
             IRListSet listSet => ExprUsesStringConcat(listSet.List) || ExprUsesStringConcat(listSet.Index) || ExprUsesStringConcat(listSet.Value),
             IRListAdd listAdd => ExprUsesStringConcat(listAdd.List) || ExprUsesStringConcat(listAdd.Value),
             IRListSort listSort => ExprUsesStringConcat(listSort.List) || (listSort.Comparer is not null && ExprUsesStringConcat(listSort.Comparer)),
+            IRLuaRequire luaRequire => ExprUsesStringConcat(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesStringConcat(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesStringConcat(luaAccess.Target) || ExprUsesStringConcat(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesStringConcat(luaMethodInvocation.Target) || ExprUsesStringConcat(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesStringConcat),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesStringConcat),
             IRMemberAccess member => ExprUsesStringConcat(member.Target),
             IRElementAccess element => ExprUsesStringConcat(element.Target) || ExprUsesStringConcat(element.Index),
@@ -1275,6 +1393,10 @@ public sealed class LuaEmitter
             IRListSet listSet => ExprUsesDictionaryHelpers(listSet.List) || ExprUsesDictionaryHelpers(listSet.Index) || ExprUsesDictionaryHelpers(listSet.Value),
             IRListAdd listAdd => ExprUsesDictionaryHelpers(listAdd.List) || ExprUsesDictionaryHelpers(listAdd.Value),
             IRListSort listSort => ExprUsesDictionaryHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesDictionaryHelpers(listSort.Comparer)),
+            IRLuaRequire luaRequire => ExprUsesDictionaryHelpers(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesDictionaryHelpers(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesDictionaryHelpers(luaAccess.Target) || ExprUsesDictionaryHelpers(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesDictionaryHelpers(luaMethodInvocation.Target) || ExprUsesDictionaryHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesDictionaryHelpers),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesDictionaryHelpers),
             IRMemberAccess member => ExprUsesDictionaryHelpers(member.Target),
             IRElementAccess element => ExprUsesDictionaryHelpers(element.Target) || ExprUsesDictionaryHelpers(element.Index),
@@ -1305,6 +1427,10 @@ public sealed class LuaEmitter
             IRDictionaryGet dictionaryGet => ExprUsesListHelpers(dictionaryGet.Table) || ExprUsesListHelpers(dictionaryGet.Key),
             IRDictionarySet dictionarySet => ExprUsesListHelpers(dictionarySet.Table) || ExprUsesListHelpers(dictionarySet.Key) || ExprUsesListHelpers(dictionarySet.Value),
             IRDictionaryRemove dictionaryRemove => ExprUsesListHelpers(dictionaryRemove.Table) || ExprUsesListHelpers(dictionaryRemove.Key),
+            IRLuaRequire luaRequire => ExprUsesListHelpers(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesListHelpers(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesListHelpers(luaAccess.Target) || ExprUsesListHelpers(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesListHelpers(luaMethodInvocation.Target) || ExprUsesListHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesListHelpers),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesListHelpers),
             IRBinary binary => ExprUsesListHelpers(binary.Left) || ExprUsesListHelpers(binary.Right),
             IRUnary unary => ExprUsesListHelpers(unary.Operand),
@@ -1335,6 +1461,10 @@ public sealed class LuaEmitter
             IRListSet listSet => ExprUsesCoroutineHelpers(listSet.List) || ExprUsesCoroutineHelpers(listSet.Index) || ExprUsesCoroutineHelpers(listSet.Value),
             IRListAdd listAdd => ExprUsesCoroutineHelpers(listAdd.List) || ExprUsesCoroutineHelpers(listAdd.Value),
             IRListSort listSort => ExprUsesCoroutineHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesCoroutineHelpers(listSort.Comparer)),
+            IRLuaRequire luaRequire => ExprUsesCoroutineHelpers(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesCoroutineHelpers(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesCoroutineHelpers(luaAccess.Target) || ExprUsesCoroutineHelpers(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesCoroutineHelpers(luaMethodInvocation.Target) || ExprUsesCoroutineHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesCoroutineHelpers),
             IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
             IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
             IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value),
@@ -1471,6 +1601,21 @@ public sealed class LuaEmitter
             case IRListSort listSort:
                 CollectIdentifiers(listSort.List);
                 if (listSort.Comparer is not null) CollectIdentifiers(listSort.Comparer);
+                break;
+            case IRLuaRequire luaRequire:
+                CollectIdentifiers(luaRequire.ModuleName);
+                break;
+            case IRLuaGlobal luaGlobal:
+                CollectIdentifiers(luaGlobal.Name);
+                break;
+            case IRLuaAccess luaAccess:
+                CollectIdentifiers(luaAccess.Target);
+                CollectIdentifiers(luaAccess.Name);
+                break;
+            case IRLuaMethodInvocation luaMethodInvocation:
+                CollectIdentifiers(luaMethodInvocation.Target);
+                CollectIdentifiers(luaMethodInvocation.Name);
+                foreach (var argument in luaMethodInvocation.Arguments) CollectIdentifiers(argument);
                 break;
             case IRRuntimeInvocation runtimeInvocation:
                 foreach (var argument in runtimeInvocation.Arguments) CollectIdentifiers(argument);

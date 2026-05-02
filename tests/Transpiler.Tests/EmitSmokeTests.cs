@@ -971,6 +971,57 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Pipeline_lowers_bundled_SFLib_lua_interop_to_raw_lua_access()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using SFLib;
+
+            public class Program
+            {
+                public static void Main(string[] args)
+                {
+                    LuaObject frameTimer = LuaInterop.Require("Lib.FrameTimer");
+                    LuaObject systems = LuaInterop.Require("System.ItemSystem");
+                    LuaObject created = LuaInterop.Call<LuaObject>(systems, "new", 7);
+                    int charges = LuaInterop.Get<int>(created, "charges");
+
+                    LuaInterop.Set(created, "charges", charges + 1);
+                    LuaInterop.SetGlobal("CurrentItemSystem", created);
+                    LuaInterop.Call(frameTimer, "start", created);
+                    LuaInterop.CallMethod(created, "Method", 1, "abc");
+                    LuaInterop.CallGlobal("BJDebugMsg", "ready");
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("local frameTimer = require(\"Lib.FrameTimer\")", lua);
+        Assert.Contains("local systems = require(\"System.ItemSystem\")", lua);
+        Assert.Contains("local created = systems.new(7)", lua);
+        Assert.Contains("local charges = created.charges", lua);
+        Assert.Contains("created.charges = (charges + 1)", lua);
+        Assert.Contains("CurrentItemSystem = created", lua);
+        Assert.Contains("frameTimer.start(created)", lua);
+        Assert.Contains("created:Method(1, \"abc\")", lua);
+        Assert.Contains("BJDebugMsg(\"ready\")", lua);
+        Assert.DoesNotContain("-- SFLib.LuaInterop", lua);
+        Assert.DoesNotContain("SF__.SFLib.LuaInterop", lua);
+    }
+
+    [Fact]
     public async Task Nested_types_with_same_name_keep_parent_type_path()
     {
         var src = """

@@ -577,6 +577,9 @@ public sealed class IRLowering
             case ExpressionStatementSyntax es when es.Expression is AssignmentExpressionSyntax ae:
                 return LowerAssignment(ae, model);
 
+            case ExpressionStatementSyntax es when TryLowerLuaInteropStatement(es.Expression, model) is { } luaInteropStatement:
+                return luaInteropStatement;
+
             case ExpressionStatementSyntax es when IsIncrementOrDecrement(es.Expression):
                 return LowerIncrementOrDecrement(es.Expression, model);
 
@@ -893,6 +896,11 @@ public sealed class IRLowering
             return new IRRuntimeInvocation("CorWait__", args);
         }
 
+        if (symbol is not null && TryLowerLuaInteropInvocation(symbol, args) is { } luaInteropInvocation)
+        {
+            return luaInteropInvocation;
+        }
+
         if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
         {
             return new IRListAdd(LowerExpr(addAccess.Expression, model), args[0]);
@@ -1056,6 +1064,47 @@ public sealed class IRLowering
     private static bool IsTaskDelay(IMethodSymbol symbol)
         => symbol is { Name: "Delay", IsStatic: true, ContainingType: { Name: "Task", ContainingNamespace: { } ns } }
            && (IsSharpLibNamespace(ns) || ns.ToDisplayString() == "System.Threading.Tasks");
+
+    private IRStmt? TryLowerLuaInteropStatement(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (expression is not InvocationExpressionSyntax invocation
+            || model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol symbol
+            || !IsLuaInteropMethod(symbol))
+        {
+            return null;
+        }
+
+        var args = invocation.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
+        return symbol.Name switch
+        {
+            "Set" when args.Length == 3 => new IRAssign(new IRLuaAccess(args[0], args[1]), args[2]),
+            "SetGlobal" when args.Length == 2 => new IRAssign(new IRLuaGlobal(args[0]), args[1]),
+            _ => null,
+        };
+    }
+
+    private static IRExpr? TryLowerLuaInteropInvocation(IMethodSymbol symbol, IReadOnlyList<IRExpr> args)
+    {
+        if (!IsLuaInteropMethod(symbol))
+        {
+            return null;
+        }
+
+        return symbol.Name switch
+        {
+            "Require" when args.Count == 1 => new IRLuaRequire(args[0]),
+            "Get" when args.Count == 2 => new IRLuaAccess(args[0], args[1]),
+            "GetGlobal" when args.Count == 1 => new IRLuaGlobal(args[0]),
+            "Call" when args.Count >= 2 => new IRInvocation(new IRLuaAccess(args[0], args[1]), args.Skip(2).ToArray()),
+            "CallMethod" when args.Count >= 2 => new IRLuaMethodInvocation(args[0], args[1], args.Skip(2).ToArray()),
+            "CallGlobal" when args.Count >= 1 => new IRInvocation(new IRLuaGlobal(args[0]), args.Skip(1).ToArray()),
+            _ => null,
+        };
+    }
+
+    private static bool IsLuaInteropMethod(IMethodSymbol symbol)
+        => symbol is { IsStatic: true, ContainingType: { Name: "LuaInterop", ContainingNamespace: { } ns } }
+           && IsSharpLibNamespace(ns);
 
     private static bool ContainsTaskDelay(SyntaxNode node, SemanticModel model)
         => node.DescendantNodes()
