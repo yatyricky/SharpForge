@@ -11,6 +11,10 @@ SharpForge is a C# scripting toolchain for Warcraft III: Reforged map developmen
 - **Emit performant Lua.** Generated code is direct Lua with a small helper surface. The bundled C# library is intentionally minimal, such as a usable `List<T>` shape, not a full clone of every .NET collection interface.
 - **Keep the runtime small.** SharpForge provides only the helpers needed by emitted code and interop stubs. It does not ship a broad standard-library translation layer.
 
+## Sample Projects
+
+- https://github.com/yatyricky/lua-maps
+
 ## Documentation
 
 - [CLI.md](CLI.md) - man page for `sf-transpile`, `sf-build`, and `sf-jassgen`.
