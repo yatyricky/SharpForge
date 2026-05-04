@@ -205,6 +205,7 @@ public sealed class BuilderTests
         Assert.Equal(0, exitCode);
         var copyPath = MapInjector.GetArchiveCopyPath(mapPath);
         Assert.True(File.Exists(copyPath));
+        Assert.False(File.Exists(copyPath + ".sf-tmp"));
         Assert.Equal(originalBytes, await File.ReadAllBytesAsync(mapPath));
         Assert.NotEqual(originalBytes, await File.ReadAllBytesAsync(copyPath));
 

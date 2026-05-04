@@ -309,6 +309,9 @@ public class EmitSmokeTests
         Assert.Equal(0, exitCode);
         Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "Natives.g.cs")));
         Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "GlobalUsings.g.cs")));
+        var luaInterop = await File.ReadAllTextAsync(Path.Combine(dir.FullName, "libs", "SFLib", "LuaInterop.cs"));
+        Assert.Contains("public static class LuaInterop", luaInterop);
+        Assert.Contains("public sealed class LuaObject", luaInterop);
 
         var lua = await File.ReadAllTextAsync(output.FullName);
         Assert.Contains("BJDebugMsg(\"hello\")", lua);

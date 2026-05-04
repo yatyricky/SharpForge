@@ -411,7 +411,6 @@ public sealed class MapInjector
 
     private static async Task<int> InjectArchiveAsync(string mapFile, string bundle, CancellationToken cancellationToken)
     {
-        var tempPath = mapFile + ".sf-tmp";
         try
         {
             var mapBytes = await File.ReadAllBytesAsync(mapFile, cancellationToken).ConfigureAwait(false);
@@ -439,24 +438,14 @@ public sealed class MapInjector
                 var builder = new MpqArchiveBuilder(archive);
                 builder.AddFile(newFile);
 
-                builder.SaveTo(tempPath);
+                builder.SaveTo(mapFile);
             }
-
-            File.Copy(tempPath, mapFile, overwrite: true);
-            File.Delete(tempPath);
             return 0;
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or FileNotFoundException)
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
-        }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
         }
     }
 
