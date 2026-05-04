@@ -311,7 +311,7 @@ public class EmitSmokeTests
         Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "GlobalUsings.g.cs")));
         var luaInterop = await File.ReadAllTextAsync(Path.Combine(dir.FullName, "libs", "SFLib", "LuaInterop.cs"));
         Assert.Contains("public static class LuaInterop", luaInterop);
-        Assert.Contains("public sealed class LuaObject", luaInterop);
+        Assert.Contains("public class LuaObject", luaInterop);
 
         var lua = await File.ReadAllTextAsync(output.FullName);
         Assert.Contains("BJDebugMsg(\"hello\")", lua);
@@ -1069,6 +1069,101 @@ public class EmitSmokeTests
         Assert.Contains("BJDebugMsg(\"ready\")", lua);
         Assert.DoesNotContain("-- SFLib.LuaInterop", lua);
         Assert.DoesNotContain("SF__.SFLib.LuaInterop", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_lowers_lua_object_wrappers_to_bound_lua_module_calls()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var wrapperDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "Lua"));
+        await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "FrameTimer.cs"), """
+            using System;
+            using SFLib;
+
+            namespace Lua;
+
+            [Lua(Module = "Lib.FrameTimer")]
+            public class FrameTimer : LuaObject
+            {
+                [Lua(StaticMethod = "new")]
+                public FrameTimer(Action<float> func, int count, int loops) => throw new NotImplementedException();
+
+                public static LuaObject PauseAll() => throw new NotImplementedException();
+
+                [Lua(StaticMethod = "fromHandle")]
+                public static FrameTimer FromHandle(LuaObject handle) => throw new NotImplementedException();
+
+                public void Start() => throw new NotImplementedException();
+
+                [Lua(Method = "resume_now")]
+                public void Resume() => throw new NotImplementedException();
+
+                [Lua(Name = "stop_now")]
+                public void Stop() => throw new NotImplementedException();
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "Time.cs"), """
+            using SFLib;
+
+            namespace Lua;
+
+            [Lua(Module = "Lib.Time")]
+            public class Time : LuaObject
+            {
+                [Lua(Name = "Time")]
+                public static float CurrentTime;
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using Lua;
+            using SFLib;
+
+            public class Program
+            {
+                public static void Main()
+                {
+                    LuaInterop.SetGlobal("CLI", LuaInterop.CreateTable());
+                    var handle = LuaInterop.CreateTable();
+                    var fromHandle = FrameTimer.FromHandle(handle);
+                    var paused = FrameTimer.PauseAll();
+                    var timer = new FrameTimer(dt => LuaInterop.CallGlobal("Tick", Time.CurrentTime + dt), 1, -1);
+                    timer.Start();
+                    timer.Resume();
+                    timer.Stop();
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.True(lua.IndexOf("CLI = {}", StringComparison.Ordinal) < lua.IndexOf("local FrameTimer = require(\"Lib.FrameTimer\")", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("local FrameTimer = require(\"Lib.FrameTimer\")", StringComparison.Ordinal) < lua.IndexOf("local Time = require(\"Lib.Time\")", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("local Time = require(\"Lib.Time\")", StringComparison.Ordinal) < lua.IndexOf("local fromHandle = FrameTimer.fromHandle(handle)", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("local Time = require(\"Lib.Time\")", StringComparison.Ordinal) < lua.IndexOf("local handle = {}", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("local FrameTimer = require(\"Lib.FrameTimer\")", StringComparison.Ordinal) < lua.IndexOf("local fromHandle = FrameTimer.fromHandle(handle)", StringComparison.Ordinal));
+        Assert.Contains("local FrameTimer = require(\"Lib.FrameTimer\")", lua);
+        Assert.Contains("local Time = require(\"Lib.Time\")", lua);
+        Assert.Contains("local fromHandle = FrameTimer.fromHandle(handle)", lua);
+        Assert.Contains("local paused = FrameTimer.PauseAll()", lua);
+        Assert.Contains("local timer = FrameTimer.new(function(dt)", lua);
+        Assert.Contains("Tick((Time.Time + dt))", lua);
+        Assert.DoesNotContain("Time.CurrentTime", lua);
+        Assert.Contains("timer:Start()", lua);
+        Assert.Contains("timer:resume_now()", lua);
+        Assert.Contains("timer:stop_now()", lua);
+        Assert.DoesNotContain("SF__.Lua.FrameTimer", lua);
+        Assert.DoesNotContain("-- Lua.FrameTimer", lua);
     }
 
     [Fact]

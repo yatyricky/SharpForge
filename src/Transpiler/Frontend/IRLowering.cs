@@ -19,6 +19,9 @@ public sealed class IRLowering
     private readonly string? _sourceRoot;
     private IRModule? _module;
     private readonly Dictionary<ISymbol, string> _luaNames = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<INamedTypeSymbol, string> _luaObjectModuleNames = new(SymbolEqualityComparer.Default);
+    private readonly Stack<LuaModuleBlockContext> _luaModuleBlockContexts = new();
+    private int? _luaModuleInsertionIndex;
     private readonly Dictionary<ISymbol, (string KeyName, string ValueName)> _dictionaryForEachItems = new(SymbolEqualityComparer.Default);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
@@ -46,6 +49,9 @@ public sealed class IRLowering
         var module = new IRModule();
         _module = module;
         _luaNames.Clear();
+        _luaObjectModuleNames.Clear();
+        _luaModuleBlockContexts.Clear();
+        _luaModuleInsertionIndex = null;
         _dictionaryForEachItems.Clear();
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
@@ -83,6 +89,11 @@ public sealed class IRLowering
                 {
                     // JASS handle hierarchy (rooted at `handle`) consists of extern stubs
                     // emitted by sf-jassgen; never lower them to Lua.
+                    continue;
+                }
+
+                if (IsLuaObjectType(symbol))
+                {
                     continue;
                 }
 
@@ -649,7 +660,23 @@ public sealed class IRLowering
                 target.Statements.Add(new IRRawComment(comment));
             }
 
-            target.Statements.Add(LowerStatement(s, model, ct));
+            var tracksLuaModuleInsertion = _luaModuleBlockContexts.Count > 0
+                && ReferenceEquals(_luaModuleBlockContexts.Peek().Block, target);
+            if (tracksLuaModuleInsertion)
+            {
+                _luaModuleInsertionIndex = target.Statements.Count;
+            }
+            try
+            {
+                target.Statements.Add(LowerStatement(s, model, ct));
+            }
+            finally
+            {
+                if (tracksLuaModuleInsertion)
+                {
+                    _luaModuleInsertionIndex = null;
+                }
+            }
 
             foreach (var comment in ExtractComments(s.GetTrailingTrivia()))
             {
@@ -669,8 +696,10 @@ public sealed class IRLowering
 
             case LocalDeclarationStatementSyntax ld:
                 var first = ld.Declaration.Variables.First();
+                var localName = DeclareLuaName(model.GetDeclaredSymbol(first), first.Identifier.ValueText);
+                TrackLuaObjectModuleBinding(first, localName, model);
                 return new IRLocalDecl(
-                    DeclareLuaName(model.GetDeclaredSymbol(first), first.Identifier.ValueText),
+                    localName,
                     first.Initializer is null ? null : LowerExpr(first.Initializer.Value, model));
 
             case ForStatementSyntax fs:
@@ -878,19 +907,55 @@ public sealed class IRLowering
 
     private void LowerBlock(BlockSyntax block, IRBlock target, SemanticModel model, CancellationToken ct)
     {
-        LowerStatements(block.Statements, target, model, ct);
-        AddCommentStatements(block.CloseBraceToken.LeadingTrivia, target);
+        var pushedLuaModuleBlock = TryPushLuaModuleBlock(target);
+        try
+        {
+            LowerStatements(block.Statements, target, model, ct);
+            AddCommentStatements(block.CloseBraceToken.LeadingTrivia, target);
+        }
+        finally
+        {
+            PopLuaModuleBlock(pushedLuaModuleBlock);
+        }
     }
 
     private void LowerBlock(StatementSyntax statement, IRBlock target, SemanticModel model, CancellationToken ct)
     {
-        if (statement is BlockSyntax block)
+        var pushedLuaModuleBlock = TryPushLuaModuleBlock(target);
+        try
         {
-            LowerBlock(block, target, model, ct);
-            return;
+            if (statement is BlockSyntax block)
+            {
+                LowerStatements(block.Statements, target, model, ct);
+                AddCommentStatements(block.CloseBraceToken.LeadingTrivia, target);
+                return;
+            }
+
+            LowerStatements([statement], target, model, ct);
+        }
+        finally
+        {
+            PopLuaModuleBlock(pushedLuaModuleBlock);
+        }
+    }
+
+    private bool TryPushLuaModuleBlock(IRBlock block)
+    {
+        if (_luaModuleBlockContexts.Count > 0)
+        {
+            return false;
         }
 
-        LowerStatements([statement], target, model, ct);
+        _luaModuleBlockContexts.Push(new LuaModuleBlockContext(block));
+        return true;
+    }
+
+    private void PopLuaModuleBlock(bool pushed)
+    {
+        if (pushed)
+        {
+            _luaModuleBlockContexts.Pop();
+        }
     }
 
     private static void AddCommentStatements(SyntaxTriviaList triviaList, IRBlock target)
@@ -918,6 +983,11 @@ public sealed class IRLowering
                 return new IRIdentifier("self");
 
             case MemberAccessExpressionSyntax ma:
+                if (TryLowerLuaObjectMemberAccess(ma, model) is { } luaObjectMemberAccess)
+                {
+                    return luaObjectMemberAccess;
+                }
+
                 if (TryLowerSharpLibKeyValueAccess(ma, model) is { } keyValueAccess)
                 {
                     return keyValueAccess;
@@ -1097,6 +1167,15 @@ public sealed class IRLowering
 
         if (inv.Expression is MemberAccessExpressionSyntax memberAccess && symbol is { IsStatic: false })
         {
+            if (IsLuaObjectType(symbol.ContainingType))
+            {
+                var member = GetLuaObjectMember(symbol);
+                return new IRInvocation(
+                    new IRMemberAccess(LowerExpr(memberAccess.Expression, model), member.Name),
+                    args,
+                    UseColon: member.UseColon);
+            }
+
             return new IRInvocation(
                 new IRMemberAccess(LowerExpr(memberAccess.Expression, model), GetLuaMethodName(symbol)),
                 args,
@@ -1108,6 +1187,15 @@ public sealed class IRLowering
             if (IsIgnoredClass(symbol.ContainingType))
             {
                 return new IRInvocation(new IRIdentifier(symbol.Name), args);
+            }
+
+            if (IsLuaObjectType(symbol.ContainingType))
+            {
+                var member = GetLuaObjectMember(symbol);
+                return new IRInvocation(
+                    new IRMemberAccess(GetLuaObjectTypeTarget(symbol.ContainingType), member.Name),
+                    args,
+                    UseColon: member.UseColon);
             }
 
             return new IRInvocation(
@@ -1208,7 +1296,30 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
+        if (IsLuaObjectType(type))
+        {
+            return new IRInvocation(
+                new IRMemberAccess(GetLuaObjectTypeTarget(type), ctor is null ? "new" : GetLuaObjectConstructorName(ctor)),
+                args);
+        }
+
         return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args);
+    }
+
+    private void TrackLuaObjectModuleBinding(VariableDeclaratorSyntax variable, string localName, SemanticModel model)
+    {
+        if (variable.Initializer?.Value is not InvocationExpressionSyntax invocation
+            || model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol symbol
+            || !IsLuaInteropMethod(symbol)
+            || symbol.Name != "Require"
+            || symbol.TypeArguments.Length != 1
+            || symbol.TypeArguments[0] is not INamedTypeSymbol type
+            || !IsLuaObjectType(type))
+        {
+            return;
+        }
+
+        _luaObjectModuleNames[type] = localName;
     }
 
     private IRExpr? TryLowerCollectionLengthAccess(MemberAccessExpressionSyntax access, SemanticModel model)
@@ -1236,6 +1347,25 @@ public sealed class IRLowering
         }
 
         return null;
+    }
+
+    private IRExpr? TryLowerLuaObjectMemberAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        var symbol = model.GetSymbolInfo(access).Symbol;
+        if (symbol is not IFieldSymbol and not IPropertySymbol)
+        {
+            return null;
+        }
+
+        if (symbol.ContainingType is null || !IsLuaObjectType(symbol.ContainingType))
+        {
+            return null;
+        }
+
+        var target = symbol.IsStatic
+            ? GetLuaObjectTypeTarget(symbol.ContainingType)
+            : LowerExpr(access.Expression, model);
+        return new IRMemberAccess(target, GetLuaObjectMemberName(symbol));
     }
 
     private bool IsCollectionElementAccess(ElementAccessExpressionSyntax access, SemanticModel model)
@@ -1301,6 +1431,22 @@ public sealed class IRLowering
     private static bool IsLuaInteropMethod(IMethodSymbol symbol)
         => symbol is { IsStatic: true, ContainingType: { Name: "LuaInterop", ContainingNamespace: { } ns } }
            && IsSharpLibNamespace(ns);
+
+    private static bool IsLuaObjectType(INamedTypeSymbol symbol)
+        => InheritsFromLuaObject(symbol);
+
+    private static bool InheritsFromLuaObject(INamedTypeSymbol symbol)
+    {
+        for (var type = symbol; type is not null; type = type.BaseType)
+        {
+            if (type is { Name: "LuaObject", ContainingNamespace: { } ns } && IsSharpLibNamespace(ns))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool ContainsTaskDelay(SyntaxNode node, SemanticModel model)
         => node.DescendantNodes()
@@ -1495,7 +1641,7 @@ public sealed class IRLowering
         var symbol = model.GetSymbolInfo(id).Symbol;
         if (symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
         {
-            IRExpr target = property.IsStatic ? LowerTypeReference(property.ContainingType) : new IRIdentifier("self");
+            IRExpr target = property.IsStatic ? LowerTypeReferenceForAccess(property.ContainingType) : new IRIdentifier("self");
             return new IRInvocation(
                 new IRMemberAccess(target, "get_" + property.Name),
                 Array.Empty<IRExpr>(),
@@ -1504,7 +1650,7 @@ public sealed class IRLowering
 
         if (symbol is INamedTypeSymbol type)
         {
-            return LowerTypeReference(type);
+            return LowerTypeReferenceForAccess(type);
         }
 
         if (symbol is { IsStatic: true } and (IFieldSymbol or IPropertySymbol) && symbol.ContainingType is not null)
@@ -1514,7 +1660,7 @@ public sealed class IRLowering
                 return new IRIdentifier(id.Identifier.ValueText);
             }
 
-            return new IRMemberAccess(LowerTypeReference(symbol.ContainingType), id.Identifier.ValueText);
+            return new IRMemberAccess(LowerTypeReferenceForAccess(symbol.ContainingType), id.Identifier.ValueText);
         }
 
         if (symbol is IMethodSymbol { IsStatic: true } staticMethod)
@@ -1524,7 +1670,7 @@ public sealed class IRLowering
                 return new IRIdentifier(staticMethod.Name);
             }
 
-            return new IRMemberAccess(LowerTypeReference(staticMethod.ContainingType), GetLuaMethodName(staticMethod));
+            return new IRMemberAccess(LowerTypeReferenceForAccess(staticMethod.ContainingType), GetLuaMethodName(staticMethod));
         }
 
         if (symbol is { IsStatic: false } and (IFieldSymbol or IPropertySymbol or IMethodSymbol)
@@ -1604,6 +1750,11 @@ public sealed class IRLowering
 
     private static string GetLuaMethodName(IMethodSymbol method)
     {
+        if (GetLuaAttributeName(method) is { Length: > 0 } attributeName)
+        {
+            return attributeName;
+        }
+
         if (method.MethodKind == MethodKind.UserDefinedOperator)
         {
             return method.Name;
@@ -1642,6 +1793,123 @@ public sealed class IRLowering
     private static IRTypeReference LowerTypeReference(INamedTypeSymbol type)
         => new(GetTypeContainerSegments(type), type.Name);
 
+    private IRExpr LowerTypeReferenceForAccess(INamedTypeSymbol type)
+        => IsLuaObjectType(type) ? GetLuaObjectTypeTarget(type) : LowerTypeReference(type);
+
+    private IRExpr GetLuaObjectTypeTarget(INamedTypeSymbol type)
+    {
+        if (_luaObjectModuleNames.TryGetValue(type, out var localName)
+            || _luaObjectModuleNames.TryGetValue(type.OriginalDefinition, out localName))
+        {
+            return new IRIdentifier(localName);
+        }
+
+        if (GetLuaAttributeValue(type, "Module") is { Length: > 0 } moduleName)
+        {
+            return EnsureLuaObjectModuleLocal(type, moduleName);
+        }
+
+        return new IRIdentifier(GetLuaAttributeValue(type, "Name") ?? type.Name);
+    }
+
+    private IRExpr EnsureLuaObjectModuleLocal(INamedTypeSymbol type, string moduleName)
+    {
+        if (_luaModuleBlockContexts.Count == 0)
+        {
+            return new IRLuaRequire(new IRLiteral(moduleName, IRLiteralKind.String));
+        }
+
+        var context = _luaModuleBlockContexts.Peek();
+        if (context.ModuleLocals.TryGetValue(type, out var localName)
+            || context.ModuleLocals.TryGetValue(type.OriginalDefinition, out localName))
+        {
+            return new IRIdentifier(localName);
+        }
+
+        localName = AllocateLuaName(GetLuaAttributeValue(type, "Name") ?? type.Name);
+        context.ModuleLocals[type] = localName;
+        InsertLuaModuleLocal(context, localName, moduleName);
+        return new IRIdentifier(localName);
+    }
+
+    private void InsertLuaModuleLocal(LuaModuleBlockContext context, string localName, string moduleName)
+    {
+        var index = context.NextModuleInsertionIndex ?? GetInitialLuaModuleInsertionIndex(context.Block);
+
+        context.Block.Statements.Insert(index, new IRLocalDecl(
+            localName,
+            new IRLuaRequire(new IRLiteral(moduleName, IRLiteralKind.String))));
+        context.NextModuleInsertionIndex = index + 1;
+    }
+
+    private int GetInitialLuaModuleInsertionIndex(IRBlock block)
+    {
+        if ((_luaModuleInsertionIndex ?? 0) == 0)
+        {
+            return _luaModuleInsertionIndex ?? 0;
+        }
+
+        for (var i = 0; i < block.Statements.Count; i++)
+        {
+            if (block.Statements[i] is not IRRawComment)
+            {
+                return i + 1;
+            }
+        }
+
+        return block.Statements.Count;
+    }
+
+    private static string GetLuaObjectConstructorName(IMethodSymbol ctor)
+        => GetLuaAttributeValue(ctor, "StaticMethod")
+           ?? GetLuaAttributeValue(ctor, "Name")
+           ?? "new";
+
+    private static (string Name, bool UseColon) GetLuaObjectMember(IMethodSymbol method)
+    {
+        if (GetLuaAttributeValue(method, "StaticMethod") is { Length: > 0 } staticName)
+        {
+            return (staticName, false);
+        }
+
+        if (GetLuaAttributeValue(method, "Method") is { Length: > 0 } methodName)
+        {
+            return (methodName, true);
+        }
+
+        return (GetLuaAttributeValue(method, "Name") ?? method.Name, !method.IsStatic);
+    }
+
+    private static string GetLuaObjectMemberName(ISymbol symbol)
+        => GetLuaAttributeValue(symbol, "Name") ?? symbol.Name;
+
+    private static string? GetLuaAttributeName(IMethodSymbol method)
+        => GetLuaAttributeValue(method, "StaticMethod")
+           ?? GetLuaAttributeValue(method, "Method")
+           ?? GetLuaAttributeValue(method, "Name");
+
+    private static string? GetLuaAttributeValue(ISymbol symbol, string name)
+    {
+        foreach (var attribute in symbol.GetAttributes())
+        {
+            if (attribute.AttributeClass is not { Name: "LuaAttribute", ContainingNamespace: { } ns }
+                || !IsSharpLibNamespace(ns))
+            {
+                continue;
+            }
+
+            foreach (var argument in attribute.NamedArguments)
+            {
+                if (argument.Key == name && argument.Value.Value is string value && value.Length > 0)
+                {
+                    return value;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private IRBaseConstructorCall? GetImplicitBaseConstructorCall(INamedTypeSymbol owner)
     {
         var baseType = GetLowerableBaseType(owner);
@@ -1667,6 +1935,13 @@ public sealed class IRLowering
         }
 
         return LowerTypeReference(baseType);
+    }
+
+    private sealed class LuaModuleBlockContext(IRBlock block)
+    {
+        public IRBlock Block { get; } = block;
+        public Dictionary<INamedTypeSymbol, string> ModuleLocals { get; } = new(SymbolEqualityComparer.Default);
+        public int? NextModuleInsertionIndex { get; set; }
     }
 
     private static void SortTypesByInheritance(List<IRType> types)
