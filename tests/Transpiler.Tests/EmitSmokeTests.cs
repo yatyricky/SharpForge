@@ -1592,6 +1592,109 @@ public class EmitSmokeTests
         Assert.Contains("local collection = SF__.AsyncIterators.Values(2)", lua);
     }
 
+    [Fact]
+    public async Task TableLiteral_class_lowers_constructor_call_to_table_literal()
+    {
+        var src = """
+            using SFLib;
+
+            namespace SFLib
+            {
+                using System;
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class LuaAttribute : Attribute
+                {
+                    public bool TableLiteral;
+                }
+            }
+
+            public static partial class JASS
+            {
+                public static object GetCastingUnit() => throw null!;
+                public static int FourCC(string s) => throw null!;
+            }
+
+            [Lua(TableLiteral = true)]
+            public class Shape
+            {
+                public object caster;
+                public int id;
+                public Shape(object caster, int id) { }
+            }
+
+            public static class Demo
+            {
+                public static void Post(object shape) { }
+
+                public static void Main()
+                {
+                    Post(new Shape(JASS.GetCastingUnit(), JASS.FourCC("A001")));
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "TableLiteral.cs");
+
+        Assert.Contains("{caster = GetCastingUnit(), id = FourCC(\"A001\")}", lua);
+        Assert.DoesNotContain("SF__.Shape", lua);
+        Assert.DoesNotContain("Shape.New", lua);
+    }
+
+    [Fact]
+    public async Task TableLiteral_class_lowers_object_initializer_to_table_literal()
+    {
+        var src = """
+            using SFLib;
+
+            namespace SFLib
+            {
+                using System;
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class LuaAttribute : Attribute
+                {
+                    public bool TableLiteral;
+                }
+
+                public class LuaObject
+                {
+                }
+            }
+
+            public static partial class JASS
+            {
+                public static object GetCastingUnit() => throw null!;
+                public static int FourCC(string s) => throw null!;
+            }
+
+            [Lua(TableLiteral = true)]
+            public class IRegisterSpellEvent : LuaObject
+            {
+                public int id;
+                public object handler;
+                public LuaObject ctx;
+            }
+
+            public static class Demo
+            {
+                public static void Emit(object ev) { }
+
+                public static void Main()
+                {
+                    Emit(new IRegisterSpellEvent
+                    {
+                        id = JASS.FourCC("A001"),
+                        handler = JASS.GetCastingUnit(),
+                    });
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "TableLiteralObjectInitializer.cs");
+
+        Assert.Contains("{id = FourCC(\"A001\"), handler = GetCastingUnit()}", lua);
+        Assert.DoesNotContain("IRegisterSpellEvent.New", lua);
+    }
+
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");

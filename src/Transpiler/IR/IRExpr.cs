@@ -47,3 +47,4 @@ public sealed record IRBinary(string Op, IRExpr Left, IRExpr Right) : IRExpr;
 public sealed record IRUnary(string Op, IRExpr Operand) : IRExpr;
 public sealed record IRIs(IRExpr Value, IRTypeReference Type) : IRExpr;
 public sealed record IRAs(IRExpr Value, IRTypeReference Type) : IRExpr;
+public sealed record IRTableLiteralNew(IReadOnlyList<(string Key, IRExpr Value)> Fields) : IRExpr;

@@ -1,5 +1,45 @@
 # Lua Interop
 
+## Summary
+
+SharpForge Lua interop has three main patterns:
+
+- `LuaInterop` static helpers map directly to raw Lua access/calls (`require`, field get/set, global get/set, dot calls, colon calls).
+- `LuaObject` wrappers provide typed C# facades over Lua modules using `[Lua(Module = "...")]` and member-level rename/call attributes.
+- `[Lua(TableLiteral = true)]` marks a C# payload type to lower object construction into a Lua table literal instead of emitting a generated type table and `.New(...)` constructor call.
+
+`TableLiteral` types are useful for event payload objects that should be passed as plain Lua tables. Both constructor arguments and object initializer assignments are lowered into table fields.
+
+Example:
+
+```csharp
+[Lua(TableLiteral = true)]
+public class IRegisterSpellEvent : LuaObject
+{
+    public int id;
+    public Action<ISpellData> handler;
+    public LuaObject ctx;
+}
+
+EventCenter.RegisterPlayerUnitSpellEffect.Emit(
+    new IRegisterSpellEvent
+    {
+        id = FourCC("A001"),
+        handler = data =>
+        {
+            var level = GetUnitAbilityLevel(data.caster, FourCC("A001"));
+        }
+    });
+```
+
+Emits as a populated table literal (not `{}` and not `IRegisterSpellEvent.New(...)`):
+
+```lua
+EventCenter.RegisterPlayerUnitSpellEffect:Emit({id = FourCC("A001"), handler = function(data)
+    local level = GetUnitAbilityLevel(data.caster, FourCC("A001"))
+end})
+```
+
 SharpForge can call existing Lua in two ways:
 
 - raw `LuaInterop` helpers for quick migration

@@ -123,6 +123,7 @@ public sealed class IRLowering
     private IRType LowerType(TypeDeclarationSyntax typeDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
     {
         var nsSegments = GetTypeContainerSegments(symbol);
+        var isTableLiteral = HasLuaTableLiteralAttribute(symbol);
         var irType = new IRType
         {
             NamespaceSegments = nsSegments,
@@ -131,8 +132,9 @@ public sealed class IRLowering
             IsStatic = symbol.IsStatic,
             IsInterface = symbol.TypeKind == TypeKind.Interface,
             IsStruct = symbol.TypeKind == TypeKind.Struct,
-            BaseType = GetLowerableBaseType(symbol),
-            LuaClass = GetLuaClass(symbol),
+            IsTableLiteral = isTableLiteral,
+            BaseType = isTableLiteral ? null : GetLowerableBaseType(symbol),
+            LuaClass = isTableLiteral ? null : GetLuaClass(symbol),
         };
         irType.Comments.AddRange(ExtractComments(typeDecl.GetLeadingTrivia()));
         irType.LuaRequires.AddRange(GetLuaAttributeValues(symbol, "Require"));
@@ -228,7 +230,7 @@ public sealed class IRLowering
             }
         }
 
-        if (!irType.IsStatic && !irType.IsInterface && irType.Methods.All(m => !m.IsConstructor))
+        if (!irType.IsStatic && !irType.IsInterface && !irType.IsTableLiteral && irType.Methods.All(m => !m.IsConstructor))
         {
             irType.Methods.Add(new IRFunction
             {
@@ -1298,6 +1300,41 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
+
+        if (HasLuaTableLiteralAttribute(type))
+        {
+            var fields = new List<(string Key, IRExpr Value)>();
+
+            fields.AddRange(args.Select((value, i) => (Key: ctor?.Parameters[i].Name ?? $"field{i}", Value: value)));
+
+            if (obj.Initializer is not null)
+            {
+                foreach (var expression in obj.Initializer.Expressions)
+                {
+                    if (expression is not AssignmentExpressionSyntax assignment)
+                    {
+                        continue;
+                    }
+
+                    string? key = assignment.Left switch
+                    {
+                        IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                        MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.ValueText,
+                        _ => null
+                    };
+
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        continue;
+                    }
+
+                    fields.Add((key, LowerExpr(assignment.Right, model)));
+                }
+            }
+
+            return new IRTableLiteralNew(fields);
+        }
+
         if (IsExternalLuaObjectType(type))
         {
             return new IRInvocation(
@@ -1935,6 +1972,27 @@ public sealed class IRLowering
 
     private static string? GetLuaAttributeValue(ISymbol symbol, string name)
         => GetLuaAttributeValues(symbol, name).FirstOrDefault();
+
+    private static bool HasLuaTableLiteralAttribute(INamedTypeSymbol symbol)
+    {
+        foreach (var attribute in symbol.GetAttributes())
+        {
+            if (attribute.AttributeClass is not { Name: "LuaAttribute", ContainingNamespace: { } ns }
+                || !IsSharpLibNamespace(ns))
+            {
+                continue;
+            }
+
+            foreach (var arg in attribute.NamedArguments)
+            {
+                if (arg.Key == "TableLiteral" && arg.Value.Value is true)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     private static IEnumerable<string> GetLuaAttributeValues(ISymbol symbol, string name)
     {

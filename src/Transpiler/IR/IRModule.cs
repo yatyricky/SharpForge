@@ -29,6 +29,8 @@ public sealed class IRType
 
     public bool IsStruct { get; init; }
 
+    public bool IsTableLiteral { get; init; }
+
     public IRTypeReference? BaseType { get; init; }
 
     public IRLuaClass? LuaClass { get; init; }

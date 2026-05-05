@@ -390,6 +390,11 @@ public sealed class LuaEmitter
 
     private void EmitType(IRType type)
     {
+        if (type.IsTableLiteral)
+        {
+            return;
+        }
+
         EmitComments(type.Comments);
 
         // Walk namespace segments and emit each level once.
@@ -959,6 +964,20 @@ public sealed class LuaEmitter
             case IRArrayNew:
                 _sb.Append("{}");
                 break;
+            case IRTableLiteralNew tableLiteralNew:
+                _sb.Append('{');
+                for (int i = 0; i < tableLiteralNew.Fields.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    var (key, value) = tableLiteralNew.Fields[i];
+                    _sb.Append(key).Append(" = ");
+                    EmitExpr(value);
+                }
+                _sb.Append('}');
+                break;
             case IRStringConcat concat:
                 _sb.Append(_rootTable).Append(".StrConcat__(");
                 for (int i = 0; i < concat.Parts.Count; i++)
@@ -1427,6 +1446,7 @@ public sealed class LuaEmitter
             IRLuaAccess luaAccess => ExprUsesTypeChecks(luaAccess.Target) || ExprUsesTypeChecks(luaAccess.Name),
             IRLuaMethodInvocation luaMethodInvocation => ExprUsesTypeChecks(luaMethodInvocation.Target) || ExprUsesTypeChecks(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTypeChecks),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesTypeChecks(f.Value)),
             IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
             IRUnary unary => ExprUsesTypeChecks(unary.Operand),
             _ => false,
@@ -1459,6 +1479,7 @@ public sealed class LuaEmitter
             IRFunctionExpression functionExpression => BlockUsesStringConcat(functionExpression.Body),
             IRArrayLiteral array => array.Items.Any(ExprUsesStringConcat),
             IRArrayNew arrayNew => ExprUsesStringConcat(arrayNew.Size),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesStringConcat(f.Value)),
             IRBinary binary => ExprUsesStringConcat(binary.Left) || ExprUsesStringConcat(binary.Right),
             IRUnary unary => ExprUsesStringConcat(unary.Operand),
             IRIs isExpr => ExprUsesStringConcat(isExpr.Value),
@@ -1490,6 +1511,7 @@ public sealed class LuaEmitter
             IRArrayLiteral array => array.Items.Any(ExprUsesDictionaryHelpers),
             IRArrayNew arrayNew => ExprUsesDictionaryHelpers(arrayNew.Size),
             IRStringConcat concat => concat.Parts.Any(ExprUsesDictionaryHelpers),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesDictionaryHelpers(f.Value)),
             IRBinary binary => ExprUsesDictionaryHelpers(binary.Left) || ExprUsesDictionaryHelpers(binary.Right),
             IRUnary unary => ExprUsesDictionaryHelpers(unary.Operand),
             IRIs isExpr => ExprUsesDictionaryHelpers(isExpr.Value),
@@ -1518,6 +1540,7 @@ public sealed class LuaEmitter
             IRLuaAccess luaAccess => ExprUsesListHelpers(luaAccess.Target) || ExprUsesListHelpers(luaAccess.Name),
             IRLuaMethodInvocation luaMethodInvocation => ExprUsesListHelpers(luaMethodInvocation.Target) || ExprUsesListHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesListHelpers),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesListHelpers),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesListHelpers(f.Value)),
             IRBinary binary => ExprUsesListHelpers(binary.Left) || ExprUsesListHelpers(binary.Right),
             IRUnary unary => ExprUsesListHelpers(unary.Operand),
             IRIs isExpr => ExprUsesListHelpers(isExpr.Value),
@@ -1552,6 +1575,7 @@ public sealed class LuaEmitter
             IRLuaGlobal luaGlobal => ExprUsesCoroutineHelpers(luaGlobal.Name),
             IRLuaAccess luaAccess => ExprUsesCoroutineHelpers(luaAccess.Target) || ExprUsesCoroutineHelpers(luaAccess.Name),
             IRLuaMethodInvocation luaMethodInvocation => ExprUsesCoroutineHelpers(luaMethodInvocation.Target) || ExprUsesCoroutineHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesCoroutineHelpers),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesCoroutineHelpers(f.Value)),
             IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
             IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
             IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value),
@@ -1672,6 +1696,9 @@ public sealed class LuaEmitter
                 break;
             case IRArrayNew arrayNew:
                 CollectIdentifiers(arrayNew.Size);
+                break;
+            case IRTableLiteralNew tableLiteralNew:
+                foreach (var (_, value) in tableLiteralNew.Fields) CollectIdentifiers(value);
                 break;
             case IRStringConcat concat:
                 foreach (var part in concat.Parts) CollectIdentifiers(part);
