@@ -1167,6 +1167,115 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Pipeline_emits_lua_class_for_opted_in_lua_object_subclass()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var wrapperDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "LuaWrapper"));
+        var systemsDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "Systems"));
+        await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "SystemBase.cs"), """
+            using SFLib;
+
+            namespace LuaWrapper;
+
+            [Lua(Module = "System.SystemBase")]
+            public class SystemBase : LuaObject
+            {
+                [Lua(StaticMethod = "new")]
+                public SystemBase() { }
+
+                public virtual void Awake() { }
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(systemsDir.FullName, "InitAbilitiesSystem.cs"), """
+            using LuaWrapper;
+            using SFLib;
+
+            namespace Systems;
+
+            [Lua(Class = "InitAbilitiesSystem")]
+            public class InitAbilitiesSystem : SystemBase
+            {
+                public override void Awake()
+                {
+                    LuaInterop.Require("Ability.Evasion");
+                }
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using Systems;
+
+            public class Program
+            {
+                public static void Main()
+                {
+                    var system = new InitAbilitiesSystem();
+                    system.Awake();
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("local SystemBase = require(\"System.SystemBase\")", lua);
+        Assert.Contains("SF__.Systems.InitAbilitiesSystem = SF__.Systems.InitAbilitiesSystem or class(\"InitAbilitiesSystem\", SystemBase)", lua);
+        Assert.Contains("SF__.Systems.InitAbilitiesSystem.__sf_base = SystemBase", lua);
+        Assert.Contains("function SF__.Systems.InitAbilitiesSystem:Awake()", lua);
+        Assert.Contains("require(\"Ability.Evasion\")", lua);
+        Assert.Contains("function SF__.Systems.InitAbilitiesSystem.__Init(self)", lua);
+        Assert.Contains("function SF__.Systems.InitAbilitiesSystem.New()", lua);
+        Assert.Contains("local self = SF__.Systems.InitAbilitiesSystem.new()", lua);
+        Assert.Contains("local system = SF__.Systems.InitAbilitiesSystem.New()", lua);
+        Assert.Contains("system:Awake()", lua);
+        Assert.DoesNotContain("SF__.LuaWrapper.SystemBase", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_emits_class_level_lua_requires_before_type_table()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "EntryClass.cs"), """
+            using SFLib;
+
+            [Lua(Require = "Lib.class")]
+            [Lua(Require = "Lib.maths")]
+            public class EntryClass
+            {
+                public static void Main()
+                {
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.True(lua.IndexOf("require(\"Lib.class\")", StringComparison.Ordinal) < lua.IndexOf("require(\"Lib.maths\")", StringComparison.Ordinal));
+        Assert.True(lua.IndexOf("require(\"Lib.maths\")", StringComparison.Ordinal) < lua.IndexOf("SF__.EntryClass = SF__.EntryClass or {}", StringComparison.Ordinal));
+        Assert.Contains("function SF__.EntryClass.Main()", lua);
+    }
+
+    [Fact]
     public async Task Nested_types_with_same_name_keep_parent_type_path()
     {
         var src = """

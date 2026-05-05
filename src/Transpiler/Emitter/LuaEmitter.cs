@@ -406,11 +406,29 @@ public sealed class LuaEmitter
         // Type table.
         var typePath = path + "." + type.Name;
         WriteLine($"-- {type.FullName}");
-        WriteLine($"{typePath} = {typePath} or {{}}");
-        if (type.BaseType is { } baseType)
+        foreach (var moduleName in type.LuaRequires)
+        {
+            WriteLine($"require(\"{EscapeLuaString(moduleName)}\")");
+        }
+        if (type.LuaClass is { } luaClass)
+        {
+            EmitLuaClassDeclaration(typePath, luaClass);
+        }
+        else
+        {
+            WriteLine($"{typePath} = {typePath} or {{}}");
+        }
+        if (type.BaseType is { } baseType && type.LuaClass is null)
         {
             WriteLine($"setmetatable({typePath}, {{ __index = {FormatTypeReference(baseType)} }})");
             WriteLine($"{typePath}.__sf_base = {FormatTypeReference(baseType)}");
+        }
+        else if (type.LuaClass?.BaseType is { } luaClassBaseType)
+        {
+            WriteIndent();
+            _sb.Append(typePath).Append(".__sf_base = ");
+            EmitExpr(luaClassBaseType);
+            _sb.Append('\n');
         }
         if (type.Interfaces.Count > 0)
         {
@@ -452,7 +470,7 @@ public sealed class LuaEmitter
         var methods = type.Methods.Where(m => !m.IsStaticConstructor).ToArray();
         for (int i = 0; i < methods.Length; i++)
         {
-            EmitMethod(typePath, methods[i], type.Fields.Where(f => !f.IsStatic));
+            EmitMethod(type, typePath, methods[i], type.Fields.Where(f => !f.IsStatic));
             if (i < methods.Length - 1)
             {
                 _sb.Append('\n');
@@ -460,13 +478,31 @@ public sealed class LuaEmitter
         }
     }
 
-    private void EmitMethod(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
+    private void EmitLuaClassDeclaration(string typePath, IRLuaClass luaClass)
+    {
+        foreach (var binding in luaClass.ModuleBindings)
+        {
+            WriteLine($"local {binding.LocalName} = require(\"{EscapeLuaString(binding.ModuleName)}\")");
+        }
+
+        WriteIndent();
+        _sb.Append(typePath).Append(" = ").Append(typePath).Append(" or class(")
+            .Append(FormatLiteral(new IRLiteral(luaClass.ClassName, IRLiteralKind.String)));
+        if (luaClass.BaseType is not null)
+        {
+            _sb.Append(", ");
+            EmitExpr(luaClass.BaseType);
+        }
+        _sb.Append(")\n");
+    }
+
+    private void EmitMethod(IRType type, string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
     {
         EmitComments(m.Comments);
 
         if (m.IsConstructor)
         {
-            EmitConstructor(typePath, m, instanceFields);
+            EmitConstructor(type, typePath, m, instanceFields);
             return;
         }
 
@@ -507,7 +543,7 @@ public sealed class LuaEmitter
         WriteLine($"{FormatTypePath(entry.Type)}.{entry.Method.LuaName}()");
     }
 
-    private void EmitConstructor(string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
+    private void EmitConstructor(IRType type, string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
     {
         var paramList = string.Join(", ", m.Parameters);
         var initName = m.InitLuaName ?? "__Init";
@@ -541,7 +577,14 @@ public sealed class LuaEmitter
 
         WriteLine($"function {typePath}.{m.LuaName}({paramList})");
         _indent++;
-        WriteLine($"local self = setmetatable({{}}, {{ __index = {typePath} }})");
+        if (type.LuaClass is null)
+        {
+            WriteLine($"local self = setmetatable({{}}, {{ __index = {typePath} }})");
+        }
+        else
+        {
+            WriteLine($"local self = {typePath}.new()");
+        }
         WriteIndent();
         _sb.Append(typePath).Append('.').Append(initName).Append("(self");
         foreach (var parameter in m.Parameters)

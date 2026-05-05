@@ -31,11 +31,19 @@ public sealed class IRType
 
     public IRTypeReference? BaseType { get; init; }
 
+    public IRLuaClass? LuaClass { get; init; }
+
+    public List<string> LuaRequires { get; } = new();
+
     public List<IRTypeReference> Interfaces { get; } = new();
 
     public List<IRField> Fields { get; } = new();
     public List<IRFunction> Methods { get; } = new();
 }
+
+public sealed record IRLuaClass(string ClassName, IRExpr? BaseType, IReadOnlyList<IRLuaModuleBinding> ModuleBindings);
+
+public sealed record IRLuaModuleBinding(string LocalName, string ModuleName);
 
 public sealed class IRField
 {

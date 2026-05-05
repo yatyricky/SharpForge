@@ -137,6 +137,36 @@ Member attributes:
 - `[Lua(StaticMethod = "...")]` emits a dot call with that Lua name.
 - `[Lua(Method = "...")]` emits a colon call with that Lua name.
 
+Class attributes:
+
+- `[Lua(Require = "...")]` emits a top-level `require("...")` before the generated type table or Lua class declaration. The attribute can be repeated to require multiple modules in declaration order.
+- `[Lua(Class = "...")]` marks a `LuaObject` subclass as C#-implemented game logic instead of an extern wrapper. The type is emitted under the SharpForge root table and initialized with the Lua `class` helper. If its base type is an extern Lua wrapper with `[Lua(Module = "...")]`, the base module is required and passed to `class`.
+
+```csharp
+[Lua(Require = "Lib.class")]
+[Lua(Require = "Lib.maths")]
+public class EntryClass { }
+```
+
+```lua
+require("Lib.class")
+require("Lib.maths")
+SF__.EntryClass = SF__.EntryClass or {}
+```
+
+```csharp
+[Lua(Module = "System.SystemBase")]
+public class SystemBase : LuaObject { }
+
+[Lua(Class = "InitAbilitiesSystem")]
+public class InitAbilitiesSystem : SystemBase { }
+```
+
+```lua
+local SystemBase = require("System.SystemBase")
+SF__.Systems.InitAbilitiesSystem = SF__.Systems.InitAbilitiesSystem or class("InitAbilitiesSystem", SystemBase)
+```
+
 Default call kinds:
 
 - static wrapper methods lower to dot calls

@@ -92,7 +92,7 @@ public sealed class IRLowering
                     continue;
                 }
 
-                if (IsLuaObjectType(symbol))
+                if (IsExternalLuaObjectType(symbol))
                 {
                     continue;
                 }
@@ -132,8 +132,10 @@ public sealed class IRLowering
             IsInterface = symbol.TypeKind == TypeKind.Interface,
             IsStruct = symbol.TypeKind == TypeKind.Struct,
             BaseType = GetLowerableBaseType(symbol),
+            LuaClass = GetLuaClass(symbol),
         };
         irType.Comments.AddRange(ExtractComments(typeDecl.GetLeadingTrivia()));
+        irType.LuaRequires.AddRange(GetLuaAttributeValues(symbol, "Require"));
 
         foreach (var iface in symbol.Interfaces.Where(i => !IsIgnoredClass(i)))
         {
@@ -427,7 +429,7 @@ public sealed class IRLowering
             }
 
             var baseCtor = model.GetSymbolInfo(initializer).Symbol as IMethodSymbol;
-            return baseCtor is null
+            return baseCtor is null || IsExternalLuaObjectType(baseCtor.ContainingType)
                 ? null
                 : new IRBaseConstructorCall(
                     LowerTypeReference(baseCtor.ContainingType),
@@ -1167,7 +1169,7 @@ public sealed class IRLowering
 
         if (inv.Expression is MemberAccessExpressionSyntax memberAccess && symbol is { IsStatic: false })
         {
-            if (IsLuaObjectType(symbol.ContainingType))
+            if (IsExternalLuaObjectType(symbol.ContainingType))
             {
                 var member = GetLuaObjectMember(symbol);
                 return new IRInvocation(
@@ -1189,7 +1191,7 @@ public sealed class IRLowering
                 return new IRInvocation(new IRIdentifier(symbol.Name), args);
             }
 
-            if (IsLuaObjectType(symbol.ContainingType))
+            if (IsExternalLuaObjectType(symbol.ContainingType))
             {
                 var member = GetLuaObjectMember(symbol);
                 return new IRInvocation(
@@ -1296,7 +1298,7 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
-        if (IsLuaObjectType(type))
+        if (IsExternalLuaObjectType(type))
         {
             return new IRInvocation(
                 new IRMemberAccess(GetLuaObjectTypeTarget(type), ctor is null ? "new" : GetLuaObjectConstructorName(ctor)),
@@ -1314,7 +1316,7 @@ public sealed class IRLowering
             || symbol.Name != "Require"
             || symbol.TypeArguments.Length != 1
             || symbol.TypeArguments[0] is not INamedTypeSymbol type
-            || !IsLuaObjectType(type))
+            || !IsExternalLuaObjectType(type))
         {
             return;
         }
@@ -1357,7 +1359,7 @@ public sealed class IRLowering
             return null;
         }
 
-        if (symbol.ContainingType is null || !IsLuaObjectType(symbol.ContainingType))
+        if (symbol.ContainingType is null || !IsExternalLuaObjectType(symbol.ContainingType))
         {
             return null;
         }
@@ -1434,6 +1436,12 @@ public sealed class IRLowering
 
     private static bool IsLuaObjectType(INamedTypeSymbol symbol)
         => InheritsFromLuaObject(symbol);
+
+    private static bool IsLuaImplementedClass(INamedTypeSymbol symbol)
+        => GetLuaAttributeValue(symbol, "Class") is { Length: > 0 };
+
+    private static bool IsExternalLuaObjectType(INamedTypeSymbol symbol)
+        => IsLuaObjectType(symbol) && !IsLuaImplementedClass(symbol);
 
     private static bool InheritsFromLuaObject(INamedTypeSymbol symbol)
     {
@@ -1794,7 +1802,44 @@ public sealed class IRLowering
         => new(GetTypeContainerSegments(type), type.Name);
 
     private IRExpr LowerTypeReferenceForAccess(INamedTypeSymbol type)
-        => IsLuaObjectType(type) ? GetLuaObjectTypeTarget(type) : LowerTypeReference(type);
+        => IsExternalLuaObjectType(type) ? GetLuaObjectTypeTarget(type) : LowerTypeReference(type);
+
+    private IRLuaClass? GetLuaClass(INamedTypeSymbol type)
+    {
+        if (GetLuaAttributeValue(type, "Class") is not { Length: > 0 } className)
+        {
+            return null;
+        }
+
+        var moduleBindings = new List<IRLuaModuleBinding>();
+        var baseType = GetLuaClassBase(type, moduleBindings);
+        return new IRLuaClass(className, baseType, moduleBindings);
+    }
+
+    private IRExpr? GetLuaClassBase(INamedTypeSymbol type, List<IRLuaModuleBinding> moduleBindings)
+    {
+        var baseType = type.BaseType;
+        if (baseType is null
+            || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType
+            || IsIgnoredClass(baseType))
+        {
+            return null;
+        }
+
+        if (!IsExternalLuaObjectType(baseType))
+        {
+            return LowerTypeReference(baseType);
+        }
+
+        if (GetLuaAttributeValue(baseType, "Module") is not { Length: > 0 } moduleName)
+        {
+            return GetLuaObjectTypeTarget(baseType);
+        }
+
+        var localName = AllocateLuaName(GetLuaAttributeValue(baseType, "Name") ?? baseType.Name);
+        moduleBindings.Add(new IRLuaModuleBinding(localName, moduleName));
+        return new IRIdentifier(localName);
+    }
 
     private IRExpr GetLuaObjectTypeTarget(INamedTypeSymbol type)
     {
@@ -1889,6 +1934,9 @@ public sealed class IRLowering
            ?? GetLuaAttributeValue(method, "Name");
 
     private static string? GetLuaAttributeValue(ISymbol symbol, string name)
+        => GetLuaAttributeValues(symbol, name).FirstOrDefault();
+
+    private static IEnumerable<string> GetLuaAttributeValues(ISymbol symbol, string name)
     {
         foreach (var attribute in symbol.GetAttributes())
         {
@@ -1902,12 +1950,10 @@ public sealed class IRLowering
             {
                 if (argument.Key == name && argument.Value.Value is string value && value.Length > 0)
                 {
-                    return value;
+                    yield return value;
                 }
             }
         }
-
-        return null;
     }
 
     private IRBaseConstructorCall? GetImplicitBaseConstructorCall(INamedTypeSymbol owner)
@@ -1929,7 +1975,8 @@ public sealed class IRLowering
         var baseType = symbol.BaseType;
         if (baseType is null
             || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType
-            || IsIgnoredClass(baseType))
+            || IsIgnoredClass(baseType)
+            || IsExternalLuaObjectType(baseType))
         {
             return null;
         }
