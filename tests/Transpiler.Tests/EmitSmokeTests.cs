@@ -646,6 +646,36 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Static_initialization_dependencies_emit_before_dependents()
+    {
+        var src = """
+            public static class CrusaderStrike
+            {
+                public static readonly int Id = Utils.Ability("A000");
+
+                static CrusaderStrike()
+                {
+                    Utils.Register(Id);
+                }
+            }
+
+            public class Utils
+            {
+                public static int Ability(string raw) { return 1; }
+                public static void Register(int id) { }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Ordering.cs");
+
+        Assert.True(
+            lua.IndexOf("-- Utils", StringComparison.Ordinal) < lua.IndexOf("-- CrusaderStrike", StringComparison.Ordinal),
+            lua);
+        Assert.Contains("SF__.CrusaderStrike.Id = SF__.Utils.Ability(\"A000\")", lua);
+        Assert.Contains("SF__.Utils.Register(SF__.CrusaderStrike.Id)", lua);
+    }
+
+    [Fact]
     public async Task Source_comments_emit_as_lua_comments()
     {
         var src = """

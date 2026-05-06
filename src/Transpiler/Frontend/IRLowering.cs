@@ -2056,6 +2056,7 @@ public sealed class IRLowering
         var byName = types.ToDictionary(t => t.FullName, StringComparer.Ordinal);
         var sorted = new List<IRType>(types.Count);
         var visited = new HashSet<string>(StringComparer.Ordinal);
+        var visiting = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var type in types)
         {
@@ -2067,17 +2068,268 @@ public sealed class IRLowering
 
         void Visit(IRType type)
         {
-            if (!visited.Add(type.FullName))
+            if (visited.Contains(type.FullName) || !visiting.Add(type.FullName))
             {
                 return;
             }
 
-            if (type.BaseType is { } baseType && byName.TryGetValue(GetTypeReferenceFullName(baseType), out var baseIrType))
+            foreach (var dependencyName in GetTypeDependencies(type))
             {
-                Visit(baseIrType);
+                if (byName.TryGetValue(dependencyName, out var dependency) && dependency.FullName != type.FullName)
+                {
+                    Visit(dependency);
+                }
             }
 
+            visiting.Remove(type.FullName);
+            visited.Add(type.FullName);
             sorted.Add(type);
+        }
+    }
+
+    private static IEnumerable<string> GetTypeDependencies(IRType type)
+    {
+        var dependencies = new SortedSet<string>(StringComparer.Ordinal);
+
+        if (type.BaseType is { } baseType)
+        {
+            dependencies.Add(GetTypeReferenceFullName(baseType));
+        }
+
+        if (type.LuaClass?.BaseType is { } luaClassBaseType)
+        {
+            CollectTypeReferences(luaClassBaseType, dependencies);
+        }
+
+        foreach (var iface in type.Interfaces)
+        {
+            dependencies.Add(GetTypeReferenceFullName(iface));
+        }
+
+        foreach (var field in type.Fields.Where(f => f.IsStatic && f.Initializer is not null))
+        {
+            CollectTypeReferences(field.Initializer!, dependencies);
+        }
+
+        foreach (var staticConstructor in type.Methods.Where(m => m.IsStaticConstructor))
+        {
+            CollectTypeReferences(staticConstructor.Body, dependencies);
+        }
+
+        return dependencies;
+    }
+
+    private static void CollectTypeReferences(IRStmt stmt, ISet<string> dependencies)
+    {
+        switch (stmt)
+        {
+            case IRBlock block:
+                foreach (var child in block.Statements)
+                {
+                    CollectTypeReferences(child, dependencies);
+                }
+                break;
+            case IRLocalDecl local when local.Initializer is not null:
+                CollectTypeReferences(local.Initializer, dependencies);
+                break;
+            case IRAssign assign:
+                CollectTypeReferences(assign.Target, dependencies);
+                CollectTypeReferences(assign.Value, dependencies);
+                break;
+            case IRExprStmt exprStmt:
+                CollectTypeReferences(exprStmt.Expression, dependencies);
+                break;
+            case IRBaseConstructorCall baseConstructorCall:
+                dependencies.Add(GetTypeReferenceFullName(baseConstructorCall.BaseType));
+                foreach (var arg in baseConstructorCall.Arguments)
+                {
+                    CollectTypeReferences(arg, dependencies);
+                }
+                break;
+            case IRReturn ret when ret.Value is not null:
+                CollectTypeReferences(ret.Value, dependencies);
+                break;
+            case IRIf ifStmt:
+                CollectTypeReferences(ifStmt.Condition, dependencies);
+                CollectTypeReferences(ifStmt.Then, dependencies);
+                if (ifStmt.Else is not null)
+                {
+                    CollectTypeReferences(ifStmt.Else, dependencies);
+                }
+                break;
+            case IRWhile whileStmt:
+                CollectTypeReferences(whileStmt.Condition, dependencies);
+                CollectTypeReferences(whileStmt.Body, dependencies);
+                break;
+            case IRFor forStmt:
+                if (forStmt.Initializer is not null)
+                {
+                    CollectTypeReferences(forStmt.Initializer, dependencies);
+                }
+                if (forStmt.Condition is not null)
+                {
+                    CollectTypeReferences(forStmt.Condition, dependencies);
+                }
+                foreach (var incrementor in forStmt.Incrementors)
+                {
+                    CollectTypeReferences(incrementor, dependencies);
+                }
+                CollectTypeReferences(forStmt.Body, dependencies);
+                break;
+            case IRForEach forEach:
+                CollectTypeReferences(forEach.Collection, dependencies);
+                CollectTypeReferences(forEach.Body, dependencies);
+                break;
+            case IRDictionaryForEach dictionaryForEach:
+                CollectTypeReferences(dictionaryForEach.Dictionary, dependencies);
+                CollectTypeReferences(dictionaryForEach.Body, dependencies);
+                break;
+            case IRTry tryStmt:
+                CollectTypeReferences(tryStmt.Try, dependencies);
+                if (tryStmt.Catch is not null)
+                {
+                    CollectTypeReferences(tryStmt.Catch, dependencies);
+                }
+                if (tryStmt.Finally is not null)
+                {
+                    CollectTypeReferences(tryStmt.Finally, dependencies);
+                }
+                break;
+            case IRThrow throwStmt when throwStmt.Value is not null:
+                CollectTypeReferences(throwStmt.Value, dependencies);
+                break;
+        }
+    }
+
+    private static void CollectTypeReferences(IRExpr expr, ISet<string> dependencies)
+    {
+        switch (expr)
+        {
+            case IRTypeReference typeReference:
+                dependencies.Add(GetTypeReferenceFullName(typeReference));
+                break;
+            case IRMemberAccess memberAccess:
+                CollectTypeReferences(memberAccess.Target, dependencies);
+                break;
+            case IRElementAccess elementAccess:
+                CollectTypeReferences(elementAccess.Target, dependencies);
+                CollectTypeReferences(elementAccess.Index, dependencies);
+                break;
+            case IRLength length:
+                CollectTypeReferences(length.Target, dependencies);
+                break;
+            case IRInvocation invocation:
+                CollectTypeReferences(invocation.Callee, dependencies);
+                foreach (var arg in invocation.Arguments)
+                {
+                    CollectTypeReferences(arg, dependencies);
+                }
+                break;
+            case IRArrayLiteral arrayLiteral:
+                foreach (var item in arrayLiteral.Items)
+                {
+                    CollectTypeReferences(item, dependencies);
+                }
+                break;
+            case IRArrayNew arrayNew:
+                CollectTypeReferences(arrayNew.Size, dependencies);
+                break;
+            case IRStringConcat stringConcat:
+                foreach (var part in stringConcat.Parts)
+                {
+                    CollectTypeReferences(part, dependencies);
+                }
+                break;
+            case IRDictionaryCount dictionaryCount:
+                CollectTypeReferences(dictionaryCount.Table, dependencies);
+                break;
+            case IRDictionaryGet dictionaryGet:
+                CollectTypeReferences(dictionaryGet.Table, dependencies);
+                CollectTypeReferences(dictionaryGet.Key, dependencies);
+                break;
+            case IRDictionarySet dictionarySet:
+                CollectTypeReferences(dictionarySet.Table, dependencies);
+                CollectTypeReferences(dictionarySet.Key, dependencies);
+                CollectTypeReferences(dictionarySet.Value, dependencies);
+                break;
+            case IRDictionaryRemove dictionaryRemove:
+                CollectTypeReferences(dictionaryRemove.Table, dependencies);
+                CollectTypeReferences(dictionaryRemove.Key, dependencies);
+                break;
+            case IRListNew listNew:
+                foreach (var item in listNew.Items)
+                {
+                    CollectTypeReferences(item, dependencies);
+                }
+                break;
+            case IRListCount listCount:
+                CollectTypeReferences(listCount.List, dependencies);
+                break;
+            case IRListGet listGet:
+                CollectTypeReferences(listGet.List, dependencies);
+                CollectTypeReferences(listGet.Index, dependencies);
+                break;
+            case IRListSet listSet:
+                CollectTypeReferences(listSet.List, dependencies);
+                CollectTypeReferences(listSet.Index, dependencies);
+                CollectTypeReferences(listSet.Value, dependencies);
+                break;
+            case IRListAdd listAdd:
+                CollectTypeReferences(listAdd.List, dependencies);
+                CollectTypeReferences(listAdd.Value, dependencies);
+                break;
+            case IRListSort listSort:
+                CollectTypeReferences(listSort.List, dependencies);
+                if (listSort.Comparer is not null)
+                {
+                    CollectTypeReferences(listSort.Comparer, dependencies);
+                }
+                break;
+            case IRLuaRequire luaRequire:
+                CollectTypeReferences(luaRequire.ModuleName, dependencies);
+                break;
+            case IRLuaGlobal luaGlobal:
+                CollectTypeReferences(luaGlobal.Name, dependencies);
+                break;
+            case IRLuaAccess luaAccess:
+                CollectTypeReferences(luaAccess.Target, dependencies);
+                CollectTypeReferences(luaAccess.Name, dependencies);
+                break;
+            case IRLuaMethodInvocation luaMethodInvocation:
+                CollectTypeReferences(luaMethodInvocation.Target, dependencies);
+                CollectTypeReferences(luaMethodInvocation.Name, dependencies);
+                foreach (var arg in luaMethodInvocation.Arguments)
+                {
+                    CollectTypeReferences(arg, dependencies);
+                }
+                break;
+            case IRRuntimeInvocation runtimeInvocation:
+                foreach (var arg in runtimeInvocation.Arguments)
+                {
+                    CollectTypeReferences(arg, dependencies);
+                }
+                break;
+            case IRBinary binary:
+                CollectTypeReferences(binary.Left, dependencies);
+                CollectTypeReferences(binary.Right, dependencies);
+                break;
+            case IRUnary unary:
+                CollectTypeReferences(unary.Operand, dependencies);
+                break;
+            case IRIs isExpr:
+                CollectTypeReferences(isExpr.Value, dependencies);
+                dependencies.Add(GetTypeReferenceFullName(isExpr.Type));
+                break;
+            case IRAs asExpr:
+                CollectTypeReferences(asExpr.Value, dependencies);
+                dependencies.Add(GetTypeReferenceFullName(asExpr.Type));
+                break;
+            case IRTableLiteralNew tableLiteralNew:
+                foreach (var (_, value) in tableLiteralNew.Fields)
+                {
+                    CollectTypeReferences(value, dependencies);
+                }
+                break;
         }
     }
 
