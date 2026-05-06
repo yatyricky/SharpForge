@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using SharpForge.Transpiler.Pipeline;
 
 namespace SharpForge.Transpiler.Frontend;
 
@@ -13,7 +15,7 @@ namespace SharpForge.Transpiler.Frontend;
 /// Performance: any <c>*.g.cs</c> source (except <c>GlobalUsings.g.cs</c>, whose
 /// <c>global using</c> directives are per-compilation and cannot be referenced) is
 /// pre-compiled into a cached DLL and added as a <see cref="MetadataReference"/>.
-/// This keeps the user-code compilation small even when the JASS bindings are
+/// This keeps the user-code compilation small even when the generated bindings are
 /// thousands of stubs.
 /// </summary>
 public sealed class RoslynFrontend
@@ -22,10 +24,15 @@ public sealed class RoslynFrontend
         Path.Combine(Path.GetTempPath(), "SharpForge", "BindingsCache");
 
     private readonly IReadOnlyList<string> _preprocessorSymbols;
+    private readonly HashSet<string> _bindingHostClasses;
 
-    public RoslynFrontend(IReadOnlyList<string> preprocessorSymbols)
+    public RoslynFrontend(IReadOnlyList<string> preprocessorSymbols, IEnumerable<string>? bindingHostClasses = null)
     {
         _preprocessorSymbols = preprocessorSymbols;
+        _bindingHostClasses = new HashSet<string>(
+            (bindingHostClasses ?? new[] { TranspileOptions.DefaultIgnoredClass })
+                .Where(name => !string.IsNullOrWhiteSpace(name)),
+            StringComparer.Ordinal);
     }
 
     public Task<CSharpCompilation> CompileAsync(IEnumerable<FileInfo> sourceFiles, CancellationToken cancellationToken)
@@ -47,8 +54,21 @@ public sealed class RoslynFrontend
             return CSharpSyntaxTree.ParseText(text, parseOptions, path: f.FullName, cancellationToken: cancellationToken);
         }).ToArray();
 
+        // If user code declares a global binding host type, keep generated .g.cs stubs in the same
+        // compilation so partial declarations compose correctly and do not shadow precompiled bindings.
+        var userDeclaresGlobalBindingHost = DeclaresGlobalBindingHostType(trees, _bindingHostClasses);
+        if (userDeclaresGlobalBindingHost)
+        {
+            var bindingTrees = bindingFiles.Select(f =>
+            {
+                var text = File.ReadAllText(f.FullName);
+                return CSharpSyntaxTree.ParseText(text, parseOptions, path: f.FullName, cancellationToken: cancellationToken);
+            });
+            trees = trees.Concat(bindingTrees).ToArray();
+        }
+
         var references = new List<MetadataReference>(Basic.Reference.Assemblies.Net100.References.All);
-        if (bindingFiles.Length > 0)
+        if (!userDeclaresGlobalBindingHost && bindingFiles.Length > 0)
         {
             var dllPath = GetOrBuildBindingsAssembly(bindingFiles, parseOptions, cancellationToken);
             references.Add(MetadataReference.CreateFromFile(dllPath));
@@ -65,6 +85,29 @@ public sealed class RoslynFrontend
                 .WithNullableContextOptions(NullableContextOptions.Enable));
 
         return Task.FromResult(compilation);
+    }
+
+    private static bool DeclaresGlobalBindingHostType(IEnumerable<SyntaxTree> trees, HashSet<string> bindingHostClasses)
+    {
+        foreach (var tree in trees)
+        {
+            var root = tree.GetRoot();
+            foreach (var declaration in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+            {
+                if (!bindingHostClasses.Contains(declaration.Identifier.ValueText))
+                {
+                    continue;
+                }
+
+                var isInNamespace = declaration.Ancestors().Any(a => a is BaseNamespaceDeclarationSyntax);
+                if (!isInNamespace)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static string GetOrBuildBindingsAssembly(
@@ -103,7 +146,7 @@ public sealed class RoslynFrontend
                 File.Delete(tmp);
                 var first = emit.Diagnostics.FirstOrDefault(d => d.Severity == DiagnosticSeverity.Error);
                 throw new InvalidOperationException(
-                    $"Failed to pre-compile JASS bindings: {first?.ToString() ?? "unknown error"}");
+                    $"Failed to pre-compile generated bindings: {first?.ToString() ?? "unknown error"}");
             }
         }
         File.Move(tmp, dllPath, overwrite: true);

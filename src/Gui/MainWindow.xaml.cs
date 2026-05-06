@@ -29,6 +29,10 @@ public sealed partial class MainWindow : Window
     private const string RunMarkerEndTranspiler = RunMarkerPrefix + "END_TRANSPILER__";
     private const string RunMarkerBeginBuilder = RunMarkerPrefix + "BEGIN_BUILDER__";
     private const string RunMarkerEndBuilder = RunMarkerPrefix + "END_BUILDER__";
+    private const string DefaultRootTable = "SF__";
+    private const string DefaultIgnoreClass = "JASS";
+    private const string DefaultLibraryFolder = "libs";
+    private const string DefaultJassHostClass = "JASS";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     private static readonly Regex LuaIdentifier = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -107,9 +111,9 @@ public sealed partial class MainWindow : Window
             CSharpPathBox.Text = settings.CSharpPath;
             TranspileOutputBox.Text = settings.TranspileOutput;
             DefinesBox.Text = settings.Defines;
-            RootTableBox.Text = string.IsNullOrWhiteSpace(settings.RootTable) ? "SF__" : settings.RootTable;
-            IgnoreClassBox.Text = string.IsNullOrWhiteSpace(settings.IgnoreClass) ? "JASS" : settings.IgnoreClass;
-            LibraryFolderBox.Text = string.IsNullOrWhiteSpace(settings.LibraryFolder) ? "libs" : settings.LibraryFolder;
+            RootTableBox.Text = string.IsNullOrWhiteSpace(settings.RootTable) ? DefaultRootTable : settings.RootTable;
+            IgnoreClassBox.Text = string.IsNullOrWhiteSpace(settings.IgnoreClass) ? DefaultIgnoreClass : settings.IgnoreClass;
+            LibraryFolderBox.Text = string.IsNullOrWhiteSpace(settings.LibraryFolder) ? DefaultLibraryFolder : settings.LibraryFolder;
             EnableTranspilerBox.IsChecked = settings.RunTranspiler;
             MainLuaBox.Text = settings.MainLua;
             BuilderOutputBox.Text = settings.BuilderOutput;
@@ -117,7 +121,7 @@ public sealed partial class MainWindow : Window
             EnableBuilderBox.IsChecked = settings.RunBuilder;
             JassInputBox.Text = settings.JassInput;
             JassOutputBox.Text = settings.JassOutput;
-            JassHostClassBox.Text = string.IsNullOrWhiteSpace(settings.JassHostClass) ? "JASS" : settings.JassHostClass;
+            JassHostClassBox.Text = string.IsNullOrWhiteSpace(settings.JassHostClass) ? DefaultJassHostClass : settings.JassHostClass;
             FillMissingDefaults();
         }
         finally
@@ -136,9 +140,9 @@ public sealed partial class MainWindow : Window
             CSharpPathBox.Clear();
             TranspileOutputBox.Clear();
             DefinesBox.Clear();
-            RootTableBox.Text = "SF__";
-            IgnoreClassBox.Text = "JASS";
-            LibraryFolderBox.Text = "libs";
+            RootTableBox.Text = DefaultRootTable;
+            IgnoreClassBox.Text = DefaultIgnoreClass;
+            LibraryFolderBox.Text = DefaultLibraryFolder;
             EnableTranspilerBox.IsChecked = true;
             MainLuaBox.Clear();
             BuilderOutputBox.Clear();
@@ -1520,9 +1524,9 @@ public sealed partial class MainWindow : Window
         public string CSharpPath { get; set; } = string.Empty;
         public string TranspileOutput { get; set; } = string.Empty;
         public string Defines { get; set; } = string.Empty;
-        public string RootTable { get; set; } = "SF__";
-        public string IgnoreClass { get; set; } = "JASS";
-        public string LibraryFolder { get; set; } = "libs";
+        public string RootTable { get; set; } = DefaultRootTable;
+        public string IgnoreClass { get; set; } = DefaultIgnoreClass;
+        public string LibraryFolder { get; set; } = DefaultLibraryFolder;
         public bool RunTranspiler { get; set; } = true;
         public string MainLua { get; set; } = string.Empty;
         public string BuilderOutput { get; set; } = string.Empty;
@@ -1530,6 +1534,6 @@ public sealed partial class MainWindow : Window
         public bool RunBuilder { get; set; } = true;
         public string JassInput { get; set; } = string.Empty;
         public string JassOutput { get; set; } = string.Empty;
-        public string JassHostClass { get; set; } = "JASS";
+        public string JassHostClass { get; set; } = DefaultJassHostClass;
     }
 }

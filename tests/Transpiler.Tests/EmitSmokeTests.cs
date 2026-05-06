@@ -319,6 +319,87 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Pipeline_user_partial_jass_does_not_hide_generated_jass_bindings()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static int Main()
+                {
+                    return FourCC("A000") + CustomFunc();
+                }
+            }
+            """);
+
+        var luaWrapperDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "LuaWrapper"));
+        await File.WriteAllTextAsync(Path.Combine(luaWrapperDir.FullName, "GlobalFunc.cs"), """
+            public static partial class JASS
+            {
+                public static int CustomFunc() => throw null!;
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("FourCC(\"A000\")", lua);
+        Assert.Contains("CustomFunc()", lua);
+    }
+
+    [Fact]
+    public async Task Frontend_user_partial_custom_binding_host_does_not_hide_generated_bindings()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static int Main()
+                {
+                    return FourCC("A000") + CustomFunc();
+                }
+            }
+            """);
+
+        var bindingsDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "Generated"));
+        await File.WriteAllTextAsync(Path.Combine(bindingsDir.FullName, "GlobalUsings.g.cs"),
+            "global using static WC3;");
+        await File.WriteAllTextAsync(Path.Combine(bindingsDir.FullName, "NativeExt.g.cs"),
+            "public static partial class WC3 { public static int FourCC(string val) => throw null!; }");
+
+        var wrapperDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "LuaWrapper"));
+        await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "GlobalFunc.cs"),
+            "public static partial class WC3 { public static int CustomFunc() => throw null!; }");
+
+        var sourceFiles = dir.EnumerateFiles("*.cs", SearchOption.AllDirectories).ToArray();
+        var compilation = await new RoslynFrontend(Array.Empty<string>(), new[] { "WC3" })
+            .CompileAsync(sourceFiles, CancellationToken.None);
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)
+            .ToArray();
+
+        Assert.True(errors.Length == 0, "C# compile errors:\n" + string.Join("\n", errors.Select(e => e.ToString())));
+
+        var module = new IRLowering(new[] { "WC3" }, dir, new[] { TranspileOptions.DefaultLibraryFolder })
+            .Lower(compilation, CancellationToken.None);
+        var lua = new LuaEmitter(TranspileOptions.DefaultRootTable).Emit(module);
+
+        Assert.Contains("FourCC(\"A000\")", lua);
+        Assert.Contains("CustomFunc()", lua);
+        Assert.DoesNotContain("WC3", lua);
+    }
+
+    [Fact]
     public async Task Pipeline_creates_intellisense_project_file_when_missing()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");

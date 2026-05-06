@@ -50,7 +50,7 @@ public sealed class TranspilePipeline
         }
 
         // 1. Roslyn frontend: parse + compile.
-        var frontend = new RoslynFrontend(options.PreprocessorSymbols);
+        var frontend = new RoslynFrontend(options.PreprocessorSymbols, options.IgnoredClasses);
         var compilation = await frontend.CompileAsync(sourceFiles, cancellationToken);
 
         var hasErrors = false;

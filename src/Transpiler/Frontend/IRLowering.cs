@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using SharpForge.Transpiler.IR;
+using SharpForge.Transpiler.Pipeline;
 
 namespace SharpForge.Transpiler.Frontend;
 
@@ -32,7 +33,7 @@ public sealed class IRLowering
         IEnumerable<string>? libraryFolders = null)
     {
         _ignoredClasses = ignoredClasses is null
-            ? new HashSet<string>(new[] { "JASS" }, StringComparer.Ordinal)
+            ? new HashSet<string>(new[] { TranspileOptions.DefaultIgnoredClass }, StringComparer.Ordinal)
             : new HashSet<string>(ignoredClasses, StringComparer.Ordinal);
         _libraryFolderNames = new HashSet<string>(
             (libraryFolders ?? Array.Empty<string>())
