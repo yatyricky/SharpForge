@@ -154,7 +154,7 @@ emits in the shape:
 
 ```lua
 SF__.Vector2 = {}
-function SF__.Vector2.op__Addition(left__x, left__y, right__x, right__y)
+function SF__.Vector2.op_Addition(left__x, left__y, right__x, right__y)
     return left__x + right__x, left__y + right__y
 end
 function SF__.Vector2.Magnitude(self__x, self__y)

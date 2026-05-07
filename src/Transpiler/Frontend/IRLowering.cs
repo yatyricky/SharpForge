@@ -2493,13 +2493,13 @@ public sealed class IRLowering
     private static string GetLuaOperatorName(string op)
         => op switch
         {
-            "+" => "op__Addition",
-            "-" => "op__Subtraction",
-            "*" => "op__Multiply",
-            "/" => "op__Division",
-            "==" => "op__Equality",
-            "!=" => "op__Inequality",
-            _ => "op__Operator",
+            "+" => "op_Addition",
+            "-" => "op_Subtraction",
+            "*" => "op_Multiply",
+            "/" => "op_Division",
+            "==" => "op_Equality",
+            "!=" => "op_Inequality",
+            _ => "op_Operator",
         };
 
     private static string GetLuaConstructorInitName(IMethodSymbol method)
