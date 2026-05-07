@@ -1596,11 +1596,11 @@ public class EmitSmokeTests
 
         Assert.Contains("-- Vector2", lua);
         Assert.DoesNotContain("System.ValueType", lua);
-        Assert.Contains("function SF__.Vector2.op_Addition(a, b)", lua);
-        Assert.Contains("return (a.X + b.X), (a.Y + b.Y)", lua);
-        Assert.Matches(@"local a\d* = \{X = 1, Y = 2\}", lua);
-        Assert.Matches(@"local b\d* = \{X = 3, Y = 4\}", lua);
-        Assert.Matches(@"local c__X\d*, c__Y\d* = SF__\.Vector2\.op_Addition\(a\d*, b\d*\)", lua);
+        Assert.Contains("function SF__.Vector2.op__Addition(a__X, a__Y, b__X, b__Y)", lua);
+        Assert.Contains("return (a__X + b__X), (a__Y + b__Y)", lua);
+        Assert.Matches(@"local a__X\d*, a__Y\d* = 1, 2", lua);
+        Assert.Matches(@"local b__X\d*, b__Y\d* = 3, 4", lua);
+        Assert.Matches(@"local c__X\d*, c__Y\d* = SF__\.Vector2\.op__Addition\(a__X\d*, a__Y\d*, b__X\d*, b__Y\d*\)", lua);
         Assert.Contains("return c__X", lua);
         Assert.DoesNotContain("function SF__.Vector2.__Init", lua);
         Assert.DoesNotContain("function SF__.Vector2.New", lua);
@@ -1693,6 +1693,83 @@ public class EmitSmokeTests
         Assert.Contains("local chance = SF__.CrusaderStrike.staticProp__ArtOfWarChance", lua);
         Assert.DoesNotContain("self._template = nil", lua);
         Assert.DoesNotContain("SF__.CrusaderStrike.staticProp = nil", lua);
+    }
+
+    [Fact]
+    public async Task Struct_parameters_are_flattened()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+            }
+
+            public static class Sample
+            {
+                public static float Sum(Vector2 pos)
+                {
+                    return pos.x + pos.y;
+                }
+
+                public static float Run()
+                {
+                    return Sum(new Vector2 { x = 2, y = 3 });
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructParameter.cs");
+
+        Assert.Contains("function SF__.Sample.Sum(pos__x, pos__y)", lua);
+        Assert.Contains("return (pos__x + pos__y)", lua);
+        Assert.Contains("return SF__.Sample.Sum(2, 3)", lua);
+        Assert.DoesNotContain("pos.x", lua);
+        Assert.DoesNotContain("pos.y", lua);
+    }
+
+    [Fact]
+    public async Task Struct_methods_use_flattened_self_and_parameters()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public static Vector2 operator +(Vector2 left, Vector2 right)
+                {
+                    return new Vector2 { x = left.x + right.x, y = left.y + right.y };
+                }
+
+                public float MagnitudeSquared()
+                {
+                    return x * x + y * y;
+                }
+            }
+
+            public static class Sample
+            {
+                public static float Run()
+                {
+                    var left = new Vector2 { x = 1, y = 2 };
+                    var right = new Vector2 { x = 3, y = 4 };
+                    var sum = left + right;
+                    return sum.MagnitudeSquared();
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructMethods.cs");
+
+        Assert.Contains("function SF__.Vector2.op__Addition(left__x, left__y, right__x, right__y)", lua);
+        Assert.Contains("return (left__x + right__x), (left__y + right__y)", lua);
+        Assert.Contains("function SF__.Vector2.MagnitudeSquared(self__x, self__y)", lua);
+        Assert.Contains("(self__x * self__x)", lua);
+        Assert.Contains("(self__y * self__y)", lua);
+        Assert.Matches(@"local sum__x\d*, sum__y\d* = SF__\.Vector2\.op__Addition\(left__x\d*, left__y\d*, right__x\d*, right__y\d*\)", lua);
+        Assert.Matches(@"return SF__\.Vector2\.MagnitudeSquared\(sum__x\d*, sum__y\d*\)", lua);
+        Assert.DoesNotContain("function SF__.Vector2:MagnitudeSquared", lua);
     }
 
     [Fact]

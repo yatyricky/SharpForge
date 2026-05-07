@@ -63,13 +63,7 @@ local data__x, data__y = SF__.Demo.Make(2)
 BJDebugMsg(SF__.StrConcat__(data__x, ":", data__y))
 ```
 
-If a whole struct value is still needed as an expression, object creation falls back to a plain Lua table literal with the struct fields:
-
-```lua
-local v = {x = 10, y = 5}
-```
-
-Empty struct type blocks are skipped. A struct with static members can still emit a root-table type entry for those members, but constructors are still omitted.
+Empty struct type blocks are skipped. A struct with methods or static members can still emit a root-table type entry for those members, but constructors are still omitted.
 
 Struct-typed class fields and auto-properties are flattened into fields on the owning class. Instance members are stored on `self`, and static members are stored on the generated type table:
 
@@ -108,9 +102,62 @@ emits in the shape:
 local red = (self.tint__r * 255)
 ```
 
-## Todo
+### Struct as parameter
 
-- Structs may still need to emit a type/class table when methods are defined.
-- That table should hold the lowered struct methods.
-- Static struct methods should lower to functions on that table.
-- Instance struct methods should lower as static functions on that table, with the first parameter representing `self`.
+```csharp
+struct Vector2
+{
+    public float x;
+    public float y;
+}
+
+class Sample
+{
+    public void MoveUnitTo(unit u, Vector2 pos)
+    {
+        SetUnitX(u, pos.x);
+        SetUnitY(u, pos.y);
+    }
+}
+```
+emits in the shape:
+```lua
+-- skip class and struct type blocks
+
+function SF__.Sample.MoveUnitTo(u, pos__x, pos__y)
+    SetUnitX(u, pos__x)
+    SetUnitY(u, pos__y)
+end
+```
+
+### Structs with Methods
+
+```csharp
+struct Vector2
+{
+    float x;
+    float y;
+
+    public static Vector2 operator +(Vector2 left, Vector2 right)
+    {
+        return new Vector2 { x = left.x + right.x, y = left.y + right.y };
+    }
+
+    public float Magnitude()
+    {
+        return Mathf.Sqrt(x * x + y * y);
+    }
+}
+```
+
+emits in the shape:
+
+```lua
+SF__.Vector2 = {}
+function SF__.Vector2.op__Addition(left__x, left__y, right__x, right__y)
+    return left__x + right__x, left__y + right__y
+end
+function SF__.Vector2.Magnitude(self__x, self__y)
+    return SF__.Mathf.Sqrt(self__x * self__x + self__y * self__y)
+end
+```

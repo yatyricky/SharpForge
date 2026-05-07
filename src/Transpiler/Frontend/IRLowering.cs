@@ -26,6 +26,8 @@ public sealed class IRLowering
     private readonly Dictionary<ISymbol, (string KeyName, string ValueName)> _dictionaryForEachItems = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<ISymbol, FlattenedStructLocal> _flattenedStructLocals = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<ISymbol, FlattenedStructMember> _flattenedStructMembers = new(SymbolEqualityComparer.Default);
+    private INamedTypeSymbol? _currentStructSelfType;
+    private IReadOnlyDictionary<string, string>? _currentStructSelfFields;
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
 
@@ -58,6 +60,8 @@ public sealed class IRLowering
         _dictionaryForEachItems.Clear();
         _flattenedStructLocals.Clear();
         _flattenedStructMembers.Clear();
+        _currentStructSelfType = null;
+        _currentStructSelfFields = null;
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
 
@@ -430,10 +434,6 @@ public sealed class IRLowering
             return staticFn;
         }
 
-        var parameters = c.ParameterList.Parameters
-            .Select(p => DeclareLuaName(model.GetDeclaredSymbol(p, ct), p.Identifier.ValueText))
-            .ToArray();
-
         var fn = new IRFunction
         {
             Name = c.Identifier.ValueText,
@@ -445,10 +445,7 @@ public sealed class IRLowering
         };
         fn.Comments.AddRange(ExtractComments(c.GetLeadingTrivia()));
 
-        foreach (var parameter in parameters)
-        {
-            fn.Parameters.Add(parameter);
-        }
+        AddLoweredParameters(fn, c.ParameterList.Parameters, model, ct);
 
         if (c.Body is { } body)
         {
@@ -489,41 +486,60 @@ public sealed class IRLowering
     private IRFunction LowerMethod(MethodDeclarationSyntax m, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
         var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
+        var isStructInstanceMethod = owner.TypeKind == TypeKind.Struct && !isStatic;
         var symbol = model.GetDeclaredSymbol(m, ct);
         var fn = new IRFunction
         {
             Name = m.Identifier.ValueText,
             LuaName = symbol is null ? m.Identifier.ValueText : GetLuaMethodName(symbol),
             IsStatic = isStatic,
-            IsInstance = !isStatic,
+            IsInstance = !isStatic && !isStructInstanceMethod,
             IsCoroutine = m.Modifiers.Any(SyntaxKind.AsyncKeyword) && ContainsTaskDelay(m, model),
             IsEntryPoint = symbol is not null && IsEntryPointCandidate(symbol),
         };
         fn.Comments.AddRange(ExtractComments(m.GetLeadingTrivia()));
 
-        foreach (var p in m.ParameterList.Parameters)
+        IReadOnlyDictionary<string, string>? previousStructSelfFields = null;
+        INamedTypeSymbol? previousStructSelfType = null;
+        if (isStructInstanceMethod)
         {
-            fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(p, ct), p.Identifier.ValueText));
+            previousStructSelfType = _currentStructSelfType;
+            previousStructSelfFields = _currentStructSelfFields;
+            _currentStructSelfType = owner;
+            _currentStructSelfFields = AddFlattenedStructSelfParameters(fn, owner);
         }
 
-        if (m.DescendantNodes().OfType<YieldStatementSyntax>().Any())
+        try
         {
-            fn.Body.Statements.Add(new IRReturn(new IRArrayLiteral(
-                m.DescendantNodes()
-                    .OfType<YieldStatementSyntax>()
-                    .Where(y => y.IsKind(SyntaxKind.YieldReturnStatement) && y.Expression is not null)
-                    .Select(y => LowerExpr(y.Expression!, model))
-                    .ToArray())));
-            return fn;
-        }
+            AddLoweredParameters(fn, m.ParameterList.Parameters, model, ct);
 
-        if (m.Body is { } body)
-        {
-            LowerBlock(body, fn.Body, model, ct);
+            if (m.DescendantNodes().OfType<YieldStatementSyntax>().Any())
+            {
+                fn.Body.Statements.Add(new IRReturn(new IRArrayLiteral(
+                    m.DescendantNodes()
+                        .OfType<YieldStatementSyntax>()
+                        .Where(y => y.IsKind(SyntaxKind.YieldReturnStatement) && y.Expression is not null)
+                        .Select(y => LowerExpr(y.Expression!, model))
+                        .ToArray())));
+                return fn;
+            }
+
+            if (m.Body is { } body)
+            {
+                LowerBlock(body, fn.Body, model, ct);
+            }
+            else if (m.ExpressionBody is { } arrow)
+            {
+                fn.Body.Statements.Add(new IRReturn(LowerExpr(arrow.Expression, model)));
+            }
         }
-        else if (m.ExpressionBody is { } arrow)
+        finally
         {
-            fn.Body.Statements.Add(new IRReturn(LowerExpr(arrow.Expression, model)));
+            if (isStructInstanceMethod)
+            {
+                _currentStructSelfType = previousStructSelfType;
+                _currentStructSelfFields = previousStructSelfFields;
+            }
         }
 
         return fn;
@@ -681,10 +697,7 @@ public sealed class IRLowering
             IsInstance = false,
         };
 
-        foreach (var p in o.ParameterList.Parameters)
-        {
-            fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(p, ct), p.Identifier.ValueText));
-        }
+        AddLoweredParameters(fn, o.ParameterList.Parameters, model, ct);
 
         if (o.Body is { } body)
         {
@@ -696,6 +709,50 @@ public sealed class IRLowering
         }
 
         return fn;
+    }
+
+    private void AddLoweredParameters(
+        IRFunction fn,
+        IEnumerable<ParameterSyntax> parameters,
+        SemanticModel model,
+        CancellationToken ct)
+    {
+        foreach (var parameter in parameters)
+        {
+            var symbol = model.GetDeclaredSymbol(parameter, ct);
+            AddLoweredParameter(fn, symbol, parameter.Identifier.ValueText, symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type));
+        }
+    }
+
+    private void AddLoweredParameter(IRFunction fn, ISymbol? symbol, string baseName, ITypeSymbol? type)
+    {
+        if (symbol is not null
+            && type is INamedTypeSymbol structType
+            && CanFlattenStructType(structType)
+            && GetFlattenableStructFields(structType).Any())
+        {
+            var fieldLocals = AddFlattenedStructParameters(fn, baseName, structType);
+            _flattenedStructLocals[symbol] = new FlattenedStructLocal(fieldLocals);
+            return;
+        }
+
+        fn.Parameters.Add(DeclareLuaName(symbol, baseName));
+    }
+
+    private IReadOnlyDictionary<string, string> AddFlattenedStructSelfParameters(IRFunction fn, INamedTypeSymbol structType)
+        => AddFlattenedStructParameters(fn, "self", structType);
+
+    private IReadOnlyDictionary<string, string> AddFlattenedStructParameters(IRFunction fn, string baseName, INamedTypeSymbol structType)
+    {
+        var fieldLocals = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var field in GetFlattenableStructFields(structType))
+        {
+            var parameterName = AllocateLuaName($"{EscapeLuaKeyword(baseName)}__{field.Name}");
+            fieldLocals[field.Name] = parameterName;
+            fn.Parameters.Add(parameterName);
+        }
+
+        return fieldLocals;
     }
 
     private void LowerStatements(IEnumerable<StatementSyntax> stmts, IRBlock target, SemanticModel model, CancellationToken ct)
@@ -1102,8 +1159,7 @@ public sealed class IRLowering
                     LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
 
             case InvocationExpressionSyntax inv:
-                var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
-                return LowerInvocation(inv, args, model);
+                return LowerInvocation(inv, model);
 
             case ParenthesizedLambdaExpressionSyntax lambda:
                 return LowerAnonymousFunction(lambda, model);
@@ -1140,7 +1196,7 @@ public sealed class IRLowering
                 {
                     return new IRInvocation(
                         new IRMemberAccess(LowerTypeReference(op.ContainingType), GetLuaMethodName(op)),
-                        new[] { LowerExpr(bin.Left, model), LowerExpr(bin.Right, model) });
+                        LowerArguments([bin.Left, bin.Right], op.Parameters, model));
                 }
 
                 if (bin.IsKind(SyntaxKind.AddExpression) && IsStringExpression(bin, model))
@@ -1164,9 +1220,12 @@ public sealed class IRLowering
         }
     }
 
-    private IRExpr LowerInvocation(InvocationExpressionSyntax inv, IReadOnlyList<IRExpr> args, SemanticModel model)
+    private IRExpr LowerInvocation(InvocationExpressionSyntax inv, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        var args = symbol is null
+            ? inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray()
+            : LowerArguments(inv.ArgumentList.Arguments.Select(a => a.Expression), symbol.Parameters, model);
         if (symbol is { MethodKind: MethodKind.DelegateInvoke })
         {
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
@@ -1212,6 +1271,25 @@ public sealed class IRLowering
             return new IRInvocation(
                 new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
                 new[] { new IRIdentifier("self") }.Concat(args).ToArray());
+        }
+
+        if (symbol is { IsStatic: false, ContainingType.TypeKind: TypeKind.Struct }
+            && CanFlattenStructType(symbol.ContainingType))
+        {
+            if (inv.Expression is MemberAccessExpressionSyntax structMemberAccess)
+            {
+                var selfArgs = LowerStructArgumentValues(structMemberAccess.Expression, symbol.ContainingType, model);
+                return new IRInvocation(
+                    new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                    selfArgs.Concat(args).ToArray());
+            }
+
+            if (inv.Expression is IdentifierNameSyntax && SymbolEqualityComparer.Default.Equals(symbol.ContainingType, _currentStructSelfType))
+            {
+                return new IRInvocation(
+                    new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                    GetCurrentStructSelfArguments(symbol.ContainingType).Concat(args).ToArray());
+            }
         }
 
         if (inv.Expression is IdentifierNameSyntax && symbol is { IsStatic: false })
@@ -1275,6 +1353,113 @@ public sealed class IRLowering
         return new IRInvocation(LowerExpr(inv.Expression, model), args);
     }
 
+    private IReadOnlyList<IRExpr> LowerArguments(IEnumerable<ExpressionSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
+    {
+        var lowered = new List<IRExpr>();
+        using var argumentEnumerator = arguments.GetEnumerator();
+        using var parameterEnumerator = parameters.GetEnumerator();
+
+        while (argumentEnumerator.MoveNext())
+        {
+            var parameter = parameterEnumerator.MoveNext() ? parameterEnumerator.Current : null;
+            if (parameter?.Type is INamedTypeSymbol structType
+                && CanFlattenStructType(structType)
+                && GetFlattenableStructFields(structType).Any())
+            {
+                lowered.AddRange(LowerStructArgumentValues(argumentEnumerator.Current, structType, model));
+                continue;
+            }
+
+            lowered.Add(LowerExpr(argumentEnumerator.Current, model));
+        }
+
+        return lowered;
+    }
+
+    private IReadOnlyList<IRExpr> LowerStructArgumentValues(ExpressionSyntax expression, INamedTypeSymbol structType, SemanticModel model)
+    {
+        if (expression is ObjectCreationExpressionSyntax creation
+            && TryGetStructFieldValues(creation, model, out _, out var creationValues))
+        {
+            return creationValues;
+        }
+
+        if (TryGetFlattenedStructValueExpressions(expression, structType, model, out var flattenedValues))
+        {
+            return flattenedValues;
+        }
+
+        return new[] { LowerExpr(expression, model) };
+    }
+
+    private IReadOnlyList<IRExpr> GetCurrentStructSelfArguments(INamedTypeSymbol structType)
+    {
+        if (_currentStructSelfFields is null)
+        {
+            return Array.Empty<IRExpr>();
+        }
+
+        return GetFlattenableStructFields(structType)
+            .Select(field => _currentStructSelfFields.TryGetValue(field.Name, out var fieldName) ? new IRIdentifier(fieldName) : null)
+            .OfType<IRExpr>()
+            .ToArray();
+    }
+
+    private bool TryGetFlattenedStructValueExpressions(
+        ExpressionSyntax expression,
+        INamedTypeSymbol structType,
+        SemanticModel model,
+        out IReadOnlyList<IRExpr> values)
+    {
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        if (fields.Length == 0)
+        {
+            values = Array.Empty<IRExpr>();
+            return false;
+        }
+
+        if (expression is ThisExpressionSyntax && _currentStructSelfFields is not null)
+        {
+            values = fields
+                .Select(field => _currentStructSelfFields.TryGetValue(field.Name, out var fieldName) ? new IRIdentifier(fieldName) : null)
+                .OfType<IRExpr>()
+                .ToArray();
+            return values.Count == fields.Length;
+        }
+
+        if (model.GetSymbolInfo(expression).Symbol is { } symbol)
+        {
+            if (_flattenedStructLocals.TryGetValue(symbol, out var flattenedLocal))
+            {
+                values = fields
+                    .Select(field => flattenedLocal.FieldLocals.TryGetValue(field.Name, out var fieldName) ? new IRIdentifier(fieldName) : null)
+                    .OfType<IRExpr>()
+                    .ToArray();
+                return values.Count == fields.Length;
+            }
+
+            if (_flattenedStructMembers.TryGetValue(symbol, out var flattenedMember))
+            {
+                var target = GetFlattenedStructMemberTarget(flattenedMember);
+                values = fields
+                    .Select(field => flattenedMember.FieldMembers.TryGetValue(field.Name, out var memberName) ? new IRMemberAccess(target, memberName) : null)
+                    .OfType<IRExpr>()
+                    .ToArray();
+                return values.Count == fields.Length;
+            }
+        }
+
+        if (expression is IdentifierNameSyntax or MemberAccessExpressionSyntax)
+        {
+            var target = LowerExpr(expression, model);
+            values = fields.Select(field => new IRMemberAccess(target, field.Name)).ToArray();
+            return true;
+        }
+
+        values = Array.Empty<IRExpr>();
+        return false;
+    }
+
     private IRStmt? TryLowerStructLocalDeclaration(
         LocalDeclarationStatementSyntax statement,
         VariableDeclaratorSyntax variable,
@@ -1333,6 +1518,13 @@ public sealed class IRLowering
         if (model.GetSymbolInfo(access).Symbol is not IFieldSymbol and not IPropertySymbol)
         {
             return null;
+        }
+
+        if (access.Expression is ThisExpressionSyntax
+            && _currentStructSelfFields is not null
+            && _currentStructSelfFields.TryGetValue(access.Name.Identifier.ValueText, out var selfFieldName))
+        {
+            return new IRIdentifier(selfFieldName);
         }
 
         if (access.Expression is IdentifierNameSyntax id
@@ -1443,7 +1635,7 @@ public sealed class IRLowering
 
                 if (id.Parent is MemberAccessExpressionSyntax access
                     && access.Expression == id
-                    && model.GetSymbolInfo(access).Symbol is IFieldSymbol or IPropertySymbol)
+                    && model.GetSymbolInfo(access).Symbol is IFieldSymbol or IPropertySymbol or IMethodSymbol)
                 {
                     continue;
                 }
@@ -1452,6 +1644,12 @@ public sealed class IRLowering
                     && assignment.Left == id
                     && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
                     && IsStructExpression(assignment.Right, model))
+                {
+                    continue;
+                }
+
+                if (id.Parent is BinaryExpressionSyntax binary
+                    && model.GetSymbolInfo(binary).Symbol is IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator })
                 {
                     continue;
                 }
@@ -1502,7 +1700,7 @@ public sealed class IRLowering
         }
 
         fields = fieldSlots;
-        values = new[] { LowerExpr(expression, model) };
+        values = LowerStructArgumentValues(expression, type, model);
         return true;
     }
 
@@ -1729,9 +1927,6 @@ public sealed class IRLowering
 
     private IRExpr LowerObjectCreation(ObjectCreationExpressionSyntax obj, SemanticModel model)
     {
-        var args = obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray()
-            ?? Array.Empty<IRExpr>();
-
         var type = (model.GetSymbolInfo(obj).Symbol as IMethodSymbol)?.ContainingType
             ?? model.GetTypeInfo(obj).Type as INamedTypeSymbol;
 
@@ -1751,6 +1946,9 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
+        var args = ctor is null
+            ? obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray() ?? Array.Empty<IRExpr>()
+            : LowerArguments(obj.ArgumentList?.Arguments.Select(a => a.Expression) ?? Enumerable.Empty<ExpressionSyntax>(), ctor.Parameters, model);
 
         if (CanFlattenStructType(type) && TryGetStructFieldValues(obj, model, out var structFields, out var structValues))
         {
@@ -2177,12 +2375,28 @@ public sealed class IRLowering
         if (symbol is { IsStatic: false } and (IFieldSymbol or IPropertySymbol or IMethodSymbol)
             && symbol.ContainingType is not null)
         {
+            if (symbol is IFieldSymbol or IPropertySymbol
+                && SymbolEqualityComparer.Default.Equals(symbol.ContainingType, _currentStructSelfType)
+                && _currentStructSelfFields is not null
+                && _currentStructSelfFields.TryGetValue(symbol.Name, out var selfFieldName))
+            {
+                return new IRIdentifier(selfFieldName);
+            }
+
             return symbol is IMethodSymbol instanceMethod
                 ? new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(instanceMethod))
                 : new IRMemberAccess(new IRIdentifier("self"), id.Identifier.ValueText);
         }
         if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
         {
+            if (_flattenedStructLocals.TryGetValue(symbol, out var flattenedLocal))
+            {
+                return new IRTableLiteralNew(flattenedLocal.FieldLocals
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair => (pair.Key, Value: (IRExpr)new IRIdentifier(pair.Value)))
+                    .ToArray());
+            }
+
             return new IRIdentifier(GetLuaName(symbol, id.Identifier.ValueText));
         }
 
@@ -2279,13 +2493,13 @@ public sealed class IRLowering
     private static string GetLuaOperatorName(string op)
         => op switch
         {
-            "+" => "op_Addition",
-            "-" => "op_Subtraction",
-            "*" => "op_Multiply",
-            "/" => "op_Division",
-            "==" => "op_Equality",
-            "!=" => "op_Inequality",
-            _ => "op_Operator",
+            "+" => "op__Addition",
+            "-" => "op__Subtraction",
+            "*" => "op__Multiply",
+            "/" => "op__Division",
+            "==" => "op__Equality",
+            "!=" => "op__Inequality",
+            _ => "op__Operator",
         };
 
     private static string GetLuaConstructorInitName(IMethodSymbol method)
