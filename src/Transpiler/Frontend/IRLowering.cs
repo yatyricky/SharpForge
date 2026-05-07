@@ -107,6 +107,7 @@ public sealed class IRLowering
                 }
 
                 ValidateReservedIdentifiers(typeDecl);
+                ValidateStructRuntimeFeatures(typeDecl, symbol, model, cancellationToken);
                 module.Types.Add(LowerType(typeDecl, symbol, model, cancellationToken));
             }
         }
@@ -148,7 +149,7 @@ public sealed class IRLowering
         irType.Comments.AddRange(ExtractComments(typeDecl.GetLeadingTrivia()));
         irType.LuaRequires.AddRange(GetLuaAttributeValues(symbol, "Require"));
 
-        foreach (var iface in symbol.Interfaces.Where(i => !IsIgnoredClass(i)))
+        foreach (var iface in symbol.Interfaces.Where(i => !irType.IsStruct && !IsIgnoredClass(i)))
         {
             irType.Interfaces.Add(LowerTypeReference(iface));
         }
@@ -1161,6 +1162,14 @@ public sealed class IRLowering
             case InvocationExpressionSyntax inv:
                 return LowerInvocation(inv, model);
 
+            case CastExpressionSyntax cast:
+                if (IsStructRuntimeCast(cast, model))
+                {
+                    AddDiagnostic(cast.GetLocation(), "struct casts are not supported; SharpForge structs are compile-time value shapes and cannot be recovered from object/interface values");
+                }
+
+                return LowerExpr(cast.Expression, model);
+
             case ParenthesizedLambdaExpressionSyntax lambda:
                 return LowerAnonymousFunction(lambda, model);
 
@@ -1920,10 +1929,142 @@ public sealed class IRLowering
             return UnsupportedExpression(typeSyntax);
         }
 
+        if (CanFlattenStructType(type))
+        {
+            AddDiagnostic(typeSyntax.GetLocation(), "struct runtime type checks are not supported; SharpForge structs are compile-time value shapes and do not carry runtime type metadata");
+        }
+
         return isAsExpression
             ? new IRAs(LowerExpr(value, model), LowerTypeReference(type))
             : new IRIs(LowerExpr(value, model), LowerTypeReference(type));
     }
+
+    private bool IsStructRuntimeCast(CastExpressionSyntax cast, SemanticModel model)
+    {
+        var targetType = model.GetTypeInfo(cast.Type).Type;
+        var sourceType = model.GetTypeInfo(cast.Expression).Type;
+        return IsFlattenableStructType(targetType) || IsFlattenableStructType(sourceType);
+    }
+
+    private bool IsFlattenableStructType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { SpecialType: SpecialType.None } namedType
+           && CanFlattenStructType(namedType)
+           && GetFlattenableStructFields(namedType).Any();
+
+    private void ValidateStructRuntimeFeatures(TypeDeclarationSyntax typeDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
+    {
+        ValidateUnsupportedStructRuntimeConversions(typeDecl, model);
+
+        if (symbol.TypeKind != TypeKind.Struct)
+        {
+            return;
+        }
+
+        foreach (var methodDecl in typeDecl.Members.OfType<MethodDeclarationSyntax>())
+        {
+            if (model.GetDeclaredSymbol(methodDecl, ct) is not { } method)
+            {
+                continue;
+            }
+
+            if (IsObjectEqualsOverride(method))
+            {
+                AddDiagnostic(methodDecl.Identifier.GetLocation(), "struct Equals(object) is not supported; SharpForge structs are compile-time value shapes and cannot be boxed for runtime equality");
+            }
+            else if (IsGetHashCodeOverride(method))
+            {
+                AddDiagnostic(methodDecl.Identifier.GetLocation(), "struct GetHashCode() is not supported; SharpForge structs do not support boxed/hash-based value identity");
+            }
+        }
+    }
+
+    private static bool IsObjectEqualsOverride(IMethodSymbol method)
+        => method is { IsOverride: true, Name: "Equals", Parameters.Length: 1 }
+           && method.Parameters[0].Type.SpecialType == SpecialType.System_Object;
+
+    private static bool IsGetHashCodeOverride(IMethodSymbol method)
+        => method is { IsOverride: true, Name: "GetHashCode", Parameters.Length: 0 };
+
+    private void ValidateUnsupportedStructRuntimeConversions(SyntaxNode node, SemanticModel model)
+    {
+        foreach (var expression in node.DescendantNodes().OfType<ExpressionSyntax>())
+        {
+            if (expression is CastExpressionSyntax or TypeSyntax)
+            {
+                continue;
+            }
+
+            var conversion = model.GetConversion(expression);
+            if (conversion.IsBoxing && IsFlattenableStructType(model.GetTypeInfo(expression).Type))
+            {
+                AddDiagnostic(expression.GetLocation(), "struct boxing conversions are not supported; SharpForge structs are compile-time value shapes and cannot be stored as object/interface values");
+            }
+        }
+
+        foreach (var isPattern in node.DescendantNodes().OfType<IsPatternExpressionSyntax>())
+        {
+            if (isPattern.Pattern is DeclarationPatternSyntax { Type: { } declarationType }
+                && IsFlattenableStructType(model.GetTypeInfo(declarationType).Type))
+            {
+                AddDiagnostic(declarationType.GetLocation(), "struct runtime type checks are not supported; SharpForge structs are compile-time value shapes and do not carry runtime type metadata");
+            }
+            else if (isPattern.Pattern is TypePatternSyntax { Type: { } typePattern }
+                && IsFlattenableStructType(model.GetTypeInfo(typePattern).Type))
+            {
+                AddDiagnostic(typePattern.GetLocation(), "struct runtime type checks are not supported; SharpForge structs are compile-time value shapes and do not carry runtime type metadata");
+            }
+        }
+
+        foreach (var returnStatement in node.DescendantNodes().OfType<ReturnStatementSyntax>())
+        {
+            if (returnStatement.Expression is not { } expression
+                || model.GetEnclosingSymbol(returnStatement.SpanStart) is not IMethodSymbol method
+                || !IsRuntimeObjectLikeType(method.ReturnType)
+                || !IsFlattenableStructType(model.GetTypeInfo(expression).Type))
+            {
+                continue;
+            }
+
+            AddDiagnostic(expression.GetLocation(), "struct boxing conversions are not supported; SharpForge structs are compile-time value shapes and cannot be stored as object/interface values");
+        }
+
+        foreach (var variable in node.DescendantNodes().OfType<VariableDeclaratorSyntax>())
+        {
+            if (variable.Initializer?.Value is not { } initializer
+                || model.GetDeclaredSymbol(variable) is not { } symbol
+                || !IsRuntimeObjectLikeType(GetSymbolType(symbol))
+                || !IsFlattenableStructType(model.GetTypeInfo(initializer).Type))
+            {
+                continue;
+            }
+
+            AddDiagnostic(initializer.GetLocation(), "struct boxing conversions are not supported; SharpForge structs are compile-time value shapes and cannot be stored as object/interface values");
+        }
+
+        foreach (var assignment in node.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (!assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+                || !IsRuntimeObjectLikeType(model.GetTypeInfo(assignment.Left).Type)
+                || !IsFlattenableStructType(model.GetTypeInfo(assignment.Right).Type))
+            {
+                continue;
+            }
+
+            AddDiagnostic(assignment.Right.GetLocation(), "struct boxing conversions are not supported; SharpForge structs are compile-time value shapes and cannot be stored as object/interface values");
+        }
+    }
+
+    private static ITypeSymbol? GetSymbolType(ISymbol symbol)
+        => symbol switch
+        {
+            ILocalSymbol local => local.Type,
+            IFieldSymbol field => field.Type,
+            IPropertySymbol property => property.Type,
+            _ => null,
+        };
+
+    private static bool IsRuntimeObjectLikeType(ITypeSymbol? type)
+        => type is not null && (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Interface);
 
     private IRExpr LowerObjectCreation(ObjectCreationExpressionSyntax obj, SemanticModel model)
     {

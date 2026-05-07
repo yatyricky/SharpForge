@@ -161,3 +161,7 @@ function SF__.Vector2.Magnitude(self__x, self__y)
     return SF__.Mathf.Sqrt(self__x * self__x + self__y * self__y)
 end
 ```
+
+### Structs in List\<T\>
+
+This is a tricky one.

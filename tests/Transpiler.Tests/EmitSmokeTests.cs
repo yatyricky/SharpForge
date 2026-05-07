@@ -932,6 +932,99 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Struct_runtime_casting_and_boxed_equality_are_diagnostics()
+    {
+        var src = """
+            using System;
+
+            public struct AbilityData : IEquatable<AbilityData>
+            {
+                public float DamageScaling;
+
+                public bool Equals(AbilityData other)
+                {
+                    return DamageScaling == other.DamageScaling;
+                }
+
+                public override bool Equals(object? obj)
+                {
+                    return obj is AbilityData && Equals((AbilityData)obj);
+                }
+
+                public override int GetHashCode()
+                {
+                    return 0;
+                }
+            }
+
+            public static class Checks
+            {
+                public static bool IsAbilityData(object value)
+                {
+                    return value is AbilityData;
+                }
+
+                public static AbilityData CastAbilityData(object value)
+                {
+                    return (AbilityData)value;
+                }
+
+                public static object BoxAbilityData(AbilityData value)
+                {
+                    return value;
+                }
+            }
+            """;
+
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var file = Path.Combine(dir.FullName, "StructRuntimeFeatures.cs");
+        await File.WriteAllTextAsync(file, src);
+
+        var compilation = await new RoslynFrontend(Array.Empty<string>())
+            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
+        var module = new IRLowering().Lower(compilation, CancellationToken.None);
+
+        Assert.DoesNotContain(module.Diagnostics, diagnostic => diagnostic.Contains("implements IEquatable<T>", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct Equals(object) is not supported", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct GetHashCode() is not supported", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct runtime type checks are not supported", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct casts are not supported", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct boxing conversions are not supported", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Struct_interfaces_are_not_emitted_as_runtime_metadata()
+    {
+        var src = """
+            using System;
+
+            public struct AbilityData : IEquatable<AbilityData>
+            {
+                public float DamageScaling;
+
+                public bool Equals(AbilityData other)
+                {
+                    return DamageScaling == other.DamageScaling;
+                }
+            }
+
+            public static class Checks
+            {
+                public static bool Same(AbilityData left, AbilityData right)
+                {
+                    return left.Equals(right);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructInterfaces.cs");
+
+        Assert.Contains("function SF__.AbilityData.Equals(self__DamageScaling, other__DamageScaling)", lua);
+        Assert.DoesNotContain("SF__.AbilityData.__sf_interfaces", lua);
+        Assert.DoesNotContain("IEquatable", lua);
+    }
+
+    [Fact]
     public async Task Arrays_lists_indexing_and_foreach_emit_table_backed_collections()
     {
         var src = """
