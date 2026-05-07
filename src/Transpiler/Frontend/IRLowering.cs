@@ -24,6 +24,8 @@ public sealed class IRLowering
     private readonly Stack<LuaModuleBlockContext> _luaModuleBlockContexts = new();
     private int? _luaModuleInsertionIndex;
     private readonly Dictionary<ISymbol, (string KeyName, string ValueName)> _dictionaryForEachItems = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<ISymbol, FlattenedStructLocal> _flattenedStructLocals = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<ISymbol, FlattenedStructMember> _flattenedStructMembers = new(SymbolEqualityComparer.Default);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
 
@@ -54,6 +56,8 @@ public sealed class IRLowering
         _luaModuleBlockContexts.Clear();
         _luaModuleInsertionIndex = null;
         _dictionaryForEachItems.Clear();
+        _flattenedStructLocals.Clear();
+        _flattenedStructMembers.Clear();
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
 
@@ -164,6 +168,19 @@ public sealed class IRLowering
                     var staticFieldComments = ExtractComments(f.GetLeadingTrivia());
                     foreach (var v in f.Declaration.Variables)
                     {
+                        if (TryAddFlattenedStructMemberFields(
+                            irType,
+                            model.GetDeclaredSymbol(v, ct),
+                            v.Identifier.ValueText,
+                            model.GetTypeInfo(f.Declaration.Type).Type,
+                            v.Initializer,
+                            isStatic: true,
+                            staticFieldComments,
+                            model))
+                        {
+                            continue;
+                        }
+
                         var field = new IRField
                         {
                             Name = v.Identifier.ValueText,
@@ -180,6 +197,19 @@ public sealed class IRLowering
                     var fieldComments = ExtractComments(f.GetLeadingTrivia());
                     foreach (var v in f.Declaration.Variables)
                     {
+                        if (TryAddFlattenedStructMemberFields(
+                            irType,
+                            model.GetDeclaredSymbol(v, ct),
+                            v.Identifier.ValueText,
+                            model.GetTypeInfo(f.Declaration.Type).Type,
+                            v.Initializer,
+                            isStatic: false,
+                            fieldComments,
+                            model))
+                        {
+                            continue;
+                        }
+
                         var field = new IRField
                         {
                             Name = v.Identifier.ValueText,
@@ -195,6 +225,19 @@ public sealed class IRLowering
                 case PropertyDeclarationSyntax p:
                     if (IsAutoProperty(p))
                     {
+                        if (TryAddFlattenedStructMemberFields(
+                            irType,
+                            model.GetDeclaredSymbol(p, ct),
+                            p.Identifier.ValueText,
+                            model.GetTypeInfo(p.Type).Type,
+                            p.Initializer,
+                            p.Modifiers.Any(SyntaxKind.StaticKeyword),
+                            ExtractComments(p.GetLeadingTrivia()),
+                            model))
+                        {
+                            break;
+                        }
+
                         var field = new IRField
                         {
                             Name = p.Identifier.ValueText,
@@ -701,7 +744,13 @@ public sealed class IRLowering
 
             case LocalDeclarationStatementSyntax ld:
                 var first = ld.Declaration.Variables.First();
-                var localName = DeclareLuaName(model.GetDeclaredSymbol(first), first.Identifier.ValueText);
+                var declaredSymbol = model.GetDeclaredSymbol(first);
+                if (TryLowerStructLocalDeclaration(ld, first, declaredSymbol, model) is { } structLocalDeclaration)
+                {
+                    return structLocalDeclaration;
+                }
+
+                var localName = DeclareLuaName(declaredSymbol, first.Identifier.ValueText);
                 TrackLuaObjectModuleBinding(first, localName, model);
                 return new IRLocalDecl(
                     localName,
@@ -732,6 +781,11 @@ public sealed class IRLowering
                 return new IRExprStmt(LowerExpr(es.Expression, model));
 
             case ReturnStatementSyntax rs:
+                if (rs.Expression is not null && TryLowerStructReturn(rs.Expression, model) is { } structReturn)
+                {
+                    return structReturn;
+                }
+
                 return new IRReturn(rs.Expression is null ? null : LowerExpr(rs.Expression, model));
 
             case IfStatementSyntax ifs:
@@ -861,6 +915,11 @@ public sealed class IRLowering
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
     {
+        if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerStructAssignment(ae.Left, ae.Right, model) is { } structAssignment)
+        {
+            return structAssignment;
+        }
+
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerDictionaryAssignment(ae.Left, ae.Right, model) is { } dictionaryAssignment)
         {
             return dictionaryAssignment;
@@ -991,6 +1050,11 @@ public sealed class IRLowering
                 if (TryLowerLuaObjectMemberAccess(ma, model) is { } luaObjectMemberAccess)
                 {
                     return luaObjectMemberAccess;
+                }
+
+                if (TryLowerFlattenedStructFieldAccess(ma, model) is { } flattenedStructFieldAccess)
+                {
+                    return flattenedStructFieldAccess;
                 }
 
                 if (TryLowerSharpLibKeyValueAccess(ma, model) is { } keyValueAccess)
@@ -1211,6 +1275,392 @@ public sealed class IRLowering
         return new IRInvocation(LowerExpr(inv.Expression, model), args);
     }
 
+    private IRStmt? TryLowerStructLocalDeclaration(
+        LocalDeclarationStatementSyntax statement,
+        VariableDeclaratorSyntax variable,
+        ISymbol? localSymbol,
+        SemanticModel model)
+    {
+        if (localSymbol is null
+            || statement.Declaration.Variables.Count != 1
+            || variable.Initializer?.Value is not { } initializer
+            || !CanFlattenStructLocal(statement, localSymbol, model)
+            || !TryGetStructExpressionValues(initializer, model, out var fields, out var values))
+        {
+            return null;
+        }
+
+        var baseName = EscapeLuaKeyword(variable.Identifier.ValueText);
+        var fieldLocals = new Dictionary<string, string>(StringComparer.Ordinal);
+        var localNames = new List<string>(fields.Count);
+        foreach (var field in fields)
+        {
+            var localName = AllocateLuaName($"{baseName}__{field.Name}");
+            fieldLocals[field.Name] = localName;
+            localNames.Add(localName);
+        }
+
+        _flattenedStructLocals[localSymbol] = new FlattenedStructLocal(fieldLocals);
+        return new IRMultiLocalDecl(localNames, values);
+    }
+
+    private IRStmt? TryLowerStructAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
+    {
+        if (left is not IdentifierNameSyntax id
+            || model.GetSymbolInfo(id).Symbol is not { } localSymbol
+            || !_flattenedStructLocals.TryGetValue(localSymbol, out var flattened)
+            || !TryGetStructExpressionValues(right, model, out var fields, out var values))
+        {
+            return null;
+        }
+
+        var targets = new List<IRExpr>(fields.Count);
+        foreach (var field in fields)
+        {
+            if (!flattened.FieldLocals.TryGetValue(field.Name, out var localName))
+            {
+                return null;
+            }
+
+            targets.Add(new IRIdentifier(localName));
+        }
+
+        return new IRMultiAssign(targets, values);
+    }
+
+    private IRExpr? TryLowerFlattenedStructFieldAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (model.GetSymbolInfo(access).Symbol is not IFieldSymbol and not IPropertySymbol)
+        {
+            return null;
+        }
+
+        if (access.Expression is IdentifierNameSyntax id
+            && model.GetSymbolInfo(id).Symbol is { } localSymbol
+            && _flattenedStructLocals.TryGetValue(localSymbol, out var flattenedLocal))
+        {
+            return flattenedLocal.FieldLocals.TryGetValue(access.Name.Identifier.ValueText, out var localName)
+                ? new IRIdentifier(localName)
+                : null;
+        }
+
+        if (model.GetSymbolInfo(access.Expression).Symbol is { } memberSymbol
+            && _flattenedStructMembers.TryGetValue(memberSymbol, out var flattenedMember))
+        {
+            return flattenedMember.FieldMembers.TryGetValue(access.Name.Identifier.ValueText, out var memberName)
+                ? new IRMemberAccess(GetFlattenedStructMemberTarget(flattenedMember), memberName)
+                : null;
+        }
+
+        return null;
+    }
+
+    private IRExpr GetFlattenedStructMemberTarget(FlattenedStructMember member)
+        => member.IsStatic ? LowerTypeReferenceForAccess(member.ContainingType) : new IRIdentifier("self");
+
+    private bool TryAddFlattenedStructMemberFields(
+        IRType owner,
+        ISymbol? memberSymbol,
+        string memberName,
+        ITypeSymbol? memberType,
+        EqualsValueClauseSyntax? initializer,
+        bool isStatic,
+        IReadOnlyList<string> comments,
+        SemanticModel model)
+    {
+        if (memberSymbol is null
+            || memberType is not INamedTypeSymbol structType
+            || !CanFlattenStructType(structType))
+        {
+            return false;
+        }
+
+        var fieldSlots = GetFlattenableStructFields(structType).ToArray();
+        if (fieldSlots.Length == 0)
+        {
+            return false;
+        }
+
+        var values = fieldSlots.ToDictionary(f => f.Name, f => LowerDefaultValue(f.Type), StringComparer.Ordinal);
+        if (initializer?.Value is ObjectCreationExpressionSyntax creation)
+        {
+            if (!TryGetStructFieldValues(creation, model, out var initializedFields, out var initializedValues))
+            {
+                return false;
+            }
+
+            for (var i = 0; i < initializedFields.Count; i++)
+            {
+                values[initializedFields[i].Name] = initializedValues[i];
+            }
+        }
+        else if (initializer is not null)
+        {
+            return false;
+        }
+
+        var fieldMembers = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var field in fieldSlots)
+        {
+            var flattenedName = $"{memberName}__{field.Name}";
+            fieldMembers[field.Name] = flattenedName;
+
+            var irField = new IRField
+            {
+                Name = flattenedName,
+                Initializer = values[field.Name],
+                IsStatic = isStatic,
+            };
+            irField.Comments.AddRange(comments);
+            owner.Fields.Add(irField);
+        }
+
+        _flattenedStructMembers[memberSymbol] = new FlattenedStructMember(isStatic, memberSymbol.ContainingType, fieldMembers);
+        return true;
+    }
+
+    private bool CanFlattenStructLocal(LocalDeclarationStatementSyntax statement, ISymbol localSymbol, SemanticModel model)
+    {
+        if (statement.Parent is not BlockSyntax block)
+        {
+            return false;
+        }
+
+        var startIndex = block.Statements.IndexOf(statement);
+        if (startIndex < 0)
+        {
+            return false;
+        }
+
+        for (var i = startIndex + 1; i < block.Statements.Count; i++)
+        {
+            foreach (var id in block.Statements[i].DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, localSymbol))
+                {
+                    continue;
+                }
+
+                if (id.Parent is MemberAccessExpressionSyntax access
+                    && access.Expression == id
+                    && model.GetSymbolInfo(access).Symbol is IFieldSymbol or IPropertySymbol)
+                {
+                    continue;
+                }
+
+                if (id.Parent is AssignmentExpressionSyntax assignment
+                    && assignment.Left == id
+                    && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+                    && IsStructExpression(assignment.Right, model))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private IRStmt? TryLowerStructReturn(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (expression is ObjectCreationExpressionSyntax creation
+            && TryGetStructFieldValues(creation, model, out _, out var values))
+        {
+            return new IRMultiReturn(values);
+        }
+
+        return null;
+    }
+
+    private bool TryGetStructExpressionValues(
+        ExpressionSyntax expression,
+        SemanticModel model,
+        out IReadOnlyList<StructFieldSlot> fields,
+        out IReadOnlyList<IRExpr> values)
+    {
+        if (expression is ObjectCreationExpressionSyntax creation)
+        {
+            return TryGetStructFieldValues(creation, model, out fields, out values);
+        }
+
+        var type = model.GetTypeInfo(expression).Type as INamedTypeSymbol;
+        if (type is null || !CanFlattenStructType(type))
+        {
+            fields = Array.Empty<StructFieldSlot>();
+            values = Array.Empty<IRExpr>();
+            return false;
+        }
+
+        var fieldSlots = GetFlattenableStructFields(type).ToArray();
+        if (fieldSlots.Length == 0)
+        {
+            fields = Array.Empty<StructFieldSlot>();
+            values = Array.Empty<IRExpr>();
+            return false;
+        }
+
+        fields = fieldSlots;
+        values = new[] { LowerExpr(expression, model) };
+        return true;
+    }
+
+    private bool IsStructExpression(ExpressionSyntax expression, SemanticModel model)
+        => model.GetTypeInfo(expression).Type is INamedTypeSymbol type
+           && CanFlattenStructType(type)
+           && GetFlattenableStructFields(type).Any();
+
+    private bool CanFlattenStructType(INamedTypeSymbol type)
+        => type.TypeKind == TypeKind.Struct
+           && !IsIgnoredClass(type);
+
+    private bool TryGetStructFieldValues(
+        ObjectCreationExpressionSyntax creation,
+        SemanticModel model,
+        out IReadOnlyList<StructFieldSlot> fields,
+        out IReadOnlyList<IRExpr> values)
+    {
+        fields = Array.Empty<StructFieldSlot>();
+        values = Array.Empty<IRExpr>();
+
+        var type = (model.GetSymbolInfo(creation).Symbol as IMethodSymbol)?.ContainingType
+            ?? model.GetTypeInfo(creation).Type as INamedTypeSymbol;
+        if (type is null || !CanFlattenStructType(type))
+        {
+            return false;
+        }
+
+        var fieldSlots = GetFlattenableStructFields(type).ToArray();
+        if (fieldSlots.Length == 0)
+        {
+            return false;
+        }
+
+        var fieldValues = fieldSlots.ToDictionary(f => f.Name, f => LowerDefaultValue(f.Type), StringComparer.Ordinal);
+        var ctor = model.GetSymbolInfo(creation).Symbol as IMethodSymbol;
+        var args = creation.ArgumentList?.Arguments ?? default;
+        if (args.Count > 0)
+        {
+            var parameterToField = ctor is null
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                : GetStructConstructorFieldMap(ctor, model);
+
+            if (ctor is not null && parameterToField.Count == ctor.Parameters.Length)
+            {
+                for (var i = 0; i < args.Count; i++)
+                {
+                    var parameter = args[i].NameColon is { } nameColon
+                        ? ctor.Parameters.FirstOrDefault(p => p.Name == nameColon.Name.Identifier.ValueText)
+                        : i < ctor.Parameters.Length ? ctor.Parameters[i] : null;
+                    if (parameter is null || !parameterToField.TryGetValue(parameter.Name, out var fieldName))
+                    {
+                        return false;
+                    }
+
+                    fieldValues[fieldName] = LowerExpr(args[i].Expression, model);
+                }
+            }
+            else if (args.Count == fieldSlots.Length)
+            {
+                for (var i = 0; i < args.Count; i++)
+                {
+                    fieldValues[fieldSlots[i].Name] = LowerExpr(args[i].Expression, model);
+                }
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        if (creation.Initializer is not null)
+        {
+            foreach (var expression in creation.Initializer.Expressions)
+            {
+                if (expression is not AssignmentExpressionSyntax assignment)
+                {
+                    return false;
+                }
+
+                var fieldName = assignment.Left switch
+                {
+                    IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                    MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.ValueText,
+                    _ => null,
+                };
+
+                if (fieldName is null || !fieldValues.ContainsKey(fieldName))
+                {
+                    return false;
+                }
+
+                fieldValues[fieldName] = LowerExpr(assignment.Right, model);
+            }
+        }
+
+        fields = fieldSlots;
+        values = fieldSlots.Select(f => fieldValues[f.Name]).ToArray();
+        return true;
+    }
+
+    private static IEnumerable<StructFieldSlot> GetFlattenableStructFields(INamedTypeSymbol type)
+        => type.GetMembers()
+            .Where(m => m is IFieldSymbol { IsStatic: false, IsConst: false } || m is IPropertySymbol { IsStatic: false } property && IsAutoPropertySymbol(property))
+            .Select(m => new StructFieldSlot(m.Name, m switch
+            {
+                IFieldSymbol field => field.Type,
+                IPropertySymbol property => property.Type,
+                _ => throw new InvalidOperationException(),
+            }, GetSyntaxSortKey(m)))
+            .OrderBy(f => f.SortKey)
+            .ThenBy(f => f.Name, StringComparer.Ordinal);
+
+    private static int GetSyntaxSortKey(ISymbol symbol)
+        => symbol.DeclaringSyntaxReferences.FirstOrDefault()?.Span.Start ?? int.MaxValue;
+
+    private static Dictionary<string, string> GetStructConstructorFieldMap(IMethodSymbol ctor, SemanticModel model)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var syntax = ctor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as ConstructorDeclarationSyntax;
+        if (syntax?.Body is null)
+        {
+            return result;
+        }
+
+        foreach (var assignment in syntax.Body.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (!assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+                || model.GetSymbolInfo(assignment.Left).Symbol is not IFieldSymbol and not IPropertySymbol)
+            {
+                continue;
+            }
+
+            var fieldName = assignment.Left switch
+            {
+                IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                MemberAccessExpressionSyntax memberAccess when memberAccess.Expression is ThisExpressionSyntax => memberAccess.Name.Identifier.ValueText,
+                _ => null,
+            };
+            if (fieldName is null)
+            {
+                continue;
+            }
+
+            var parameterName = assignment.Right switch
+            {
+                IdentifierNameSyntax identifier when model.GetSymbolInfo(identifier).Symbol is IParameterSymbol parameter => parameter.Name,
+                _ => null,
+            };
+            if (parameterName is not null)
+            {
+                result[parameterName] = fieldName;
+            }
+        }
+
+        return result;
+    }
+
     private IRExpr LowerAnonymousFunction(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
     {
         var parameters = GetAnonymousFunctionParameters(anonymousFunction)
@@ -1301,6 +1751,11 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
+
+        if (CanFlattenStructType(type) && TryGetStructFieldValues(obj, model, out var structFields, out var structValues))
+        {
+            return new IRTableLiteralNew(structFields.Zip(structValues, (field, value) => (field.Name, value)).ToArray());
+        }
 
         if (HasLuaTableLiteralAttribute(type))
         {
@@ -2050,6 +2505,12 @@ public sealed class IRLowering
         public int? NextModuleInsertionIndex { get; set; }
     }
 
+    private sealed record FlattenedStructLocal(IReadOnlyDictionary<string, string> FieldLocals);
+
+    private sealed record FlattenedStructMember(bool IsStatic, INamedTypeSymbol ContainingType, IReadOnlyDictionary<string, string> FieldMembers);
+
+    private sealed record StructFieldSlot(string Name, ITypeSymbol Type, int SortKey);
+
     private static void SortTypesByInheritance(List<IRType> types)
     {
         types.Sort((a, b) => string.CompareOrdinal(a.FullName, b.FullName));
@@ -2434,6 +2895,18 @@ public sealed class IRLowering
 
         return new IRLiteral(null, IRLiteralKind.Nil);
     }
+
+    private static IRExpr LowerDefaultValue(ITypeSymbol type)
+        => type.SpecialType switch
+        {
+            SpecialType.System_Boolean => new IRLiteral(false, IRLiteralKind.Boolean),
+            SpecialType.System_Byte or SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_UInt16
+                or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64
+                => new IRLiteral(0, IRLiteralKind.Integer),
+            SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal
+                => new IRLiteral(0.0, IRLiteralKind.Real),
+            _ => new IRLiteral(null, IRLiteralKind.Nil),
+        };
 
     private static string MapBinaryOp(string op) => op switch
     {

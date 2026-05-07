@@ -31,6 +31,8 @@ Common C# constructs lower to direct Lua patterns:
 | Instance method | `function SF__.Type:Method(...)` |
 | Constructor | `SF__.Type.New(...)` with `setmetatable` |
 | Object creation | `SF__.Type.New(...)` |
+| Struct field-only local | flattened locals named `<local>__<field>` |
+| Struct object return | Lua multi-return in field declaration order |
 | Instance field access | `self.Field` |
 | Static field initializer | `SF__.Type.Field = ...` |
 | String interpolation | Lua `..` concatenation |
@@ -61,7 +63,7 @@ Implemented lowering includes:
 - exception MVP with one `catch` and `finally`
 - interfaces, `is`, and `as`
 - arrays and minimal `List<T>`/dictionary helpers
-- struct constructors, fields, and user-defined operators
+- struct field flattening and multi-return lowering; see [Struct.md](Struct.md)
 - computed properties, indexers, delegates, and field-like events
 - synchronous `await` and simple `yield return` materialization
 - custom root table names

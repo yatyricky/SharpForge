@@ -26,6 +26,7 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 - [GeneratedLua.md](GeneratedLua.md) - emitted Lua shape, root table contract, lowering coverage, and build notes.
 - [LuaInterop.md](LuaInterop.md) - raw `LuaInterop` calls and typed `LuaObject` wrappers for existing Lua modules.
 - [Collections.md](Collections.md) - minimal collection runtime notes.
+- [Struct.md](Struct.md) - current struct flattening behavior and open method-lowering work.
 
 ## Repository Layout
 

@@ -1596,14 +1596,103 @@ public class EmitSmokeTests
 
         Assert.Contains("-- Vector2", lua);
         Assert.DoesNotContain("System.ValueType", lua);
-        Assert.Contains("function SF__.Vector2.__Init(self, x, y)", lua);
-        Assert.Contains("self.X = 0", lua);
-        Assert.Contains("self.Y = 0", lua);
-        Assert.Contains("self.X = x", lua);
-        Assert.Contains("self.Y = y", lua);
         Assert.Contains("function SF__.Vector2.op_Addition(a, b)", lua);
-        Assert.Contains("SF__.Vector2.New((a.X + b.X), (a.Y + b.Y))", lua);
-        Assert.Matches(@"local c\d* = SF__\.Vector2\.op_Addition\(a\d*, b\d*\)", lua);
+        Assert.Contains("return (a.X + b.X), (a.Y + b.Y)", lua);
+        Assert.Matches(@"local a\d* = \{X = 1, Y = 2\}", lua);
+        Assert.Matches(@"local b\d* = \{X = 3, Y = 4\}", lua);
+        Assert.Matches(@"local c__X\d*, c__Y\d* = SF__\.Vector2\.op_Addition\(a\d*, b\d*\)", lua);
+        Assert.Contains("return c__X", lua);
+        Assert.DoesNotContain("function SF__.Vector2.__Init", lua);
+        Assert.DoesNotContain("function SF__.Vector2.New", lua);
+        Assert.DoesNotContain("SF__.Vector2.New(", lua);
+    }
+
+    [Fact]
+    public async Task Struct_locals_used_only_by_fields_are_flattened()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public Vector2(float x, float y)
+                {
+                    this.x = x;
+                    this.y = y;
+                }
+            }
+
+            public static class MathDemo
+            {
+                public static Vector2 Make(float scale)
+                {
+                    return new Vector2
+                    {
+                        x = scale + 1,
+                        y = scale + 2,
+                    };
+                }
+
+                public static string Run()
+                {
+                    var v = new Vector2(10, 5);
+                    v.x = 11;
+                    v = new Vector2(12, 6);
+                    var data = Make(2);
+                    return $"x:{v.x} y:{v.y} data:{data.x}:{data.y}";
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "FlattenedStruct.cs");
+
+        Assert.Contains("local v__x, v__y = 10, 5", lua);
+        Assert.Contains("v__x = 11", lua);
+        Assert.Contains("v__x, v__y = 12, 6", lua);
+        Assert.Contains("return (scale + 1), (scale + 2)", lua);
+        Assert.Contains("local data__x, data__y = SF__.MathDemo.Make(2)", lua);
+        Assert.Contains("return SF__.StrConcat__(\"x:\", v__x, \" y:\", v__y, \" data:\", data__x, \":\", data__y)", lua);
+        Assert.DoesNotContain("local v = SF__.Vector2.New", lua);
+        Assert.DoesNotContain("-- Vector2", lua);
+        Assert.DoesNotContain("SF__.Vector2 = SF__.Vector2 or {}", lua);
+        Assert.DoesNotContain("function SF__.Vector2.__Init", lua);
+        Assert.DoesNotContain("function SF__.Vector2.New", lua);
+    }
+
+    [Fact]
+    public async Task Struct_typed_class_members_are_flattened()
+    {
+        var src = """
+            public struct AbilityData
+            {
+                public float DamageScaling;
+                public float ArtOfWarChance;
+            }
+
+            public class CrusaderStrike
+            {
+                private AbilityData _template;
+                private static AbilityData staticProp;
+
+                private void OnInspector()
+                {
+                    var scale = _template.DamageScaling * 15;
+                    var chance = staticProp.ArtOfWarChance;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructMembers.cs");
+
+        Assert.Contains("self._template__DamageScaling = 0", lua);
+        Assert.Contains("self._template__ArtOfWarChance = 0", lua);
+        Assert.Contains("SF__.CrusaderStrike.staticProp__DamageScaling = 0", lua);
+        Assert.Contains("SF__.CrusaderStrike.staticProp__ArtOfWarChance = 0", lua);
+        Assert.Contains("local scale = (self._template__DamageScaling * 15)", lua);
+        Assert.Contains("local chance = SF__.CrusaderStrike.staticProp__ArtOfWarChance", lua);
+        Assert.DoesNotContain("self._template = nil", lua);
+        Assert.DoesNotContain("SF__.CrusaderStrike.staticProp = nil", lua);
     }
 
     [Fact]

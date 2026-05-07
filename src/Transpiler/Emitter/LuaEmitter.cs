@@ -395,6 +395,16 @@ public sealed class LuaEmitter
             return;
         }
 
+        var methods = type.Methods.Where(m => !m.IsStaticConstructor && (!type.IsStruct || !m.IsConstructor)).ToArray();
+        if (type.IsStruct
+            && type.LuaRequires.Count == 0
+            && type.Fields.All(f => !f.IsStatic)
+            && type.Methods.All(m => !m.IsStaticConstructor)
+            && methods.Length == 0)
+        {
+            return;
+        }
+
         EmitComments(type.Comments);
 
         // Walk namespace segments and emit each level once.
@@ -472,7 +482,6 @@ public sealed class LuaEmitter
             EmitBlock(staticConstructor.Body);
         }
 
-        var methods = type.Methods.Where(m => !m.IsStaticConstructor).ToArray();
         for (int i = 0; i < methods.Length; i++)
         {
             EmitMethod(type, typePath, methods[i], type.Fields.Where(f => !f.IsStatic));
@@ -631,11 +640,49 @@ public sealed class LuaEmitter
                 }
                 _sb.Append('\n');
                 break;
+            case IRMultiLocalDecl ld:
+                WriteIndent();
+                _sb.Append("local ").Append(string.Join(", ", ld.Names));
+                if (ld.Initializers.Count > 0)
+                {
+                    _sb.Append(" = ");
+                    for (int i = 0; i < ld.Initializers.Count; i++)
+                    {
+                        if (i > 0)
+                        {
+                            _sb.Append(", ");
+                        }
+                        EmitExpr(ld.Initializers[i]);
+                    }
+                }
+                _sb.Append('\n');
+                break;
             case IRAssign a:
                 WriteIndent();
                 EmitExpr(a.Target);
                 _sb.Append(" = ");
                 EmitExpr(a.Value);
+                _sb.Append('\n');
+                break;
+            case IRMultiAssign a:
+                WriteIndent();
+                for (int i = 0; i < a.Targets.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    EmitExpr(a.Targets[i]);
+                }
+                _sb.Append(" = ");
+                for (int i = 0; i < a.Values.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    EmitExpr(a.Values[i]);
+                }
                 _sb.Append('\n');
                 break;
             case IRExprStmt es:
@@ -665,6 +712,19 @@ public sealed class LuaEmitter
                     EmitExpr(r.Value);
                     _sb.Append('\n');
                 }
+                break;
+            case IRMultiReturn r:
+                WriteIndent();
+                _sb.Append("return ");
+                for (int i = 0; i < r.Values.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    EmitExpr(r.Values[i]);
+                }
+                _sb.Append('\n');
                 break;
             case IRIf i:
                 EmitIf(i);
@@ -1303,10 +1363,13 @@ public sealed class LuaEmitter
         {
             IRBlock block => BlockUsesTypeChecks(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesTypeChecks(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesTypeChecks),
             IRAssign assign => ExprUsesTypeChecks(assign.Target) || ExprUsesTypeChecks(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesTypeChecks) || assign.Values.Any(ExprUsesTypeChecks),
             IRExprStmt exprStmt => ExprUsesTypeChecks(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesTypeChecks),
             IRReturn ret => ret.Value is not null && ExprUsesTypeChecks(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesTypeChecks),
             IRIf iff => ExprUsesTypeChecks(iff.Condition) || BlockUsesTypeChecks(iff.Then) || (iff.Else is not null && BlockUsesTypeChecks(iff.Else)),
             IRWhile wh => ExprUsesTypeChecks(wh.Condition) || BlockUsesTypeChecks(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesTypeChecks(fr.Initializer))
@@ -1327,10 +1390,13 @@ public sealed class LuaEmitter
         {
             IRBlock block => BlockUsesDictionaryHelpers(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesDictionaryHelpers(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesDictionaryHelpers),
             IRAssign assign => ExprUsesDictionaryHelpers(assign.Target) || ExprUsesDictionaryHelpers(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesDictionaryHelpers) || assign.Values.Any(ExprUsesDictionaryHelpers),
             IRExprStmt exprStmt => ExprUsesDictionaryHelpers(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesDictionaryHelpers),
             IRReturn ret => ret.Value is not null && ExprUsesDictionaryHelpers(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesDictionaryHelpers),
             IRIf iff => ExprUsesDictionaryHelpers(iff.Condition) || BlockUsesDictionaryHelpers(iff.Then) || (iff.Else is not null && BlockUsesDictionaryHelpers(iff.Else)),
             IRWhile wh => ExprUsesDictionaryHelpers(wh.Condition) || BlockUsesDictionaryHelpers(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesDictionaryHelpers(fr.Initializer))
@@ -1351,10 +1417,13 @@ public sealed class LuaEmitter
         {
             IRBlock block => BlockUsesListHelpers(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesListHelpers(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesListHelpers),
             IRAssign assign => ExprUsesListHelpers(assign.Target) || ExprUsesListHelpers(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesListHelpers) || assign.Values.Any(ExprUsesListHelpers),
             IRExprStmt exprStmt => ExprUsesListHelpers(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesListHelpers),
             IRReturn ret => ret.Value is not null && ExprUsesListHelpers(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesListHelpers),
             IRIf iff => ExprUsesListHelpers(iff.Condition) || BlockUsesListHelpers(iff.Then) || (iff.Else is not null && BlockUsesListHelpers(iff.Else)),
             IRWhile wh => ExprUsesListHelpers(wh.Condition) || BlockUsesListHelpers(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesListHelpers(fr.Initializer))
@@ -1375,10 +1444,13 @@ public sealed class LuaEmitter
         {
             IRBlock block => BlockUsesCoroutineHelpers(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesCoroutineHelpers(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesCoroutineHelpers),
             IRAssign assign => ExprUsesCoroutineHelpers(assign.Target) || ExprUsesCoroutineHelpers(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesCoroutineHelpers) || assign.Values.Any(ExprUsesCoroutineHelpers),
             IRExprStmt exprStmt => ExprUsesCoroutineHelpers(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesCoroutineHelpers),
             IRReturn ret => ret.Value is not null && ExprUsesCoroutineHelpers(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesCoroutineHelpers),
             IRIf iff => ExprUsesCoroutineHelpers(iff.Condition) || BlockUsesCoroutineHelpers(iff.Then) || (iff.Else is not null && BlockUsesCoroutineHelpers(iff.Else)),
             IRWhile wh => ExprUsesCoroutineHelpers(wh.Condition) || BlockUsesCoroutineHelpers(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesCoroutineHelpers(fr.Initializer))
@@ -1399,10 +1471,13 @@ public sealed class LuaEmitter
         {
             IRBlock block => BlockUsesStringConcat(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesStringConcat(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesStringConcat),
             IRAssign assign => ExprUsesStringConcat(assign.Target) || ExprUsesStringConcat(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesStringConcat) || assign.Values.Any(ExprUsesStringConcat),
             IRExprStmt exprStmt => ExprUsesStringConcat(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesStringConcat),
             IRReturn ret => ret.Value is not null && ExprUsesStringConcat(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesStringConcat),
             IRIf iff => ExprUsesStringConcat(iff.Condition) || BlockUsesStringConcat(iff.Then) || (iff.Else is not null && BlockUsesStringConcat(iff.Else)),
             IRWhile wh => ExprUsesStringConcat(wh.Condition) || BlockUsesStringConcat(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesStringConcat(fr.Initializer))
@@ -1614,9 +1689,17 @@ public sealed class LuaEmitter
                 _usedIdentifiers.Add(local.Name);
                 if (local.Initializer is not null) CollectIdentifiers(local.Initializer);
                 break;
+            case IRMultiLocalDecl local:
+                foreach (var name in local.Names) _usedIdentifiers.Add(name);
+                foreach (var initializer in local.Initializers) CollectIdentifiers(initializer);
+                break;
             case IRAssign assign:
                 CollectIdentifiers(assign.Target);
                 CollectIdentifiers(assign.Value);
+                break;
+            case IRMultiAssign assign:
+                foreach (var target in assign.Targets) CollectIdentifiers(target);
+                foreach (var value in assign.Values) CollectIdentifiers(value);
                 break;
             case IRExprStmt exprStmt:
                 CollectIdentifiers(exprStmt.Expression);
@@ -1626,6 +1709,9 @@ public sealed class LuaEmitter
                 break;
             case IRReturn ret when ret.Value is not null:
                 CollectIdentifiers(ret.Value);
+                break;
+            case IRMultiReturn ret:
+                foreach (var value in ret.Values) CollectIdentifiers(value);
                 break;
             case IRIf iff:
                 CollectIdentifiers(iff.Condition);

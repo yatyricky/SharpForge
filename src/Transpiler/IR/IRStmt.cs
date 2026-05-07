@@ -11,10 +11,13 @@ public sealed record IRBlock : IRStmt
 }
 
 public sealed record IRLocalDecl(string Name, IRExpr? Initializer) : IRStmt;
+public sealed record IRMultiLocalDecl(IReadOnlyList<string> Names, IReadOnlyList<IRExpr> Initializers) : IRStmt;
 public sealed record IRAssign(IRExpr Target, IRExpr Value) : IRStmt;
+public sealed record IRMultiAssign(IReadOnlyList<IRExpr> Targets, IReadOnlyList<IRExpr> Values) : IRStmt;
 public sealed record IRExprStmt(IRExpr Expression) : IRStmt;
 public sealed record IRBaseConstructorCall(IRTypeReference BaseType, string InitLuaName, IReadOnlyList<IRExpr> Arguments) : IRStmt;
 public sealed record IRReturn(IRExpr? Value) : IRStmt;
+public sealed record IRMultiReturn(IReadOnlyList<IRExpr> Values) : IRStmt;
 public sealed record IRIf(IRExpr Condition, IRBlock Then, IRBlock? Else) : IRStmt;
 public sealed record IRWhile(IRExpr Condition, IRBlock Body) : IRStmt;
 public sealed record IRFor(IRStmt? Initializer, IRExpr? Condition, IReadOnlyList<IRStmt> Incrementors, IRBlock Body) : IRStmt;
