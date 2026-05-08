@@ -494,3 +494,131 @@ Bar(s2__s__v1, s2__s__v2)
 - **Structs in collections.** A `List<S2>` flattens into parallel arrays following the struct-of-arrays pattern (see "Structs in List\<T\>" above). Nested structs extend SoA naturally: one array per leaf field, indexed in lockstep.
 - **Methods on nested structs.** Instance methods flatten `self` into leaf parameters at the deepest struct level: `S1.Magnitude(self__v1, self__v2)`. Calling `s2.s.Magnitude()` emits `S1.Magnitude(s2__s__v1, s2__s__v2)`.
 - **Equality and casting.** The same constraints from single-level structs apply: no `is`/`as` on structs, no boxed `Equals`, no cast from `object` back to a struct shape. Nested structs do not relax these restrictions.
+
+## Structs in Dictionary\<TKey, TValue\>
+
+The current `Dictionary<TKey, TValue>` runtime stores entries as:
+
+```lua
+{ data = {}, keys = {}, version = 0 }
+```
+
+- `data` — a Lua table mapping keys to values. Lua table key lookup is O(1) amortized for string/number keys but uses reference equality for table keys.
+- `keys` — an array preserving insertion order for stable iteration via `DictIterate__`.
+- `version` — bumped on mutations, checked during iteration to detect modification.
+- `DictNil__` — a sentinel table used to distinguish stored `nil` values from absent keys.
+
+### Struct as Value: Dictionary\<T, Struct\>
+
+When a struct appears as the value type, each stored value is a struct with no runtime identity. Unlike `List<T>` where index-based access makes parallel arrays natural, Dictionary access is key-based — the value is retrieved by looking up a key in `data`.
+
+**SoA for values is problematic.** Splitting `data` into per-field parallel tables (`data__x`, `data__y`) means every `DictGet__` must repeat the key lookup N times:
+
+```lua
+-- hypothetical SoA DictGet for Vector2 value:
+local x = dict.data__x[key]
+local y = dict.data__y[key]
+```
+
+This doubles the table lookups for `Vector2`, triples for `Vector3`, etc. And iteration must reconstruct the struct from N parallel tables in lockstep.
+
+**Table-literal boxing is the pragmatic choice.** Each struct value is boxed into a Lua table literal:
+
+```lua
+dict.data[key] = { x = 1, y = 2 }
+```
+
+```csharp
+var pos = dict["hero"];  // pos is Vector2
+```
+
+```lua
+local pos = dict.data["hero"]
+-- pos.x, pos.y accessed as pos.x, pos.y
+local x = pos.x
+```
+
+The existing `IRDictionaryGet`/`IRDictionarySet` nodes don't change — the value expression is a table literal. The boxing allocates one table per stored value, which is acceptable for typical WC3 map-script dictionary sizes (dozens to low hundreds of entries).
+
+**Foreach over Dictionary\<T, Struct\>** yields `KeyValue<T, Struct>` items. The value portion of each item is a table literal reference, so `kvp.Value.x` accesses a Lua table field. No new IR nodes needed — the existing `IRDictionaryForEach` handles this.
+
+**Nested struct values** box into nested table literals:
+
+```lua
+dict.data[key] = { s = { v1 = 1, v2 = 2 }, bv = true }
+```
+
+### Struct as Key: Dictionary\<Struct, V\>
+
+This is the hard case. Lua tables use reference equality for table keys — two equivalent struct values boxed into separate tables are *different* keys:
+
+```lua
+local a = { x = 1, y = 2 }
+local b = { x = 1, y = 2 }
+local t = {}
+t[a] = "first"
+t[b] = "second"   -- different key; t now has TWO entries
+```
+
+A struct-keyed dictionary must produce a **stable, comparable representation** to use as a Lua table key. This requires hashing the struct's field values into a canonical form.
+
+**String hashing.** Concatenate field values into a string key:
+
+```lua
+-- Vector2 → key "1|2"
+local key = tostring(x) .. "|" .. tostring(y)
+dict.data[key] = value
+```
+
+Problems with string hashing:
+
+1. **Floating-point precision.** `tostring(1.0)` vs `tostring(1.00)` may differ, or `0.30000000000000004` is not `0.3`. A canonical float format is required.
+
+2. **Iteration semantics break.** `DictIterate__` yields the hashed key (a string), not the original struct. This means:
+   - `foreach (var kvp in dict)` would have `kvp.Key` as a string, not a `Vector2` — a type mismatch from the C# source.
+   - `dict.Keys` would be strings.
+   - There is no way to recover the original struct fields from the hashed key without a deserializer.
+
+3. **Nested structs** produce long concatenated strings, compounding the precision and inspection issues.
+
+**Can we recover the struct?** To make iteration yield proper struct-typed keys, the runtime would need to store the original field values alongside the hash. This requires one of:
+
+- **Dual storage.** Maintain parallel key-field arrays (`keys__x`, `keys__y`) alongside the hash-keyed `data` table. During iteration, reconstruct the struct from the parallel arrays. This is the SoA pattern applied to keys — significant implementation effort but clean semantics.
+- **Deserializer.** Generate a function to parse the hashed string back into field values. Fragile (field reordering breaks the parser) and expensive.
+
+Neither is trivial. The dual-storage approach mirrors the List SoA design and could reuse the same flattening infrastructure, but the iteration path (`IRDictionaryForEach`) would need to be struct-aware.
+
+**Diagnostic for v1.** Given the complexity and the established constraint that structs carry no runtime type metadata (see [TypeCasting.md](TypeCasting.md)), **struct-keyed dictionaries are not supported in the initial implementation**. The transpiler should emit a diagnostic when it detects a `Dictionary<Struct, …>` instantiation.
+
+Users can work around this by using a primitive key and managing the struct separately:
+
+```csharp
+// Instead of Dictionary<Vector2, Unit>
+// Use:
+Dictionary<int, Unit> grid;       // key = hash(gridX, gridY)
+// or
+Dictionary<string, Unit> named;   // key = $"{x}:{y}"
+```
+
+**Future design sketch.** If struct keys become necessary, the dual-storage approach aligns with the existing flattening conventions:
+
+```lua
+dict = {
+    data = { ["1|2"] = value1, … },   -- hash → value
+    keys = { "1|2", … },              -- hashed keys in insertion order
+    keys__x = { 1, … },               -- parallel field arrays for key reconstruction
+    keys__y = { 2, … },
+    version = 0
+}
+```
+
+`DictIterate__` would yield `(reconstructedKey, value)` by reading from the parallel `keys__*` arrays. This requires a struct-aware variant of the dictionary helpers and IR nodes.
+
+### Struct as Both: Dictionary\<Struct, Struct\>
+
+Combines the two cases above:
+
+- **Key side** → diagnostic for v1 (see "Struct as Key" above).
+- **Value side** → table-literal boxing (see "Struct as Value" above).
+
+If struct keys are later supported via dual storage, the value side remains boxed table literals. The two decisions are independent.
