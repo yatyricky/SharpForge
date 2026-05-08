@@ -31,6 +31,8 @@ Common C# constructs lower to direct Lua patterns:
 | Instance method | `function SF__.Type:Method(...)` |
 | Constructor | `SF__.Type.New(...)` with `setmetatable` |
 | Object creation | `SF__.Type.New(...)` |
+| `float` literal | emitted as its source-faithful decimal (`0.65f` → `0.65`, not `0.6499...`) |
+| `double` literal | emitted with full round-trip precision |
 | Struct field-only local | flattened locals named `<local>__<field>` |
 | Struct object return | Lua multi-return in field declaration order |
 | Instance field access | `self.Field` |

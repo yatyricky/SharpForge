@@ -1025,6 +1025,44 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Ternary_expressions_emit_helper_call_not_and_or()
+    {
+        var src = """
+            public static class Ternary
+            {
+                public static int Max(int a, int b) => a > b ? a : b;
+
+                public static string Label(bool flag) => flag ? "yes" : "no";
+
+                public static int FalsyBranch(bool flag) => flag ? 0 : 1;
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Ternary.cs");
+
+        // Helper must be emitted exactly once.
+        Assert.Contains("function SF__.Ternary__(cond, a, b)", lua);
+        Assert.Contains("if cond then return a else return b end", lua);
+        // All three uses must route through the helper, never the unsafe `and/or` idiom.
+        Assert.Contains("SF__.Ternary__(", lua);
+        Assert.DoesNotContain("and a or b", lua);
+        // The falsy-branch case (value1 == 0) is safe because the helper is used.
+        Assert.Contains("SF__.Ternary__((a > b), a, b)", lua);
+        Assert.Contains("SF__.Ternary__(flag, \"yes\", \"no\")", lua);
+        Assert.Matches(@"SF__\.Ternary__\(flag\d*, 0, 1\)", lua);
+    }
+
+    [Fact]
+    public async Task Float_literals_emit_source_text_not_double_expanded_value()
+    {
+        var src = "public static class Numbers { public static float F() => 0.65f; public static double D() => 0.65; }";
+        var lua = await TranspileSourceAsync(src, "Numbers.cs");
+        // float 0.65f must not be widened to the double-precision expansion 0.6499999761581421
+        Assert.DoesNotContain("0.6499", lua);
+        Assert.Contains("0.65", lua);
+    }
+
+    [Fact]
     public async Task Arrays_lists_indexing_and_foreach_emit_table_backed_collections()
     {
         var src = """

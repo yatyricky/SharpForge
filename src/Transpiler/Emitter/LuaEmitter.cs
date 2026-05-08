@@ -28,6 +28,7 @@ public sealed class LuaEmitter
     private bool _emitDictionaryHelpers;
     private bool _emitListHelpers;
     private bool _emitCoroutineHelpers;
+    private bool _emitTernaryHelper;
 
     public LuaEmitter(string rootTable)
     {
@@ -49,6 +50,7 @@ public sealed class LuaEmitter
         _emitDictionaryHelpers = UsesDictionaryHelpers(module);
         _emitListHelpers = UsesListHelpers(module);
         _emitCoroutineHelpers = UsesCoroutineHelpers(module);
+        _emitTernaryHelper = UsesTernaryHelper(module);
         _usedIdentifiers.Clear();
         CollectIdentifiers(module);
 
@@ -91,7 +93,21 @@ public sealed class LuaEmitter
             {
                 WriteListHelpers();
             }
+            if (_emitTernaryHelper)
+            {
+                WriteTernaryHelper();
+            }
         }
+    }
+
+    private void WriteTernaryHelper()
+    {
+        WriteLine($"function {_rootTable}.Ternary__(cond, a, b)");
+        _indent++;
+        WriteLine("if cond then return a else return b end");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
     }
 
     private void WriteRootTypeHelpers()
@@ -1174,6 +1190,15 @@ public sealed class LuaEmitter
                 EmitExpr(un.Operand);
                 _sb.Append(')');
                 break;
+            case IRTernary ternary:
+                _sb.Append(_rootTable).Append(".Ternary__(");
+                EmitExpr(ternary.Condition);
+                _sb.Append(", ");
+                EmitExpr(ternary.WhenTrue);
+                _sb.Append(", ");
+                EmitExpr(ternary.WhenFalse);
+                _sb.Append(')');
+                break;
             case IRIs isExpr:
                 _sb.Append(_rootTable).Append(".TypeIs__(");
                 EmitExpr(isExpr.Value);
@@ -1192,7 +1217,9 @@ public sealed class LuaEmitter
         IRLiteralKind.Nil => "nil",
         IRLiteralKind.Boolean => (bool)l.Value! ? "true" : "false",
         IRLiteralKind.Integer => Convert.ToInt64(l.Value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture),
-        IRLiteralKind.Real => ((double)l.Value!).ToString("R", CultureInfo.InvariantCulture),
+        IRLiteralKind.Real => l.Value is float f
+            ? f.ToString("R", CultureInfo.InvariantCulture)
+            : ((double)l.Value!).ToString("R", CultureInfo.InvariantCulture),
         IRLiteralKind.String => "\"" + EscapeLuaString((string)l.Value!) + "\"",
         _ => "nil",
     };
@@ -1342,6 +1369,74 @@ public sealed class LuaEmitter
 
     private static bool UsesCoroutineHelpers(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => m.IsCoroutine || BlockUsesCoroutineHelpers(m.Body));
+
+    private static bool UsesTernaryHelper(IRModule module)
+        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesTernaryHelper(m.Body));
+
+    private static bool BlockUsesTernaryHelper(IRBlock block)
+        => block.Statements.Any(StmtUsesTernaryHelper);
+
+    private static bool StmtUsesTernaryHelper(IRStmt stmt)
+        => stmt switch
+        {
+            IRBlock block => BlockUsesTernaryHelper(block),
+            IRLocalDecl local => local.Initializer is not null && ExprUsesTernaryHelper(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesTernaryHelper),
+            IRAssign assign => ExprUsesTernaryHelper(assign.Target) || ExprUsesTernaryHelper(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesTernaryHelper) || assign.Values.Any(ExprUsesTernaryHelper),
+            IRExprStmt exprStmt => ExprUsesTernaryHelper(exprStmt.Expression),
+            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesTernaryHelper),
+            IRReturn ret => ret.Value is not null && ExprUsesTernaryHelper(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesTernaryHelper),
+            IRIf iff => ExprUsesTernaryHelper(iff.Condition) || BlockUsesTernaryHelper(iff.Then) || (iff.Else is not null && BlockUsesTernaryHelper(iff.Else)),
+            IRWhile wh => ExprUsesTernaryHelper(wh.Condition) || BlockUsesTernaryHelper(wh.Body),
+            IRFor fr => (fr.Initializer is not null && StmtUsesTernaryHelper(fr.Initializer))
+                || (fr.Condition is not null && ExprUsesTernaryHelper(fr.Condition))
+                || fr.Incrementors.Any(StmtUsesTernaryHelper)
+                || BlockUsesTernaryHelper(fr.Body),
+            IRForEach fe => ExprUsesTernaryHelper(fe.Collection) || BlockUsesTernaryHelper(fe.Body),
+            IRDictionaryForEach fe => ExprUsesTernaryHelper(fe.Dictionary) || BlockUsesTernaryHelper(fe.Body),
+            IRTry tr => BlockUsesTernaryHelper(tr.Try)
+                || (tr.Catch is not null && BlockUsesTernaryHelper(tr.Catch))
+                || (tr.Finally is not null && BlockUsesTernaryHelper(tr.Finally)),
+            IRThrow th => th.Value is not null && ExprUsesTernaryHelper(th.Value),
+            _ => false,
+        };
+
+    private static bool ExprUsesTernaryHelper(IRExpr expr)
+        => expr switch
+        {
+            IRTernary => true,
+            IRMemberAccess member => ExprUsesTernaryHelper(member.Target),
+            IRElementAccess element => ExprUsesTernaryHelper(element.Target) || ExprUsesTernaryHelper(element.Index),
+            IRLength length => ExprUsesTernaryHelper(length.Target),
+            IRInvocation invocation => ExprUsesTernaryHelper(invocation.Callee) || invocation.Arguments.Any(ExprUsesTernaryHelper),
+            IRFunctionExpression functionExpression => BlockUsesTernaryHelper(functionExpression.Body),
+            IRArrayLiteral array => array.Items.Any(ExprUsesTernaryHelper),
+            IRArrayNew arrayNew => ExprUsesTernaryHelper(arrayNew.Size),
+            IRStringConcat concat => concat.Parts.Any(ExprUsesTernaryHelper),
+            IRDictionaryCount dictionaryCount => ExprUsesTernaryHelper(dictionaryCount.Table),
+            IRDictionaryGet dictionaryGet => ExprUsesTernaryHelper(dictionaryGet.Table) || ExprUsesTernaryHelper(dictionaryGet.Key),
+            IRDictionarySet dictionarySet => ExprUsesTernaryHelper(dictionarySet.Table) || ExprUsesTernaryHelper(dictionarySet.Key) || ExprUsesTernaryHelper(dictionarySet.Value),
+            IRDictionaryRemove dictionaryRemove => ExprUsesTernaryHelper(dictionaryRemove.Table) || ExprUsesTernaryHelper(dictionaryRemove.Key),
+            IRListNew listNew => listNew.Items.Any(ExprUsesTernaryHelper),
+            IRListCount listCount => ExprUsesTernaryHelper(listCount.List),
+            IRListGet listGet => ExprUsesTernaryHelper(listGet.List) || ExprUsesTernaryHelper(listGet.Index),
+            IRListSet listSet => ExprUsesTernaryHelper(listSet.List) || ExprUsesTernaryHelper(listSet.Index) || ExprUsesTernaryHelper(listSet.Value),
+            IRListAdd listAdd => ExprUsesTernaryHelper(listAdd.List) || ExprUsesTernaryHelper(listAdd.Value),
+            IRListSort listSort => ExprUsesTernaryHelper(listSort.List) || (listSort.Comparer is not null && ExprUsesTernaryHelper(listSort.Comparer)),
+            IRLuaRequire luaRequire => ExprUsesTernaryHelper(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesTernaryHelper(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesTernaryHelper(luaAccess.Target) || ExprUsesTernaryHelper(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesTernaryHelper(luaMethodInvocation.Target) || ExprUsesTernaryHelper(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesTernaryHelper),
+            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTernaryHelper),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesTernaryHelper(f.Value)),
+            IRBinary binary => ExprUsesTernaryHelper(binary.Left) || ExprUsesTernaryHelper(binary.Right),
+            IRUnary unary => ExprUsesTernaryHelper(unary.Operand),
+            IRIs isExpr => ExprUsesTernaryHelper(isExpr.Value),
+            IRAs asExpr => ExprUsesTernaryHelper(asExpr.Value),
+            _ => false,
+        };
 
     private static bool BlockUsesTypeChecks(IRBlock block)
         => block.Statements.Any(StmtUsesTypeChecks);

@@ -1250,6 +1250,12 @@ public sealed class IRLowering
             case ParenthesizedExpressionSyntax par:
                 return LowerExpr(par.Expression, model);
 
+            case ConditionalExpressionSyntax ternary:
+                return new IRTernary(
+                    LowerExpr(ternary.Condition, model),
+                    LowerExpr(ternary.WhenTrue, model),
+                    LowerExpr(ternary.WhenFalse, model));
+
             case AwaitExpressionSyntax awaitExpression:
                 return LowerExpr(awaitExpression.Expression, model);
 
@@ -3164,6 +3170,11 @@ public sealed class IRLowering
             case IRUnary unary:
                 CollectTypeReferences(unary.Operand, dependencies);
                 break;
+            case IRTernary ternary:
+                CollectTypeReferences(ternary.Condition, dependencies);
+                CollectTypeReferences(ternary.WhenTrue, dependencies);
+                CollectTypeReferences(ternary.WhenFalse, dependencies);
+                break;
             case IRIs isExpr:
                 CollectTypeReferences(isExpr.Value, dependencies);
                 dependencies.Add(GetTypeReferenceFullName(isExpr.Type));
@@ -3256,7 +3267,7 @@ public sealed class IRLowering
                 int i => new IRLiteral(i, IRLiteralKind.Integer),
                 long l => new IRLiteral(l, IRLiteralKind.Integer),
                 double d => new IRLiteral(d, IRLiteralKind.Real),
-                float f => new IRLiteral((double)f, IRLiteralKind.Real),
+                float f => new IRLiteral(f, IRLiteralKind.Real),
                 _ => new IRLiteral(lit.Token.Value, IRLiteralKind.Real),
             },
             SyntaxKind.StringLiteralExpression => new IRLiteral(lit.Token.ValueText, IRLiteralKind.String),
