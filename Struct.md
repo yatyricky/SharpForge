@@ -164,4 +164,333 @@ end
 
 ### Structs in List\<T\>
 
-This is a tricky one.
+Struct-typed lists use a **struct-of-arrays** (SoA) representation. Instead of storing struct values as table elements, the transpiler emits one parallel Lua array per leaf field. This extends the existing `<name>__<field>` flattening convention — the list local pluralizes into per-field tables indexed in lockstep.
+
+#### Chosen Strategy: Struct-of-Arrays
+
+Given `struct Vector2 { float x; float y; }` and `List<Vector2> dirs`:
+
+```
+C#:           dirs[0]       dirs[1]       dirs[2]
+Fields:       x0, y0        x1, y1        x2, y2
+
+Lua:
+dirs__x = {    x0,           x1,           x2,          … }
+dirs__y = {    y0,           y1,           y2,          … }
+```
+
+**Access.** `dirs[i].x` → `dirs__x[i + 1]`, `dirs[i].y` → `dirs__y[i + 1]` (Lua is 1-based, so C# index `i` maps to Lua index `i + 1`).
+
+**Declaration.**
+
+```csharp
+var dirs = new List<Vector2>();
+```
+
+emits in the shape:
+
+```lua
+local dirs__x = {}
+local dirs__y = {}
+```
+
+**Add.**
+
+```csharp
+dirs.Add(new Vector2 { x = 1, y = 2 });
+```
+
+emits in the shape:
+
+```lua
+table.insert(dirs__x, 1)
+table.insert(dirs__y, 2)
+```
+
+**Indexed assignment.**
+
+```csharp
+dirs[0] = new Vector2 { x = 3, y = 4 };
+```
+
+emits in the shape:
+
+```lua
+dirs__x[1] = 3
+dirs__y[1] = 4
+```
+
+**Foreach iteration.**
+
+```csharp
+foreach (var d in dirs)
+{
+    BJDebugMsg($"{d.x}:{d.y}");
+}
+```
+
+emits in the shape:
+
+```lua
+for i = 1, #dirs__x do
+    local d__x = dirs__x[i]
+    local d__y = dirs__y[i]
+    BJDebugMsg(SF__.StrConcat__(d__x, ":", d__y))
+end
+```
+
+**RemoveAt.**
+
+```csharp
+dirs.RemoveAt(0);
+```
+
+emits a helper that removes the same index from all parallel arrays:
+
+```lua
+SF__.ListRemoveAt__(dirs__x, dirs__y, 1)
+```
+
+**Count.**
+
+```csharp
+var n = dirs.Count;
+```
+
+emits in the shape:
+
+```lua
+local n = #dirs__x
+```
+
+Count reads from any parallel array — they are always the same length.
+
+#### Pass and Return
+
+A `List<Vector2>` parameter flattens into one parameter per field table:
+
+```csharp
+void Process(List<Vector2> dirs) { … }
+```
+
+```lua
+function SF__.Demo.Process(dirs__x, dirs__y)
+```
+
+A method returning `List<Vector2>` uses Lua multi-return:
+
+```csharp
+List<Vector2> Make() => new List<Vector2>();
+```
+
+```lua
+function SF__.Demo.Make()
+    return {}, {}
+end
+```
+
+Caller:
+
+```csharp
+var result = Make();
+```
+
+```lua
+local result__x, result__y = SF__.Demo.Make()
+```
+
+#### Why Not Interleaved Array
+
+An alternative is a single flat table with fields interleaved by stride (`{x0, y0, x1, y1, …}`). This was rejected for the following reasons, ordered by the [lowering feature design priorities](.github/instructions/lowering-feature-design.instructions.md):
+
+| Priority | Interleaved array | Struct-of-arrays |
+|---|---|---|
+| **1. Performance** | One table, access = `list[i*2+1]`. | N tables, access = `list__x[i]`. Both O(1); negligible difference for map-script workloads. |
+| **2. Easy to implement** | Requires stride-aware member access IR and a separate `foreach` code path. New concepts at the IR boundary. | Extends the existing `<name>__<field>` naming convention. Foreach adapts the enumerator pattern. Minimal new infrastructure. |
+| **3. Less likely to produce bugs** | Stride arithmetic is fragile: off-by-one in emitted indices, field reordering silently shifts offsets. | No arithmetic. Names encode semantics. Parallel arrays stay synchronized by construction. |
+| **4. Concise output** | One table. | N tables per N-field struct. |
+| **5. Human-readable output** | `lua_dirs[5]` is unreadable without the struct layout. | `dirs__x[3]` is self-documenting. |
+
+Struct-of-arrays wins on priorities 2, 3, and 5; loses only on priority 4 (conciseness). Following the rule that higher priorities win conflicts, **struct-of-arrays is the chosen strategy**.
+
+#### Nested Structs in Lists
+
+Nested structs extend the SoA pattern naturally. Given `struct S2 { S1 s; bool bv; }` and `List<S2>`:
+
+```
+list__s__v1 = { … }
+list__s__v2 = { … }
+list__bv   = { … }
+```
+
+One parallel array per leaf field, indexed in lockstep. No new representation mechanism is needed — the same flattening recursion that produces `local__s__v1` for scalar variables produces `list__s__v1` for list-backed variables.
+
+#### Non-Struct Lists
+
+`List<float>`, `List<int>`, `List<SomeClass>`, and other non-struct element types remain single-table `List<T>` with no SoA treatment. The SoA path only activates when `T` is a struct type.
+
+#### Runtime Wrapper Consistency
+
+The current `List<T>` runtime wraps items in a version-tracked table:
+
+```lua
+{ items = { … }, version = 0 }
+```
+
+All helpers (`ListGet__`, `ListSet__`, `ListAdd__`, `ListIterate__`, `ListSort__`) operate on `.items` and bump `.version` on mutations. The `version` field enables detection of modification-during-iteration (the `ListIterate__` helper errors if the version changed mid-loop).
+
+For SoA lists, the version-tracking wrapper must cover all parallel arrays atomically. The implementation has two viable shapes:
+
+**Unified wrapper** (one `version`, N arrays stored as fields):
+
+```lua
+dirs = {
+    __x = { x0, x1, … },
+    __y = { y0, y1, … },
+    version = 0
+}
+```
+
+Access: `dirs.__x[i]`. All arrays share one `version`. A single mutation bumps it once.
+
+**Separate wrappers** (N wrappers, each with its own `version`):
+
+```lua
+dirs__x = { items = { x0, x1, … }, version = 0 }
+dirs__y = { items = { y0, y1, … }, version = 0 }
+```
+
+Access: `dirs__x.items[i]`. Mutations must bump all versions in lockstep.
+
+The unified wrapper is preferred: it avoids duplicate version fields, guarantees atomic version bumps, and keeps the list conceptually as one object (matching the C# source where `dirs` is a single `List<Vector2>` variable).
+
+Whichever shape is chosen, the doc examples above use the flattened local-name convention (`dirs__x`, `dirs__y`) to describe the *logical* emitted Lua. The actual runtime helper calls (`SF__.ListGet__`, etc.) wrap these details; the emitter is free to route through `.items` or a parallel-array-aware helper as needed.
+
+#### Future List Methods
+
+When implementing additional `List<T>` methods, each must account for the SoA case when `T` is a struct type. Methods that touch individual elements or iterate must be aware of parallel arrays:
+
+| Method | SoA impact |
+|---|---|
+| `Insert(index, item)` | Must insert at the same index in all parallel arrays |
+| `Remove(item)` | Must scan one array to find the index, then remove from all |
+| `Clear()` | Must clear all parallel arrays |
+| `IndexOf(item)` | Struct equality is unsupported (no `Equals`); this method is likely a diagnostic for struct `T` |
+| `Contains(item)` | Same equality constraint as `IndexOf` |
+| `CopyTo(array, index)` | Must copy all parallel arrays into the corresponding flattened destination |
+| `ToArray()` | Must reconstruct a struct representation; may require boxing into a table per element |
+| `GetEnumerator()` / manual enumeration | Must yield indices usable across all parallel arrays |
+| `this[int].set` after `Add` | Must assign to the same logical index in all arrays |
+
+The general rule: any operation that adds, removes, or moves elements must apply to all parallel arrays atomically. Operations that compare elements (`IndexOf`, `Contains`, `Remove(item)`) must respect the no-boxed-equality constraint on structs.
+
+When adding a new `List<T>` method to the transpiler, check `IsListType(type)` and then inspect the type argument: if `T` is a struct (`CanFlattenStructType`), the lowering must emit parallel-array-aware IR or a diagnostic.
+
+## Nested Structs
+
+Nested structs (a struct whose field is another struct) extend the flattening model recursively. The design follows the same zero-cost, value-tuple-in-disguise approach used for single-level structs.
+
+### Flattening Rule
+
+A nested struct flattens into one Lua local per leaf field using depth-first, declaration-order traversal. The naming convention stacks `__` for each level:
+
+```
+<local>__<field>__<subfield>…__<leaf>
+```
+
+Given:
+
+```csharp
+struct S1 { int v1; int v2; }
+struct S2 { S1 s; bool bv; }
+```
+
+The leaf fields of `S2` are `s.v1`, `s.v2`, `bv` — in that order.
+
+### Declaration and Initialization
+
+```csharp
+var s2 = new S2 { s = new S1 { v1 = 1, v2 = 2 }, bv = true };
+```
+
+emits in the shape:
+
+```lua
+local s2__s__v1, s2__s__v2, s2__bv = 1, 2, true
+```
+
+### Field Access
+
+```csharp
+var x = s2.s.v1;
+```
+
+emits in the shape:
+
+```lua
+local x = s2__s__v1
+```
+
+### Parameter Passing
+
+```csharp
+void Process(S2 val) { … }
+```
+
+emits in the shape:
+
+```lua
+function Process(val__s__v1, val__s__v2, val__bv)
+```
+
+### Multi-Return
+
+```csharp
+S2 Make() => new S2 { s = new S1 { v1 = 1, v2 = 2 }, bv = true };
+var result = Make();
+```
+
+emits in the shape:
+
+```lua
+function Make() return 1, 2, true end
+local result__s__v1, result__s__v2, result__bv = Make()
+```
+
+### Sub-Struct Assignment
+
+When a sub-struct is assigned as a whole, the transpiler decomposes the right-hand side into its leaf fields and assigns them into the corresponding flattened locals:
+
+```csharp
+S1 temp = new S1 { v1 = 5, v2 = 6 };
+s2.s = temp;
+```
+
+emits in the shape:
+
+```lua
+local temp__v1, temp__v2 = 5, 6
+s2__s__v1, s2__s__v2 = temp__v1, temp__v2
+```
+
+### Passing a Sub-Field as Argument
+
+```csharp
+void Bar(S1 val) { … }
+Bar(s2.s);
+```
+
+emits in the shape:
+
+```lua
+Bar(s2__s__v1, s2__s__v2)
+```
+
+### Design Considerations
+
+- **Recursive structs are not a concern.** C# disallows value types that contain themselves without indirection (`struct Node { Node next; }` is a compile error), so the transpiler never encounters infinite recursion.
+- **Name collision.** A user local `a__b` and a struct field path `a.b.c` that flattens to `a__b__c` could collide at the `a__b` prefix. In practice user locals rarely contain `__`, and the transpiler can add a reserved prefix to flattened names if isolation must be guaranteed.
+- **Name length.** Three or four nesting levels produce long local names (`grandparent__parent__child__field`). This is cosmetic; Lua identifiers have no meaningful length limit in Warcraft III's runtime, and the names are unambiguous.
+- **Structs in collections.** A `List<S2>` flattens into parallel arrays following the struct-of-arrays pattern (see "Structs in List\<T\>" above). Nested structs extend SoA naturally: one array per leaf field, indexed in lockstep.
+- **Methods on nested structs.** Instance methods flatten `self` into leaf parameters at the deepest struct level: `S1.Magnitude(self__v1, self__v2)`. Calling `s2.s.Magnitude()` emits `S1.Magnitude(s2__s__v1, s2__s__v2)`.
+- **Equality and casting.** The same constraints from single-level structs apply: no `is`/`as` on structs, no boxed `Equals`, no cast from `object` back to a struct shape. Nested structs do not relax these restrictions.
