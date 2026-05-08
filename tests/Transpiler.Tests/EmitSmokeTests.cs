@@ -1223,6 +1223,42 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Pipeline_emits_bundled_SFLib_interface_metadata_for_implementing_classes()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using SFLib;
+
+            public class BluntData : IEquatable<BluntData>
+            {
+                public float BluntDamage;
+
+                public bool Equals(BluntData other)
+                {
+                    return BluntDamage == other.BluntDamage;
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("-- SFLib.IEquatable", lua);
+        Assert.Contains("SF__.SFLib.IEquatable = SF__.SFLib.IEquatable or {}", lua);
+        Assert.Contains("SF__.BluntData.__sf_interfaces = {[SF__.SFLib.IEquatable] = true}", lua);
+    }
+
+    [Fact]
     public async Task Pipeline_lowers_bundled_SFLib_lua_interop_to_raw_lua_access()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");

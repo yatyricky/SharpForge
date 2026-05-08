@@ -112,10 +112,39 @@ public sealed class IRLowering
             }
         }
 
+        AddReferencedSharpLibInterfaceTypes(module);
         SortTypesByInheritance(module.Types);
         ValidateEntryPoints(module);
         _module = null;
         return module;
+    }
+
+    private static void AddReferencedSharpLibInterfaceTypes(IRModule module)
+    {
+        var existingTypes = new HashSet<string>(module.Types.Select(t => t.FullName), StringComparer.Ordinal);
+        var interfaces = module.Types
+            .SelectMany(type => type.Interfaces)
+            .Where(IsSharpLibTypeReference)
+            .DistinctBy(GetTypeReferenceFullName)
+            .OrderBy(GetTypeReferenceFullName, StringComparer.Ordinal)
+            .ToArray();
+
+        foreach (var iface in interfaces)
+        {
+            var fullName = GetTypeReferenceFullName(iface);
+            if (!existingTypes.Add(fullName))
+            {
+                continue;
+            }
+
+            module.Types.Add(new IRType
+            {
+                NamespaceSegments = iface.NamespaceSegments,
+                Name = iface.Name,
+                FullName = fullName,
+                IsInterface = true,
+            });
+        }
     }
 
     private static bool InheritsFromHandle(INamedTypeSymbol symbol)
@@ -2297,13 +2326,16 @@ public sealed class IRLowering
     private static bool IsSharpLibType(INamedTypeSymbol symbol)
         => IsSharpLibNamespace(symbol.ContainingNamespace);
 
+    private static bool IsSharpLibTypeReference(IRTypeReference type)
+        => IsSharpLibNamespaceName(string.Join('.', type.NamespaceSegments));
+
     private static bool IsSharpLibNamespace(INamespaceSymbol ns)
-    {
-        var name = ns.ToDisplayString();
-        return name == "SFLib"
-               || name == "SharpLib"
-               || name == "SharpLib.Collections";
-    }
+        => IsSharpLibNamespaceName(ns.ToDisplayString());
+
+    private static bool IsSharpLibNamespaceName(string name)
+        => name == "SFLib"
+           || name == "SharpLib"
+           || name == "SharpLib.Collections";
 
     private bool IsInLibraryFolder(SyntaxTree tree)
     {
