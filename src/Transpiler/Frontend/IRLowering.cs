@@ -1384,6 +1384,11 @@ public sealed class IRLowering
             return luaInteropInvocation;
         }
 
+        if (symbol is not null && TryLowerRegexInvocation(inv, symbol, args, model) is { } regexInvocation)
+        {
+            return regexInvocation;
+        }
+
         if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
         {
             return new IRListAdd(LowerExpr(addAccess.Expression, model), args[0]);
@@ -1593,6 +1598,47 @@ public sealed class IRLowering
         }
 
         return new[] { LowerExpr(expression, model) };
+    }
+
+    private IRExpr? TryLowerRegexInvocation(InvocationExpressionSyntax invocation, IMethodSymbol symbol, IReadOnlyList<IRExpr> args, SemanticModel model)
+    {
+        if (!IsRegexType(symbol.ContainingType))
+        {
+            return null;
+        }
+
+        if (symbol is not { Name: "IsMatch", IsStatic: true })
+        {
+            AddDiagnostic(invocation.GetLocation(), $"unsupported Regex API '{symbol.Name}'; only Regex.IsMatch(input, constantPattern) is supported");
+            return new IRLiteral(false, IRLiteralKind.Boolean);
+        }
+
+        if (args.Count != 2 || invocation.ArgumentList.Arguments.Count != 2)
+        {
+            AddDiagnostic(invocation.GetLocation(), "unsupported Regex.IsMatch overload; only Regex.IsMatch(input, constantPattern) is supported");
+            return new IRLiteral(false, IRLiteralKind.Boolean);
+        }
+
+        var patternExpression = invocation.ArgumentList.Arguments[1].Expression;
+        var constantPattern = model.GetConstantValue(patternExpression);
+        if (!constantPattern.HasValue || constantPattern.Value is not string regexPattern)
+        {
+            AddDiagnostic(patternExpression.GetLocation(), "Regex patterns must be compile-time constant strings so SharpForge can validate the Lua pattern output");
+            return new IRLiteral(false, IRLiteralKind.Boolean);
+        }
+
+        if (!LuaRegexPatternCompiler.TryCompile(regexPattern, out var luaPattern, out var diagnostic))
+        {
+            AddDiagnostic(patternExpression.GetLocation(), diagnostic);
+            return new IRLiteral(false, IRLiteralKind.Boolean);
+        }
+
+        return new IRBinary(
+            "~=",
+            new IRInvocation(
+                new IRMemberAccess(new IRIdentifier("string"), "find"),
+                new[] { args[0], new IRLiteral(luaPattern, IRLiteralKind.String) }),
+            new IRLiteral(null, IRLiteralKind.Nil));
     }
 
     private IReadOnlyList<IRExpr> GetCurrentStructSelfArguments(INamedTypeSymbol structType)
@@ -2270,6 +2316,12 @@ public sealed class IRLowering
             return new IRIdentifier($"--[[unsupported expr: {obj.Kind()}]]nil");
         }
 
+        if (IsRegexType(type))
+        {
+            AddDiagnostic(obj.GetLocation(), "Regex constructors are not supported; only static Regex.IsMatch(input, constantPattern) is supported");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
         if (IsDictionaryType(type))
         {
             if (HasFlattenableStructDictionaryKey(type))
@@ -2428,6 +2480,10 @@ public sealed class IRLowering
     private static bool IsDictionaryType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "Dictionary", ContainingNamespace: { } ns }
            && IsSharpLibNamespace(ns);
+
+    private static bool IsRegexType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "Regex", ContainingNamespace: { } ns }
+           && ns.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Text.RegularExpressions";
 
     private bool HasFlattenableStructDictionaryKey(ITypeSymbol? type)
         => type is INamedTypeSymbol { TypeArguments.Length: > 0 } namedType
