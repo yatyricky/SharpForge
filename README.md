@@ -25,7 +25,7 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 
 - [CLI](docs/cli.md) - man page for `sf-transpile`, `sf-build`, and `sf-jassgen`.
 - [GUI](docs/gui.md) - GUI wrapper behavior and fields.
-- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, root table contract, lowering coverage, and build notes.
+- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, debugger probes, root table contract, lowering coverage, and build notes.
 - [Lua Interop](docs/lua-interop.md) - raw `LuaInterop` calls and typed `LuaObject` wrappers for existing Lua modules.
 - [Collections](docs/collections.md) - minimal collection runtime notes.
 - [Struct Lowering](docs/struct.md) - current struct flattening behavior and open method-lowering work.

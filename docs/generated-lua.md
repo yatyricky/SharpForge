@@ -37,12 +37,54 @@ Common C# constructs lower to direct Lua patterns:
 | Struct object return | Lua multi-return in field declaration order |
 | Instance field access | `self.Field` |
 | Static field initializer | `SF__.Type.Field = ...` |
-| String interpolation | Lua `..` concatenation |
+| String interpolation | nil-safe `SF__.StrConcat__(...)` calls; supported format clauses use `string.format(...)` |
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `List<T>` | compact table helper runtime |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.
+
+## String Interpolation Formats
+
+Interpolated strings are emitted through the nil-safe `SF__.StrConcat__(...)` helper. Format clauses for fixed-point, decimal integer, and hexadecimal values are mapped to Lua `string.format(...)`:
+
+```csharp
+return $"damage:{damage:F0} count:{count:D3} id:{id:X2}";
+```
+
+```lua
+return SF__.StrConcat__("damage:", string.format("%.0f", damage), " count:", string.format("%03d", count), " id:", string.format("%02X", id))
+```
+
+Supported interpolation format specifiers are `F`/`f`, `D`/`d`, and `X`/`x`, each with optional precision. Other .NET format strings produce a transpiler diagnostic instead of silently changing formatting semantics.
+
+## Debugger Probes
+
+Decorate a method with `SFLib.DebuggerAttribute` to ask the transpiler to insert Warcraft debug messages between source statements:
+
+```csharp
+using SFLib;
+
+public static class Waves
+{
+	[Debugger]
+	public static void Spawn(int wave, string name)
+	{
+		var count = wave + 1;
+		count += 2;
+	}
+}
+```
+
+The generated Lua includes `BJDebugMsg` calls between statements. Probe labels use `{Class.Method step N}` and include visible values that are cheap and predictable to stringify, such as primitive, enum, `string`, and `bool` parameters or locals:
+
+```lua
+local count = (wave + 1)
+BJDebugMsg(SF__.StrConcat__("{Waves.Spawn step 1} {wave=", wave, " name=", name, " count=", count, "}"))
+count = (count + 2)
+```
+
+SharpForge intentionally skips object, collection, and struct values in automatic debugger probes. Use explicit `BJDebugMsg(...)` or `LuaInterop.CallGlobal("BJDebugMsg", ...)` when you need custom formatting for larger values.
 
 ## Current Coverage
 
@@ -55,7 +97,7 @@ Implemented lowering includes:
 - instance methods with colon calls
 - implicit `this` field access
 - compound assignment
-- string interpolation
+- string interpolation, including `F`/`D`/`X` format clauses
 - `if`, `while`, `for`, `foreach`, `break`, and `continue`
 - static field initializers and static constructors
 - auto-properties as fields
@@ -70,6 +112,7 @@ Implemented lowering includes:
 - computed properties, indexers, delegates, and field-like events
 - synchronous `await` and simple `yield return` materialization
 - custom root table names
+- `[Debugger]` method probes using `BJDebugMsg`
 - unsupported syntax diagnostics
 
 Planned or partial areas include broader conditional pruning, source-map line annotations, and deeper generic/async coverage.

@@ -14,3 +14,5 @@ When designing a new lowering feature, evaluate options in this priority order. 
 5. Human-readable output. Prefer stable names, predictable ordering, and source-shaped structure where possible, after the first four priorities are satisfied.
 
 Before coding, compare viable lowering strategies against all five priorities and state the chosen tradeoff. Add focused tests for the boundary cases most likely to violate the selected representation.
+
+For supported local `List<struct>` lowering, follow `docs/struct.md`: emit one parallel field array per leaf field, insert each field separately, and read indexed fields from those arrays. Use table-shaped struct values only at collection boundaries where that struct-of-arrays representation is not applicable, such as unsupported fallback list operations or dictionary value storage.

@@ -227,6 +227,68 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Interpolated_string_format_clauses_use_lua_string_format()
+    {
+        var src = """
+            public static class Strings
+            {
+                public static string Format(float scale, int count)
+                {
+                    return $"scale:{scale:F0} count:{count:D3} hex:{count:X2}";
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "FormattedInterpolation.cs");
+
+        Assert.Contains("return SF__.StrConcat__(\"scale:\", string.format(\"%.0f\", scale), \" count:\", string.format(\"%03d\", count), \" hex:\", string.format(\"%02X\", count))", lua);
+    }
+
+    [Fact]
+    public async Task Debugger_attribute_inserts_step_probes_between_statements()
+    {
+        var src = """
+            using System;
+            using SFLib;
+
+            namespace SFLib
+            {
+                [AttributeUsage(AttributeTargets.Method)]
+                public class DebuggerAttribute : Attribute
+                {
+                }
+            }
+
+            public static class Demo
+            {
+                [Debugger]
+                public static void Run(int wave, string name)
+                {
+                    var count = wave + 1;
+                    count += 2;
+                    var ignored = new object();
+                    count += 3;
+                }
+
+                public static void Quiet()
+                {
+                    var count = 1;
+                    count += 1;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "DebuggerProbe.cs");
+
+        Assert.Contains("BJDebugMsg(SF__.StrConcat__(\"{Demo.Run step 1} {\", \"wave=\", wave, \" name=\", name, \" count=\", count, \"}\"))", lua);
+        Assert.Contains("BJDebugMsg(SF__.StrConcat__(\"{Demo.Run step 2} {\", \"wave=\", wave, \" name=\", name, \" count=\", count, \"}\"))", lua);
+        Assert.Contains("BJDebugMsg(SF__.StrConcat__(\"{Demo.Run step 3} {\", \"wave=\", wave, \" name=\", name, \" count=\", count, \"}\"))", lua);
+        Assert.DoesNotContain("{Demo.Run step 4}", lua);
+        Assert.DoesNotContain("ignored=", lua);
+        Assert.DoesNotContain("{Demo.Quiet step", lua);
+    }
+
+    [Fact]
     public async Task Task_delay_emits_coroutine_timer_runtime_call()
     {
         var src = """
@@ -1390,6 +1452,58 @@ public class EmitSmokeTests
         Assert.Contains("local removed = SF__.ListRemove__(cells", lua);
         Assert.Contains("function(left, right)", lua);
         Assert.Contains("return SF__.Cell.Equals(left.X, left.Y, right.X, right.Y)", lua);
+    }
+
+    [Fact]
+    public async Task Struct_list_items_use_parallel_field_arrays_for_supported_local_operations()
+    {
+        var src = """
+            namespace SFLib
+            {
+                public class List<T>
+                {
+                    public void Add(T item) { }
+                    public T this[int index] { get { return default!; } set { } }
+                }
+            }
+
+            public struct AbilityData
+            {
+                public float DamageScaling;
+                public float ArtOfWarChance;
+            }
+
+            public static class Demo
+            {
+                public static AbilityData GetAbilityData(int level)
+                {
+                    return new AbilityData
+                    {
+                        DamageScaling = level * 1.5f,
+                        ArtOfWarChance = level * 0.1f,
+                    };
+                }
+
+                public static string Run()
+                {
+                    var datas = new SFLib.List<AbilityData>();
+                    datas.Add(GetAbilityData(1));
+                    var data = datas[0];
+                    return $"{datas[0].DamageScaling:F0}:{data.ArtOfWarChance:F0}";
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructListItems.cs");
+
+        Assert.Contains("local datas__DamageScaling, datas__ArtOfWarChance = {}, {}", lua);
+        Assert.Contains("local item__DamageScaling, item__ArtOfWarChance = SF__.Demo.GetAbilityData(1)", lua);
+        Assert.Contains("table.insert(datas__DamageScaling, item__DamageScaling)", lua);
+        Assert.Contains("table.insert(datas__ArtOfWarChance, item__ArtOfWarChance)", lua);
+        Assert.Contains("local data__DamageScaling, data__ArtOfWarChance = datas__DamageScaling[(0 + 1)], datas__ArtOfWarChance[(0 + 1)]", lua);
+        Assert.Contains("return SF__.StrConcat__(string.format(\"%.0f\", datas__DamageScaling[(0 + 1)]), \":\", string.format(\"%.0f\", data__ArtOfWarChance))", lua);
+        Assert.DoesNotContain("SF__.ListAdd__(datas", lua);
+        Assert.DoesNotContain("SF__.ListGet__(datas", lua);
     }
 
     [Fact]

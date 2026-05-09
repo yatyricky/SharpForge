@@ -1694,6 +1694,29 @@ public sealed class LuaEmitter
                 }
                 _sb.Append('}');
                 break;
+            case IRStructValueTable structValueTable:
+                _sb.Append("(function(");
+                for (int i = 0; i < structValueTable.Fields.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    _sb.Append("__sf_v").Append(i + 1);
+                }
+                _sb.Append(") return {");
+                for (int i = 0; i < structValueTable.Fields.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        _sb.Append(", ");
+                    }
+                    _sb.Append(structValueTable.Fields[i]).Append(" = __sf_v").Append(i + 1);
+                }
+                _sb.Append("} end)(");
+                EmitExpr(structValueTable.Value);
+                _sb.Append(')');
+                break;
             case IRStringConcat concat:
                 _sb.Append(_rootTable).Append(".StrConcat__(");
                 for (int i = 0; i < concat.Parts.Count; i++)
@@ -2456,6 +2479,9 @@ public sealed class LuaEmitter
             case IRTableLiteralNew tableLiteralNew:
                 foreach (var (_, value) in tableLiteralNew.Fields) CollectCollectionHelpers(value);
                 break;
+            case IRStructValueTable structValueTable:
+                CollectCollectionHelpers(structValueTable.Value);
+                break;
             case IRBinary binary:
                 CollectCollectionHelpers(binary.Left);
                 CollectCollectionHelpers(binary.Right);
@@ -2544,6 +2570,7 @@ public sealed class LuaEmitter
             IRListReverse listReverse => ExprUsesTernaryHelper(listReverse.List),
             IRListSort listSort => ExprUsesTernaryHelper(listSort.List) || (listSort.Comparer is not null && ExprUsesTernaryHelper(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesTernaryHelper(listToArray.List),
+            IRStructValueTable structValueTable => ExprUsesTernaryHelper(structValueTable.Value),
             IRLuaRequire luaRequire => ExprUsesTernaryHelper(luaRequire.ModuleName),
             IRLuaGlobal luaGlobal => ExprUsesTernaryHelper(luaGlobal.Name),
             IRLuaAccess luaAccess => ExprUsesTernaryHelper(luaAccess.Target) || ExprUsesTernaryHelper(luaAccess.Name),
@@ -2693,6 +2720,7 @@ public sealed class LuaEmitter
             IRLuaMethodInvocation luaMethodInvocation => ExprUsesTypeChecks(luaMethodInvocation.Target) || ExprUsesTypeChecks(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTypeChecks),
             IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesTypeChecks(f.Value)),
+            IRStructValueTable structValueTable => ExprUsesTypeChecks(structValueTable.Value),
             IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
             IRUnary unary => ExprUsesTypeChecks(unary.Operand),
             _ => false,
@@ -2740,6 +2768,7 @@ public sealed class LuaEmitter
             IRArrayLiteral array => array.Items.Any(ExprUsesStringConcat),
             IRArrayNew arrayNew => ExprUsesStringConcat(arrayNew.Size),
             IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesStringConcat(f.Value)),
+            IRStructValueTable structValueTable => ExprUsesStringConcat(structValueTable.Value),
             IRBinary binary => ExprUsesStringConcat(binary.Left) || ExprUsesStringConcat(binary.Right),
             IRUnary unary => ExprUsesStringConcat(unary.Operand),
             IRIs isExpr => ExprUsesStringConcat(isExpr.Value),
@@ -2789,6 +2818,7 @@ public sealed class LuaEmitter
             IRLuaAccess luaAccess => ExprUsesCoroutineHelpers(luaAccess.Target) || ExprUsesCoroutineHelpers(luaAccess.Name),
             IRLuaMethodInvocation luaMethodInvocation => ExprUsesCoroutineHelpers(luaMethodInvocation.Target) || ExprUsesCoroutineHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesCoroutineHelpers),
             IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesCoroutineHelpers(f.Value)),
+            IRStructValueTable structValueTable => ExprUsesCoroutineHelpers(structValueTable.Value),
             IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
             IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
             IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value),
@@ -2931,6 +2961,9 @@ public sealed class LuaEmitter
                 break;
             case IRTableLiteralNew tableLiteralNew:
                 foreach (var (_, value) in tableLiteralNew.Fields) CollectIdentifiers(value);
+                break;
+            case IRStructValueTable structValueTable:
+                CollectIdentifiers(structValueTable.Value);
                 break;
             case IRStringConcat concat:
                 foreach (var part in concat.Parts) CollectIdentifiers(part);

@@ -63,3 +63,4 @@ public sealed record IRTernary(IRExpr Condition, IRExpr WhenTrue, IRExpr WhenFal
 public sealed record IRIs(IRExpr Value, IRTypeReference Type) : IRExpr;
 public sealed record IRAs(IRExpr Value, IRTypeReference Type) : IRExpr;
 public sealed record IRTableLiteralNew(IReadOnlyList<(string Key, IRExpr Value)> Fields) : IRExpr;
+public sealed record IRStructValueTable(IRExpr Value, IReadOnlyList<string> Fields) : IRExpr;

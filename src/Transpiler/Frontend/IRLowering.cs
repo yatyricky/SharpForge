@@ -25,11 +25,23 @@ public sealed class IRLowering
     private int? _luaModuleInsertionIndex;
     private readonly Dictionary<ISymbol, (string KeyName, string ValueName)> _dictionaryForEachItems = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<ISymbol, FlattenedStructLocal> _flattenedStructLocals = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<ISymbol, FlattenedStructListLocal> _flattenedStructListLocals = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<ISymbol, FlattenedStructMember> _flattenedStructMembers = new(SymbolEqualityComparer.Default);
     private INamedTypeSymbol? _currentStructSelfType;
     private IReadOnlyDictionary<string, string>? _currentStructSelfFields;
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
+    private DebuggerLoweringContext? _debuggerContext;
+
+    private sealed record DebuggerValue(string Label, string LuaName, int ScopeDepth);
+
+    private sealed class DebuggerLoweringContext(string methodDisplayName)
+    {
+        public string MethodDisplayName { get; } = methodDisplayName;
+        public int Step { get; set; } = 1;
+        public int ScopeDepth { get; set; }
+        public List<DebuggerValue> Values { get; } = new();
+    }
 
     public IRLowering(
         IEnumerable<string>? ignoredClasses = null,
@@ -59,11 +71,13 @@ public sealed class IRLowering
         _luaModuleInsertionIndex = null;
         _dictionaryForEachItems.Clear();
         _flattenedStructLocals.Clear();
+        _flattenedStructListLocals.Clear();
         _flattenedStructMembers.Clear();
         _currentStructSelfType = null;
         _currentStructSelfFields = null;
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
+        _debuggerContext = null;
 
         foreach (var tree in compilation.SyntaxTrees)
         {
@@ -570,6 +584,8 @@ public sealed class IRLowering
         var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
         var isStructInstanceMethod = owner.TypeKind == TypeKind.Struct && !isStatic;
         var symbol = model.GetDeclaredSymbol(m, ct);
+        var previousDebuggerContext = _debuggerContext;
+        var hasDebugger = symbol is not null && HasDebuggerAttribute(symbol);
         var fn = new IRFunction
         {
             Name = m.Identifier.ValueText,
@@ -593,7 +609,13 @@ public sealed class IRLowering
 
         try
         {
+            if (hasDebugger)
+            {
+                _debuggerContext = new DebuggerLoweringContext($"{owner.Name}.{m.Identifier.ValueText}");
+            }
+
             AddLoweredParameters(fn, m.ParameterList.Parameters, model, ct);
+            AddDebuggerParameterValues(m.ParameterList.Parameters, model, ct);
 
             if (m.DescendantNodes().OfType<YieldStatementSyntax>().Any())
             {
@@ -617,6 +639,8 @@ public sealed class IRLowering
         }
         finally
         {
+            _debuggerContext = previousDebuggerContext;
+
             if (isStructInstanceMethod)
             {
                 _currentStructSelfType = previousStructSelfType;
@@ -839,8 +863,10 @@ public sealed class IRLowering
 
     private void LowerStatements(IEnumerable<StatementSyntax> stmts, IRBlock target, SemanticModel model, CancellationToken ct)
     {
-        foreach (var s in stmts)
+        var statements = stmts.ToArray();
+        for (var i = 0; i < statements.Length; i++)
         {
+            var s = statements[i];
             ct.ThrowIfCancellationRequested();
             foreach (var comment in ExtractComments(s.GetLeadingTrivia()))
             {
@@ -869,8 +895,105 @@ public sealed class IRLowering
             {
                 target.Statements.Add(new IRRawComment(comment));
             }
+
+            AddDebuggerLocalValue(s, model);
+            if (_debuggerContext is not null && i < statements.Length - 1)
+            {
+                target.Statements.Add(CreateDebuggerProbe());
+            }
         }
     }
+
+    private void AddDebuggerParameterValues(IEnumerable<ParameterSyntax> parameters, SemanticModel model, CancellationToken ct)
+    {
+        if (_debuggerContext is null)
+        {
+            return;
+        }
+
+        foreach (var parameter in parameters)
+        {
+            var symbol = model.GetDeclaredSymbol(parameter, ct);
+            if (symbol is null || !IsDebuggerLoggableType(symbol.Type) || !_luaNames.TryGetValue(symbol, out var luaName))
+            {
+                continue;
+            }
+
+            AddDebuggerValue(parameter.Identifier.ValueText, luaName);
+        }
+    }
+
+    private void AddDebuggerLocalValue(StatementSyntax statement, SemanticModel model)
+    {
+        if (_debuggerContext is null || statement is not LocalDeclarationStatementSyntax localDeclaration)
+        {
+            return;
+        }
+
+        var variable = localDeclaration.Declaration.Variables.FirstOrDefault();
+        if (variable is null || model.GetDeclaredSymbol(variable) is not ILocalSymbol symbol)
+        {
+            return;
+        }
+
+        if (IsDebuggerLoggableType(symbol.Type) && _luaNames.TryGetValue(symbol, out var luaName))
+        {
+            AddDebuggerValue(variable.Identifier.ValueText, luaName);
+        }
+    }
+
+    private void AddDebuggerValue(string label, string luaName)
+    {
+        if (_debuggerContext is null || _debuggerContext.Values.Any(value => value.LuaName == luaName))
+        {
+            return;
+        }
+
+        _debuggerContext.Values.Add(new DebuggerValue(label, luaName, _debuggerContext.ScopeDepth));
+    }
+
+    private IRStmt CreateDebuggerProbe()
+    {
+        var context = _debuggerContext ?? throw new InvalidOperationException("Debugger probe requested outside a debugger context.");
+        var prefix = $"{{{context.MethodDisplayName} step {context.Step++}}}";
+        IRExpr message;
+        if (context.Values.Count == 0)
+        {
+            message = new IRLiteral(prefix, IRLiteralKind.String);
+        }
+        else
+        {
+            var parts = new List<IRExpr> { new IRLiteral(prefix + " {", IRLiteralKind.String) };
+            for (var i = 0; i < context.Values.Count; i++)
+            {
+                var value = context.Values[i];
+                parts.Add(new IRLiteral((i == 0 ? string.Empty : " ") + value.Label + "=", IRLiteralKind.String));
+                parts.Add(new IRIdentifier(value.LuaName));
+            }
+            parts.Add(new IRLiteral("}", IRLiteralKind.String));
+            message = new IRStringConcat(parts);
+        }
+
+        return new IRExprStmt(new IRInvocation(new IRIdentifier("BJDebugMsg"), new[] { message }));
+    }
+
+    private static bool IsDebuggerLoggableType(ITypeSymbol? type)
+        => type is not null
+           && (type.TypeKind == TypeKind.Enum
+               || type.SpecialType is SpecialType.System_Boolean
+                   or SpecialType.System_Char
+                   or SpecialType.System_String
+                   or SpecialType.System_SByte
+                   or SpecialType.System_Byte
+                   or SpecialType.System_Int16
+                   or SpecialType.System_UInt16
+                   or SpecialType.System_Int32
+                   or SpecialType.System_UInt32
+                   or SpecialType.System_Int64
+                   or SpecialType.System_UInt64
+                   or SpecialType.System_Single
+                   or SpecialType.System_Double
+                   or SpecialType.System_Decimal);
 
     private IRStmt LowerStatement(StatementSyntax s, SemanticModel model, CancellationToken ct)
     {
@@ -887,6 +1010,11 @@ public sealed class IRLowering
                 if (TryLowerStructLocalDeclaration(ld, first, declaredSymbol, model) is { } structLocalDeclaration)
                 {
                     return structLocalDeclaration;
+                }
+
+                if (TryLowerStructListLocalDeclaration(ld, first, declaredSymbol, model) is { } structListLocalDeclaration)
+                {
+                    return structListLocalDeclaration;
                 }
 
                 var localName = DeclareLuaName(declaredSymbol, first.Identifier.ValueText);
@@ -912,6 +1040,9 @@ public sealed class IRLowering
 
             case ExpressionStatementSyntax es when TryLowerLuaInteropStatement(es.Expression, model) is { } luaInteropStatement:
                 return luaInteropStatement;
+
+            case ExpressionStatementSyntax es when TryLowerStructListAddStatement(es.Expression, model) is { } structListAdd:
+                return structListAdd;
 
             case ExpressionStatementSyntax es when IsIncrementOrDecrement(es.Expression):
                 return LowerIncrementOrDecrement(es.Expression, model);
@@ -1153,6 +1284,7 @@ public sealed class IRLowering
     private void LowerBlock(BlockSyntax block, IRBlock target, SemanticModel model, CancellationToken ct)
     {
         var pushedLuaModuleBlock = TryPushLuaModuleBlock(target);
+        var debuggerScope = PushDebuggerScope();
         try
         {
             LowerStatements(block.Statements, target, model, ct);
@@ -1160,6 +1292,7 @@ public sealed class IRLowering
         }
         finally
         {
+            PopDebuggerScope(debuggerScope);
             PopLuaModuleBlock(pushedLuaModuleBlock);
         }
     }
@@ -1167,6 +1300,7 @@ public sealed class IRLowering
     private void LowerBlock(StatementSyntax statement, IRBlock target, SemanticModel model, CancellationToken ct)
     {
         var pushedLuaModuleBlock = TryPushLuaModuleBlock(target);
+        var debuggerScope = PushDebuggerScope();
         try
         {
             if (statement is BlockSyntax block)
@@ -1180,8 +1314,31 @@ public sealed class IRLowering
         }
         finally
         {
+            PopDebuggerScope(debuggerScope);
             PopLuaModuleBlock(pushedLuaModuleBlock);
         }
+    }
+
+    private int? PushDebuggerScope()
+    {
+        if (_debuggerContext is null)
+        {
+            return null;
+        }
+
+        _debuggerContext.ScopeDepth++;
+        return _debuggerContext.ScopeDepth;
+    }
+
+    private void PopDebuggerScope(int? scopeDepth)
+    {
+        if (_debuggerContext is null || scopeDepth is null)
+        {
+            return;
+        }
+
+        _debuggerContext.Values.RemoveAll(value => value.ScopeDepth >= scopeDepth.Value);
+        _debuggerContext.ScopeDepth = scopeDepth.Value - 1;
     }
 
     private bool TryPushLuaModuleBlock(IRBlock block)
@@ -1391,7 +1548,9 @@ public sealed class IRLowering
 
         if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRListAdd(LowerExpr(addAccess.Expression, model), LowerExpr(inv.ArgumentList.Arguments[0].Expression, model));
+            return new IRListAdd(
+                LowerExpr(addAccess.Expression, model),
+                LowerListElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model));
         }
 
         if (symbol is { Name: "AddRange", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addRangeAccess && inv.ArgumentList.Arguments.Count == 1)
@@ -1679,6 +1838,38 @@ public sealed class IRLowering
             new IRLiteral(null, IRLiteralKind.Nil));
     }
 
+    private IRStmt? TryLowerStructListAddStatement(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (expression is not InvocationExpressionSyntax invocation
+            || model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol { Name: "Add", IsStatic: false } symbol
+            || !IsListType(symbol.ContainingType)
+            || invocation.Expression is not MemberAccessExpressionSyntax addAccess
+            || invocation.ArgumentList.Arguments.Count != 1
+            || !TryGetFlattenedStructListLocal(addAccess.Expression, model, out var listLocal))
+        {
+            return null;
+        }
+
+        var fields = listLocal.Fields;
+        var values = LowerStructArgumentValues(invocation.ArgumentList.Arguments[0].Expression, listLocal.StructType, model);
+        var tempNames = fields.Select(field => AllocateLuaName($"item__{field.Name}")).ToArray();
+        var block = new IRBlock();
+        block.Statements.Add(new IRMultiLocalDecl(tempNames, values));
+
+        for (var i = 0; i < fields.Count; i++)
+        {
+            block.Statements.Add(new IRExprStmt(new IRInvocation(
+                new IRMemberAccess(new IRIdentifier("table"), "insert"),
+                new IRExpr[]
+                {
+                    new IRIdentifier(listLocal.FieldArrays[fields[i].Name]),
+                    new IRIdentifier(tempNames[i]),
+                })));
+        }
+
+        return block;
+    }
+
     private IReadOnlyList<IRExpr> GetCurrentStructSelfArguments(INamedTypeSymbol structType)
     {
         if (_currentStructSelfFields is null)
@@ -1743,6 +1934,24 @@ public sealed class IRLowering
             return true;
         }
 
+        if (expression is ElementAccessExpressionSyntax elementAccess && IsListType(model.GetTypeInfo(elementAccess.Expression).Type))
+        {
+            if (TryGetFlattenedStructListLocal(elementAccess.Expression, model, out var listLocal))
+            {
+                values = fields
+                    .Select(field => listLocal.FieldArrays.TryGetValue(field.Name, out var fieldArrayName)
+                        ? new IRElementAccess(new IRIdentifier(fieldArrayName), LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model))
+                        : null)
+                    .OfType<IRExpr>()
+                    .ToArray();
+                return values.Count == fields.Length;
+            }
+
+            var target = LowerExpr(expression, model);
+            values = fields.Select(field => new IRMemberAccess(target, field.Name)).ToArray();
+            return true;
+        }
+
         values = Array.Empty<IRExpr>();
         return false;
     }
@@ -1774,6 +1983,106 @@ public sealed class IRLowering
 
         _flattenedStructLocals[localSymbol] = new FlattenedStructLocal(fieldLocals);
         return new IRMultiLocalDecl(localNames, values);
+    }
+
+    private IRStmt? TryLowerStructListLocalDeclaration(
+        LocalDeclarationStatementSyntax statement,
+        VariableDeclaratorSyntax variable,
+        ISymbol? localSymbol,
+        SemanticModel model)
+    {
+        if (localSymbol is null
+            || statement.Declaration.Variables.Count != 1
+            || variable.Initializer?.Value is not ObjectCreationExpressionSyntax creation
+            || model.GetTypeInfo(creation).Type is not INamedTypeSymbol listType
+            || !IsListType(listType)
+            || GetListElementType(listType) is not INamedTypeSymbol structType
+            || !CanFlattenStructType(structType)
+            || !CanFlattenStructListLocal(statement, localSymbol, model))
+        {
+            return null;
+        }
+
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        if (fields.Length == 0)
+        {
+            return null;
+        }
+
+        var baseName = EscapeLuaKeyword(variable.Identifier.ValueText);
+        var fieldArrays = new Dictionary<string, string>(StringComparer.Ordinal);
+        var localNames = new List<string>(fields.Length);
+        foreach (var field in fields)
+        {
+            var localName = AllocateLuaName($"{baseName}__{field.Name}");
+            fieldArrays[field.Name] = localName;
+            localNames.Add(localName);
+        }
+
+        _flattenedStructListLocals[localSymbol] = new FlattenedStructListLocal(structType, fields, fieldArrays);
+        var initializers = fields.Select(_ => (IRExpr)new IRArrayLiteral(Array.Empty<IRExpr>())).ToArray();
+        return new IRMultiLocalDecl(localNames, initializers);
+    }
+
+    private bool CanFlattenStructListLocal(LocalDeclarationStatementSyntax statement, ISymbol localSymbol, SemanticModel model)
+    {
+        if (statement.Parent is not BlockSyntax block)
+        {
+            return false;
+        }
+
+        var startIndex = block.Statements.IndexOf(statement);
+        if (startIndex < 0)
+        {
+            return false;
+        }
+
+        for (var i = startIndex + 1; i < block.Statements.Count; i++)
+        {
+            foreach (var id in block.Statements[i].DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(id).Symbol, localSymbol)
+                    || IsSupportedStructListLocalUse(id, model))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsSupportedStructListLocalUse(IdentifierNameSyntax id, SemanticModel model)
+    {
+        if (id.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Expression == id)
+        {
+            return model.GetSymbolInfo(memberAccess).Symbol switch
+            {
+                IMethodSymbol { Name: "Add" } => true,
+                IPropertySymbol { Name: "Count" } => true,
+                _ => false,
+            };
+        }
+
+        if (id.Parent is not ElementAccessExpressionSyntax elementAccess || elementAccess.Expression != id)
+        {
+            return false;
+        }
+
+        return elementAccess.Parent switch
+        {
+            MemberAccessExpressionSyntax elementMemberAccess when elementMemberAccess.Expression == elementAccess
+                => model.GetSymbolInfo(elementMemberAccess).Symbol is IFieldSymbol or IPropertySymbol,
+            EqualsValueClauseSyntax equals when equals.Value == elementAccess
+                => true,
+            AssignmentExpressionSyntax assignment when assignment.Left == elementAccess && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+                => true,
+            ArgumentSyntax argument when argument.Expression == elementAccess
+                => true,
+            _ => false,
+        };
     }
 
     private IRStmt? TryLowerStructAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
@@ -1823,6 +2132,15 @@ public sealed class IRLowering
                 : null;
         }
 
+        if (access.Expression is ElementAccessExpressionSyntax elementAccess
+            && TryGetFlattenedStructListLocal(elementAccess.Expression, model, out var listLocal)
+            && listLocal.FieldArrays.TryGetValue(access.Name.Identifier.ValueText, out var fieldArrayName))
+        {
+            return new IRElementAccess(
+                new IRIdentifier(fieldArrayName),
+                LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
+        }
+
         if (model.GetSymbolInfo(access.Expression).Symbol is { } memberSymbol
             && _flattenedStructMembers.TryGetValue(memberSymbol, out var flattenedMember))
         {
@@ -1832,6 +2150,19 @@ public sealed class IRLowering
         }
 
         return null;
+    }
+
+    private bool TryGetFlattenedStructListLocal(ExpressionSyntax expression, SemanticModel model, out FlattenedStructListLocal listLocal)
+    {
+        if (expression is IdentifierNameSyntax id
+            && model.GetSymbolInfo(id).Symbol is { } symbol
+            && _flattenedStructListLocals.TryGetValue(symbol, out listLocal!))
+        {
+            return true;
+        }
+
+        listLocal = null!;
+        return false;
     }
 
     private IRExpr GetFlattenedStructMemberTarget(FlattenedStructMember member)
@@ -2368,7 +2699,7 @@ public sealed class IRLowering
 
         if (IsListType(type))
         {
-            return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerExpr(item, model)).ToArray() ?? Array.Empty<IRExpr>());
+            return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerListElementValue(item, type, model)).ToArray() ?? Array.Empty<IRExpr>());
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
@@ -2457,6 +2788,11 @@ public sealed class IRLowering
 
         if (IsListType(type))
         {
+            if (TryGetFlattenedStructListLocal(access.Expression, model, out var listLocal))
+            {
+                return new IRLength(new IRIdentifier(listLocal.FieldArrays[listLocal.Fields[0].Name]));
+            }
+
             return new IRListCount(LowerExpr(access.Expression, model));
         }
 
@@ -2724,10 +3060,20 @@ public sealed class IRLowering
             return null;
         }
 
+        if (TryGetFlattenedStructListLocal(elementAccess.Expression, model, out var listLocal))
+        {
+            var index = LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model);
+            var targets = listLocal.Fields
+                .Select(field => (IRExpr)new IRElementAccess(new IRIdentifier(listLocal.FieldArrays[field.Name]), index))
+                .ToArray();
+            var values = LowerStructArgumentValues(right, listLocal.StructType, model);
+            return new IRMultiAssign(targets, values);
+        }
+
         return new IRExprStmt(new IRListSet(
             LowerExpr(elementAccess.Expression, model),
             LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model),
-            LowerExpr(right, model)));
+            LowerListElementValue(right, type, model)));
     }
 
     private IRExpr? TryLowerDictionaryGet(ElementAccessExpressionSyntax access, SemanticModel model)
@@ -2744,9 +3090,38 @@ public sealed class IRLowering
     private IRExpr? TryLowerListGet(ElementAccessExpressionSyntax access, SemanticModel model)
     {
         var type = model.GetTypeInfo(access.Expression).Type;
+        if (IsListType(type) && TryGetFlattenedStructListLocal(access.Expression, model, out var listLocal))
+        {
+            var index = LowerExpr(access.ArgumentList.Arguments[0].Expression, model);
+            return new IRTableLiteralNew(listLocal.Fields
+                .Select(field => (field.Name, Value: (IRExpr)new IRElementAccess(new IRIdentifier(listLocal.FieldArrays[field.Name]), index)))
+                .ToArray());
+        }
+
         return IsListType(type)
             ? new IRListGet(LowerExpr(access.Expression, model), LowerExpr(access.ArgumentList.Arguments[0].Expression, model))
             : null;
+    }
+
+    private IRExpr LowerListElementValue(ExpressionSyntax expression, ITypeSymbol? listType, SemanticModel model)
+        => GetListElementType(listType) is INamedTypeSymbol structType && CanFlattenStructType(structType)
+            ? LowerStructCollectionValue(expression, structType, model)
+            : LowerExpr(expression, model);
+
+    private IRExpr LowerStructCollectionValue(ExpressionSyntax expression, INamedTypeSymbol structType, SemanticModel model)
+    {
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        if (fields.Length == 0)
+        {
+            return LowerExpr(expression, model);
+        }
+
+        if (TryGetFlattenedStructValueExpressions(expression, structType, model, out var values) && values.Count == fields.Length)
+        {
+            return new IRTableLiteralNew(fields.Zip(values, (field, value) => (field.Name, value)).ToArray());
+        }
+
+        return new IRStructValueTable(LowerExpr(expression, model), fields.Select(field => field.Name).ToArray());
     }
 
     private IRExpr? TryLowerSharpLibKeyValueAccess(MemberAccessExpressionSyntax access, SemanticModel model)
@@ -3187,6 +3562,20 @@ public sealed class IRLowering
         return false;
     }
 
+    private static bool HasDebuggerAttribute(IMethodSymbol symbol)
+    {
+        foreach (var attribute in symbol.GetAttributes())
+        {
+            if (attribute.AttributeClass is { Name: "DebuggerAttribute", ContainingNamespace: { } ns }
+                && IsSharpLibNamespace(ns))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static IEnumerable<string> GetLuaAttributeValues(ISymbol symbol, string name)
     {
         foreach (var attribute in symbol.GetAttributes())
@@ -3243,6 +3632,8 @@ public sealed class IRLowering
     }
 
     private sealed record FlattenedStructLocal(IReadOnlyDictionary<string, string> FieldLocals);
+
+    private sealed record FlattenedStructListLocal(INamedTypeSymbol StructType, IReadOnlyList<StructFieldSlot> Fields, IReadOnlyDictionary<string, string> FieldArrays);
 
     private sealed record FlattenedStructMember(bool IsStatic, INamedTypeSymbol ContainingType, IReadOnlyDictionary<string, string> FieldMembers);
 
@@ -3611,6 +4002,9 @@ public sealed class IRLowering
                     CollectTypeReferences(value, dependencies);
                 }
                 break;
+            case IRStructValueTable structValueTable:
+                CollectTypeReferences(structValueTable.Value, dependencies);
+                break;
         }
     }
 
@@ -3632,7 +4026,7 @@ public sealed class IRLowering
                 InterpolatedStringTextSyntax t
                     => new IRLiteral(t.TextToken.ValueText, IRLiteralKind.String),
                 InterpolationSyntax i
-                    => LowerExpr(i.Expression, model),
+                    => LowerInterpolation(i, model),
                 _ => new IRLiteral(string.Empty, IRLiteralKind.String),
             };
 
@@ -3650,6 +4044,54 @@ public sealed class IRLowering
             1 => parts[0],
             _ => new IRStringConcat(parts),
         };
+    }
+
+    private IRExpr LowerInterpolation(InterpolationSyntax interpolation, SemanticModel model)
+    {
+        var expression = LowerExpr(interpolation.Expression, model);
+        var format = interpolation.FormatClause?.FormatStringToken.ValueText;
+        if (string.IsNullOrWhiteSpace(format))
+        {
+            return expression;
+        }
+
+        if (TryMapInterpolationFormat(format, out var luaFormat))
+        {
+            return new IRInvocation(
+                new IRMemberAccess(new IRIdentifier("string"), "format"),
+                new IRExpr[] { new IRLiteral(luaFormat, IRLiteralKind.String), expression });
+        }
+
+        AddDiagnostic(interpolation.FormatClause!.GetLocation(), $"interpolation format '{format}' is not supported; supported formats are F/f, D/d, and X/x with optional precision");
+        return expression;
+    }
+
+    private static bool TryMapInterpolationFormat(string format, out string luaFormat)
+    {
+        luaFormat = string.Empty;
+        if (format.Length == 0)
+        {
+            return false;
+        }
+
+        var specifier = format[0];
+        var precisionText = format[1..];
+        if (precisionText.Length > 0 && !precisionText.All(char.IsDigit))
+        {
+            return false;
+        }
+
+        var precision = precisionText.Length == 0 ? (int?)null : int.Parse(precisionText);
+        luaFormat = specifier switch
+        {
+            'F' or 'f' => $"%.{precision ?? 2}f",
+            'D' or 'd' => precision is > 0 ? $"%0{precision.Value}d" : "%d",
+            'X' => precision is > 0 ? $"%0{precision.Value}X" : "%X",
+            'x' => precision is > 0 ? $"%0{precision.Value}x" : "%x",
+            _ => string.Empty,
+        };
+
+        return luaFormat.Length > 0;
     }
 
     private IEnumerable<IRExpr> FlattenStringConcat(BinaryExpressionSyntax expression, SemanticModel model)
