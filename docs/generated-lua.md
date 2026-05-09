@@ -66,6 +66,7 @@ Implemented lowering includes:
 - interfaces, `is`, and `as`
 - arrays and minimal `List<T>`/dictionary helpers
 - struct field flattening and multi-return lowering; see [struct](struct.md)
+- validated `Regex.IsMatch` subset; see [regular expressions](regex.md)
 - computed properties, indexers, delegates, and field-like events
 - synchronous `await` and simple `yield return` materialization
 - custom root table names

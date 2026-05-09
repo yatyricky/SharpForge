@@ -31,6 +31,7 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 - [Struct Lowering](docs/struct.md) - current struct flattening behavior and open method-lowering work.
 - [Conditional Expression](docs/conditional-expression.md) - ternary `?:` lowering strategy.
 - [Type Casting](docs/type-casting.md) - explicit casting, `is`/`as`, and struct equality constraints.
+- [Regular Expressions](docs/regex.md) - supported `Regex.IsMatch` subset and Lua pattern limits.
 
 ## Repository Layout
 
