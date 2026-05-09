@@ -1245,13 +1245,37 @@ public class EmitSmokeTests
     }
 
     [Fact]
-    public async Task Struct_dictionary_keys_are_diagnostic_until_equality_storage_exists()
+    public async Task Struct_dictionary_keys_use_linear_typed_equals_lookup()
     {
         var src = """
             namespace SFLib
             {
                 public class Dictionary<K, V>
                 {
+                    public int Count => 0;
+                    public List<K> Keys => default!;
+                    public List<V> Values => default!;
+                    public V this[K key] { get => default!; set { } }
+                    public void Add(K key, V value) { }
+                    public bool ContainsKey(K key) { return false; }
+                    public bool Remove(K key) { return false; }
+                    public void Clear() { }
+                    public Enumerator GetEnumerator() => default!;
+                    public class Enumerator
+                    {
+                        public KeyValue<K, V> Current => default!;
+                        public bool MoveNext() { return false; }
+                    }
+                }
+
+                public class List<T>
+                {
+                }
+
+                public class KeyValue<K, V>
+                {
+                    public K Key => default!;
+                    public V Value => default!;
                 }
             }
 
@@ -1268,23 +1292,147 @@ public class EmitSmokeTests
 
             public static class Demo
             {
-                public static void Run()
+                public static int Run()
                 {
                     var cells = new SFLib.Dictionary<Cell, int>();
+                    var a = new Cell { X = 1, Y = 2 };
+                    var b = new Cell { X = 1, Y = 2 };
+                    cells.Add(a, 7);
+                    cells[b] = 8;
+                    var hasB = cells.ContainsKey(b);
+                    var value = cells[b];
+                    var keys = cells.Keys;
+                    var values = cells.Values;
+                    foreach (var kv in cells)
+                    {
+                        value = value + kv.Value;
+                    }
+                    cells.Remove(b);
+                    cells.Clear();
+                    return hasB ? value : 0;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructDictionaryKeys.cs");
+
+        Assert.Contains("function SF__.DictLinearNew__(keyEquals)", lua);
+        Assert.Contains("function SF__.DictLinearFind__(dict, key)", lua);
+        Assert.Contains("if dict.keyEquals(storedKey, key) then return i end", lua);
+        Assert.Contains("local cells = SF__.DictLinearNew__(function(left, right)", lua);
+        Assert.Contains("return SF__.Cell.Equals(left.X, left.Y, right.X, right.Y)", lua);
+        Assert.Contains("SF__.DictLinearAdd__(cells", lua);
+        Assert.Contains("SF__.DictLinearSet__(cells", lua);
+        Assert.Contains("local hasB = SF__.DictLinearContainsKey__(cells", lua);
+        Assert.Contains("local value = SF__.DictLinearGet__(cells", lua);
+        Assert.Contains("local keys = SF__.DictLinearKeys__(cells)", lua);
+        Assert.Contains("local values = SF__.DictLinearValues__(cells)", lua);
+        Assert.Contains("in SF__.DictLinearIterate__(dict", lua);
+        Assert.Contains("SF__.DictLinearRemove__(cells", lua);
+        Assert.Contains("SF__.DictLinearClear__(cells)", lua);
+        Assert.DoesNotContain("SF__.DictAdd__(cells", lua);
+        Assert.DoesNotContain("SF__.DictSet__(cells", lua);
+        Assert.DoesNotContain("GetHashCode", lua);
+    }
+
+    [Fact]
+    public async Task Struct_list_equality_operations_use_typed_equals()
+    {
+        var src = """
+            namespace SFLib
+            {
+                public class List<T>
+                {
+                    public void Add(T item) { }
+                    public bool Contains(T item) { return false; }
+                    public int IndexOf(T item) { return -1; }
+                    public bool Remove(T item) { return false; }
+                }
+            }
+
+            public struct Cell
+            {
+                public int X;
+                public int Y;
+
+                public bool Equals(Cell other)
+                {
+                    return X == other.X && Y == other.Y;
+                }
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var cells = new SFLib.List<Cell>();
+                    var a = new Cell { X = 1, Y = 2 };
+                    var b = new Cell { X = 1, Y = 2 };
+                    cells.Add(a);
+                    var hasB = cells.Contains(b);
+                    var index = cells.IndexOf(b);
+                    var removed = cells.Remove(b);
+                    return hasB && removed ? index : -1;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructListEquality.cs");
+
+        Assert.Contains("function SF__.ListIndexOf__(list, value, equals)", lua);
+        Assert.Contains("if equals ~= nil then", lua);
+        Assert.Contains("if equals(SF__.ListUnwrap__(item), value) then return i - 1 end", lua);
+        Assert.Contains("local hasB = SF__.ListContains__(cells", lua);
+        Assert.Contains("local index = SF__.ListIndexOf__(cells", lua);
+        Assert.Contains("local removed = SF__.ListRemove__(cells", lua);
+        Assert.Contains("function(left, right)", lua);
+        Assert.Contains("return SF__.Cell.Equals(left.X, left.Y, right.X, right.Y)", lua);
+    }
+
+    [Fact]
+    public async Task Struct_collection_equality_without_typed_equals_is_diagnostic()
+    {
+        var src = """
+            namespace SFLib
+            {
+                public class List<T>
+                {
+                    public bool Contains(T item) { return false; }
+                }
+
+                public class Dictionary<K, V>
+                {
+                    public V this[K key] { get => default!; set { } }
+                }
+            }
+
+            public struct Cell
+            {
+                public int X;
+            }
+
+            public static class Demo
+            {
+                public static void Run()
+                {
+                    var list = new SFLib.List<Cell>();
+                    var hasCell = list.Contains(new Cell { X = 1 });
+                    var cells = new SFLib.Dictionary<Cell, int>();
+                    cells[new Cell { X = 1 }] = 1;
                 }
             }
             """;
 
         var dir = Directory.CreateTempSubdirectory("sf-test-");
-        var file = Path.Combine(dir.FullName, "StructDictionaryKeys.cs");
+        var file = Path.Combine(dir.FullName, "StructCollectionMissingEquals.cs");
         await File.WriteAllTextAsync(file, src);
 
         var compilation = await new RoslynFrontend(Array.Empty<string>())
             .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
         var module = new IRLowering().Lower(compilation, CancellationToken.None);
 
-        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct dictionary keys are not supported yet", StringComparison.Ordinal));
-        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("typed Equals(T) linear lookup instead of hashes", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct collection equality for 'Cell' requires public bool Equals(Cell other)", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("hashing and boxed Equals(object) are not used", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -1535,10 +1683,10 @@ public class EmitSmokeTests
         Assert.Contains("function SF__.ListAdd__(list, value)", lua);
         Assert.Contains("function SF__.ListAddRange__(list, values)", lua);
         Assert.Contains("function SF__.ListClear__(list)", lua);
-        Assert.Contains("function SF__.ListContains__(list, value)", lua);
-        Assert.Contains("function SF__.ListIndexOf__(list, value)", lua);
+        Assert.Contains("function SF__.ListContains__(list, value, equals)", lua);
+        Assert.Contains("function SF__.ListIndexOf__(list, value, equals)", lua);
         Assert.Contains("function SF__.ListInsert__(list, index, value)", lua);
-        Assert.Contains("function SF__.ListRemove__(list, value)", lua);
+        Assert.Contains("function SF__.ListRemove__(list, value, equals)", lua);
         Assert.Contains("function SF__.ListRemoveAt__(list, index)", lua);
         Assert.Contains("function SF__.ListReverse__(list)", lua);
         Assert.Contains("function SF__.ListIterate__(list)", lua);

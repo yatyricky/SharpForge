@@ -1,62 +1,75 @@
 # Collections
 
-SharpForge includes small collection helpers for emitted Lua. These helpers are shaped for generated code, not for full .NET API compatibility.
+SharpForge includes small `SFLib` collection helpers for emitted Lua. They support the collection operations that SharpForge lowers directly, not the full .NET collection interface surface.
 
-## Design Goal
+## List<T>
 
-The runtime should be small, deterministic, and easy to inspect in generated Lua.
+Supported `List<T>` members:
 
-SharpForge prefers:
+- `Count`
+- index get/set
+- `Add`
+- `AddRange(List<T>)`
+- `AddRange(T[])`
+- `Clear`
+- `Contains`
+- `IndexOf`
+- `Insert`
+- `Remove`
+- `RemoveAt`
+- `Reverse`
+- `Sort()`
+- `Sort(Func<T, T, bool>)`
+- `ToArray`
+- `foreach`
 
-- compact tables
-- direct helper functions
-- stable behavior needed by emitted C# patterns
-- no broad compatibility layer for unused .NET interfaces
+Lists preserve `nil` elements with an internal sentinel. `ToArray()` unwraps the sentinel back to `nil`.
 
-For example, SharpForge wants a minimal usable `List<T>`, not a Lua reimplementation of:
+For normal values, `Contains`, `IndexOf`, and `Remove` use Lua equality. For flattened struct element types, SharpForge requires a public typed equality method:
 
 ```csharp
-public class List<T> :
-    ICollection<T>,
-    IEnumerable<T>,
-    IList<T>,
-    IReadOnlyCollection<T>,
-    IReadOnlyList<T>,
-    IList
+public bool Equals(MyStruct other)
 ```
 
-## Dictionary Shape
+When that method exists, generated Lua calls it for `Contains`, `IndexOf`, and `Remove`. `Equals(object)` and `GetHashCode()` are not used for struct collection equality.
 
-Dictionary helpers use two tables:
+## Dictionary<K, V>
+
+Supported `Dictionary<K, V>` members:
+
+- `Count`
+- index get/set
+- `Add`
+- `Get`
+- `Set`
+- `ContainsKey`
+- `Remove`
+- `Clear`
+- `Keys`
+- `Values`
+- `foreach`
+
+Dictionary values preserve `nil` with an internal sentinel, so a present key with a `nil` value is distinct from an absent key.
+
+For non-struct keys, dictionaries use a Lua table plus an insertion-order key list:
 
 ```lua
 data = { key1 = value1, key2 = value2 }
 keys = { key1, key2 }
 ```
 
-- `data` gives normal table lookup and assignment.
-- `keys` preserves insertion order for stable iteration.
-- `nil` values are stored through an internal sentinel so `nil` can be distinguished from an absent key.
+Lookup and assignment use Lua table key semantics. Iteration follows insertion order, and modifying a dictionary during iteration throws.
 
-## Operations
+For flattened struct keys, dictionaries use a linear key/value list and the struct's typed `Equals(T)` method. This avoids hashes and string key canonicalization, preserves the original key values for `Keys` and `foreach`, and lets user code define equality for floats, object-like fields, Lua values, and JASS handles.
 
-`DictNew__()` creates a dictionary table:
+Struct dictionary keys require:
 
-```lua
-return {
-    data = {},
-    keys = {}
-}
+```csharp
+public bool Equals(MyStruct other)
 ```
 
-`DictGet__(dict, key)` returns the stored value, translating the internal nil sentinel back to `nil`.
+If the method is missing, SharpForge emits a diagnostic. Struct dictionary keys do not use `GetHashCode()` or `Equals(object)`.
 
-`DictSet__(dict, key, value)` inserts new keys into `keys` and stores values in `data`.
+## Limits
 
-`DictRemove__(dict, key)` clears the key from `data` and removes it from `keys` with a linear scan.
-
-`DictIterate__(dict)` returns key/value pairs in insertion order.
-
-## Tradeoff
-
-Set/get are constant-time table operations. Removal pays a linear scan to preserve stable iteration order. That is intentional: deletion is less common than lookup/iteration in the map-script workloads this helper targets.
+SharpForge collection helpers are runtime helpers for generated Lua. They are not drop-in replacements for all `System.Collections.Generic` APIs, collection interfaces, LINQ extension methods, or comparer-based .NET overloads.

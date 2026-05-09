@@ -1054,12 +1054,12 @@ public sealed class IRLowering
                 _dictionaryForEachItems.Remove(itemSymbol);
             }
 
-            return new IRDictionaryForEach(null, keyName, valueName, collection, body);
+            return new IRDictionaryForEach(null, keyName, valueName, collection, body, TryBuildDictionaryKeyComparer(collectionType, fe.GetLocation(), out _));
         }
 
         var dictionaryItemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
         LowerBlock(fe.Statement, body, model, ct);
-        return new IRDictionaryForEach(dictionaryItemName, keyName, valueName, collection, body);
+        return new IRDictionaryForEach(dictionaryItemName, keyName, valueName, collection, body, TryBuildDictionaryKeyComparer(collectionType, fe.GetLocation(), out _));
     }
 
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
@@ -1389,14 +1389,14 @@ public sealed class IRLowering
             return regexInvocation;
         }
 
-        if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && args.Count == 1)
+        if (symbol is { Name: "Add", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRListAdd(LowerExpr(addAccess.Expression, model), args[0]);
+            return new IRListAdd(LowerExpr(addAccess.Expression, model), LowerExpr(inv.ArgumentList.Arguments[0].Expression, model));
         }
 
-        if (symbol is { Name: "AddRange", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addRangeAccess && args.Count == 1)
+        if (symbol is { Name: "AddRange", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addRangeAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRListAddRange(LowerExpr(addRangeAccess.Expression, model), args[0]);
+            return new IRListAddRange(LowerExpr(addRangeAccess.Expression, model), LowerExpr(inv.ArgumentList.Arguments[0].Expression, model));
         }
 
         if (symbol is { Name: "Clear", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax clearAccess && args.Count == 0)
@@ -1404,24 +1404,39 @@ public sealed class IRLowering
             return new IRListClear(LowerExpr(clearAccess.Expression, model));
         }
 
-        if (symbol is { Name: "Contains", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax containsAccess && args.Count == 1)
+        if (symbol is { Name: "Contains", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax containsAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRListContains(LowerExpr(containsAccess.Expression, model), args[0]);
+            TryBuildStructEqualityComparer(GetListElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
+            return new IRListContains(
+                LowerExpr(containsAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                comparer);
         }
 
-        if (symbol is { Name: "IndexOf", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax indexOfAccess && args.Count == 1)
+        if (symbol is { Name: "IndexOf", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax indexOfAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRListIndexOf(LowerExpr(indexOfAccess.Expression, model), args[0]);
+            TryBuildStructEqualityComparer(GetListElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
+            return new IRListIndexOf(
+                LowerExpr(indexOfAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                comparer);
         }
 
-        if (symbol is { Name: "Insert", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax insertAccess && args.Count == 2)
+        if (symbol is { Name: "Insert", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax insertAccess && inv.ArgumentList.Arguments.Count == 2)
         {
-            return new IRListInsert(LowerExpr(insertAccess.Expression, model), args[0], args[1]);
+            return new IRListInsert(
+                LowerExpr(insertAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[1].Expression, model));
         }
 
-        if (symbol is { Name: "Remove", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax removeAccess && args.Count == 1)
+        if (symbol is { Name: "Remove", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax removeAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRListRemove(LowerExpr(removeAccess.Expression, model), args[0]);
+            TryBuildStructEqualityComparer(GetListElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
+            return new IRListRemove(
+                LowerExpr(removeAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                comparer);
         }
 
         if (symbol is { Name: "RemoveAt", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax removeAtAccess && args.Count == 1)
@@ -1444,34 +1459,57 @@ public sealed class IRLowering
             return new IRListToArray(LowerExpr(toArrayAccess.Expression, model));
         }
 
-        if (symbol is { Name: "Add", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictAddAccess && args.Count == 2)
+        if (symbol is { Name: "Add", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictAddAccess && inv.ArgumentList.Arguments.Count == 2)
         {
-            return new IRDictionaryAdd(LowerExpr(dictAddAccess.Expression, model), args[0], args[1]);
+            var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRDictionaryAdd(
+                LowerExpr(dictAddAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[1].Expression, model),
+                useLinearKeys);
         }
 
-        if (symbol is { Name: "Set", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictSetAccess && args.Count == 2)
+        if (symbol is { Name: "Set", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictSetAccess && inv.ArgumentList.Arguments.Count == 2)
         {
-            return new IRDictionarySet(LowerExpr(dictSetAccess.Expression, model), args[0], args[1]);
+            var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRDictionarySet(
+                LowerExpr(dictSetAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[1].Expression, model),
+                useLinearKeys);
         }
 
         if (symbol is { Name: "Clear", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictClearAccess && args.Count == 0)
         {
-            return new IRDictionaryClear(LowerExpr(dictClearAccess.Expression, model));
+            var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRDictionaryClear(LowerExpr(dictClearAccess.Expression, model), useLinearKeys);
         }
 
-        if (symbol is { Name: "ContainsKey", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictContainsKeyAccess && args.Count == 1)
+        if (symbol is { Name: "ContainsKey", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictContainsKeyAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRDictionaryContainsKey(LowerExpr(dictContainsKeyAccess.Expression, model), args[0]);
+            var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRDictionaryContainsKey(
+                LowerExpr(dictContainsKeyAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                useLinearKeys);
         }
 
-        if (symbol is { Name: "Remove", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictRemoveAccess && args.Count == 1)
+        if (symbol is { Name: "Remove", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictRemoveAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRDictionaryRemove(LowerExpr(dictRemoveAccess.Expression, model), args[0]);
+            var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRDictionaryRemove(
+                LowerExpr(dictRemoveAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                useLinearKeys);
         }
 
-        if (symbol is { Name: "Get", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictGetAccess && args.Count == 1)
+        if (symbol is { Name: "Get", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictGetAccess && inv.ArgumentList.Arguments.Count == 1)
         {
-            return new IRDictionaryGet(LowerExpr(dictGetAccess.Expression, model), args[0]);
+            var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRDictionaryGet(
+                LowerExpr(dictGetAccess.Expression, model),
+                LowerExpr(inv.ArgumentList.Arguments[0].Expression, model),
+                useLinearKeys);
         }
 
         if (inv.Expression is MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax } && symbol is { IsStatic: false })
@@ -2324,12 +2362,8 @@ public sealed class IRLowering
 
         if (IsDictionaryType(type))
         {
-            if (HasFlattenableStructDictionaryKey(type))
-            {
-                AddDiagnostic(obj.GetLocation(), "struct dictionary keys are not supported yet; SharpForge will use typed Equals(T) linear lookup instead of hashes in a future implementation");
-            }
-
-            return new IRDictionaryNew();
+            var useLinearKeys = TryBuildDictionaryKeyComparer(type, obj.GetLocation(), out var keyComparer);
+            return new IRDictionaryNew(useLinearKeys, keyComparer);
         }
 
         if (IsListType(type))
@@ -2428,7 +2462,9 @@ public sealed class IRLowering
 
         if (IsDictionaryType(type))
         {
-            return new IRDictionaryCount(LowerExpr(access.Expression, model));
+            return new IRDictionaryCount(
+                LowerExpr(access.Expression, model),
+                TryBuildDictionaryKeyComparer(type, access.GetLocation(), out _));
         }
 
         return null;
@@ -2437,15 +2473,17 @@ public sealed class IRLowering
     private IRExpr? TryLowerDictionaryKeysOrValuesAccess(MemberAccessExpressionSyntax access, SemanticModel model)
     {
         if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Keys" or "Values" } property
-            || !IsDictionaryType(model.GetTypeInfo(access.Expression).Type))
+            || model.GetTypeInfo(access.Expression).Type is not { } dictionaryType
+            || !IsDictionaryType(dictionaryType))
         {
             return null;
         }
 
         var table = LowerExpr(access.Expression, model);
+        var useLinearKeys = TryBuildDictionaryKeyComparer(dictionaryType, access.GetLocation(), out _);
         return property.Name == "Keys"
-            ? new IRDictionaryKeys(table)
-            : new IRDictionaryValues(table);
+            ? new IRDictionaryKeys(table, useLinearKeys)
+            : new IRDictionaryValues(table, useLinearKeys);
     }
 
     private IRExpr? TryLowerLuaObjectMemberAccess(MemberAccessExpressionSyntax access, SemanticModel model)
@@ -2481,14 +2519,77 @@ public sealed class IRLowering
         => type is INamedTypeSymbol { Name: "Dictionary", ContainingNamespace: { } ns }
            && IsSharpLibNamespace(ns);
 
+    private static ITypeSymbol? GetListElementType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { TypeArguments.Length: 1 } namedType && IsListType(namedType)
+            ? namedType.TypeArguments[0]
+            : null;
+
+    private bool TryBuildDictionaryKeyComparer(ITypeSymbol? dictionaryType, Location location, out IRExpr? comparer)
+    {
+        comparer = null;
+        if (dictionaryType is not INamedTypeSymbol { TypeArguments.Length: > 0 } namedType || !IsDictionaryType(namedType))
+        {
+            return false;
+        }
+
+        return TryBuildStructEqualityComparer(namedType.TypeArguments[0], location, out comparer);
+    }
+
+    private bool TryBuildStructEqualityComparer(ITypeSymbol? valueType, Location location, out IRExpr? comparer)
+    {
+        comparer = null;
+        if (valueType is not INamedTypeSymbol structType
+            || !CanFlattenStructType(structType)
+            || !GetFlattenableStructFields(structType).Any())
+        {
+            return false;
+        }
+
+        var equalsMethod = FindTypedStructEquals(structType);
+        if (equalsMethod is null)
+        {
+            AddDiagnostic(location, $"struct collection equality for '{structType.Name}' requires public bool Equals({structType.Name} other); hashing and boxed Equals(object) are not used");
+            return true;
+        }
+
+        comparer = BuildStructEqualityComparer(structType, equalsMethod);
+        return true;
+    }
+
+    private static IMethodSymbol? FindTypedStructEquals(INamedTypeSymbol structType)
+        => structType.GetMembers("Equals")
+            .OfType<IMethodSymbol>()
+            .FirstOrDefault(method => method is
+                {
+                    IsStatic: false,
+                    DeclaredAccessibility: Accessibility.Public,
+                    Parameters.Length: 1,
+                    ReturnType.SpecialType: SpecialType.System_Boolean,
+                }
+                && SymbolEqualityComparer.Default.Equals(method.Parameters[0].Type, structType));
+
+    private IRExpr BuildStructEqualityComparer(INamedTypeSymbol structType, IMethodSymbol equalsMethod)
+    {
+        var leftName = AllocateLuaName("left");
+        var rightName = AllocateLuaName("right");
+        var left = new IRIdentifier(leftName);
+        var right = new IRIdentifier(rightName);
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        var arguments = fields
+            .Select(field => (IRExpr)new IRMemberAccess(left, field.Name))
+            .Concat(fields.Select(field => (IRExpr)new IRMemberAccess(right, field.Name)))
+            .ToArray();
+        var body = new IRBlock();
+        body.Statements.Add(new IRReturn(new IRInvocation(
+            new IRMemberAccess(LowerTypeReference(structType), GetLuaMethodName(equalsMethod)),
+            arguments)));
+
+        return new IRFunctionExpression(new[] { leftName, rightName }, body);
+    }
+
     private static bool IsRegexType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "Regex", ContainingNamespace: { } ns }
            && ns.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Text.RegularExpressions";
-
-    private bool HasFlattenableStructDictionaryKey(ITypeSymbol? type)
-        => type is INamedTypeSymbol { TypeArguments.Length: > 0 } namedType
-           && IsDictionaryType(namedType)
-           && IsFlattenableStructType(namedType.TypeArguments[0]);
 
     private static bool IsSharpLibKeyValueType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "KeyValue", ContainingNamespace: { } ns }
@@ -2612,7 +2713,8 @@ public sealed class IRLowering
         return new IRExprStmt(new IRDictionarySet(
             LowerExpr(elementAccess.Expression, model),
             LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model),
-            LowerExpr(right, model)));
+            LowerExpr(right, model),
+            TryBuildDictionaryKeyComparer(type, elementAccess.GetLocation(), out _)));
     }
 
     private IRStmt? TryLowerListAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
@@ -2632,7 +2734,10 @@ public sealed class IRLowering
     {
         var type = model.GetTypeInfo(access.Expression).Type;
         return IsDictionaryType(type)
-            ? new IRDictionaryGet(LowerExpr(access.Expression, model), LowerExpr(access.ArgumentList.Arguments[0].Expression, model))
+            ? new IRDictionaryGet(
+                LowerExpr(access.Expression, model),
+                LowerExpr(access.ArgumentList.Arguments[0].Expression, model),
+                TryBuildDictionaryKeyComparer(type, access.GetLocation(), out _))
             : null;
     }
 
@@ -3347,6 +3452,9 @@ public sealed class IRLowering
             case IRDictionaryCount dictionaryCount:
                 CollectTypeReferences(dictionaryCount.Table, dependencies);
                 break;
+            case IRDictionaryNew dictionaryNew when dictionaryNew.KeyComparer is not null:
+                CollectTypeReferences(dictionaryNew.KeyComparer, dependencies);
+                break;
             case IRDictionaryGet dictionaryGet:
                 CollectTypeReferences(dictionaryGet.Table, dependencies);
                 CollectTypeReferences(dictionaryGet.Key, dependencies);
@@ -3410,10 +3518,18 @@ public sealed class IRLowering
             case IRListContains listContains:
                 CollectTypeReferences(listContains.List, dependencies);
                 CollectTypeReferences(listContains.Value, dependencies);
+                if (listContains.EqualityComparer is not null)
+                {
+                    CollectTypeReferences(listContains.EqualityComparer, dependencies);
+                }
                 break;
             case IRListIndexOf listIndexOf:
                 CollectTypeReferences(listIndexOf.List, dependencies);
                 CollectTypeReferences(listIndexOf.Value, dependencies);
+                if (listIndexOf.EqualityComparer is not null)
+                {
+                    CollectTypeReferences(listIndexOf.EqualityComparer, dependencies);
+                }
                 break;
             case IRListInsert listInsert:
                 CollectTypeReferences(listInsert.List, dependencies);
@@ -3423,6 +3539,10 @@ public sealed class IRLowering
             case IRListRemove listRemove:
                 CollectTypeReferences(listRemove.List, dependencies);
                 CollectTypeReferences(listRemove.Value, dependencies);
+                if (listRemove.EqualityComparer is not null)
+                {
+                    CollectTypeReferences(listRemove.EqualityComparer, dependencies);
+                }
                 break;
             case IRListRemoveAt listRemoveAt:
                 CollectTypeReferences(listRemoveAt.List, dependencies);
