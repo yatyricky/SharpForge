@@ -725,7 +725,105 @@ public class EmitSmokeTests
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Unsupported.cs"),
-            "public static class Unsupported { public static void F() { switch (1) { case 1: break; } } }");
+            "public static class Unsupported { public static void F() { lock (new object()) { } } }");
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: true,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(1, exitCode);
+    }
+
+    [Fact]
+    public async Task Switch_statements_emit_scoped_lua_branch_chain()
+    {
+        var src = """
+            public static class Switches
+            {
+                public static int Classify(int value)
+                {
+                    var result = 0;
+                    switch (value)
+                    {
+                        case 1:
+                        case 2:
+                            result = 10;
+                            break;
+                        case 3:
+                            return 30;
+                        default:
+                            result = 99;
+                            break;
+                    }
+                    return result;
+                }
+
+                public static int LoopBreak()
+                {
+                    var total = 0;
+                    for (int i = 0; i < 3; i++)
+                    {
+                        switch (i)
+                        {
+                            case 1:
+                                break;
+                            default:
+                                total += i;
+                                break;
+                        }
+                        total += 10;
+                    }
+                    return total;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "Switches.cs");
+
+        Assert.Contains("repeat", lua);
+        Assert.Contains("local switchValue = value", lua);
+        Assert.Contains("if (switchValue == 1) or (switchValue == 2) then", lua);
+        Assert.Contains("elseif (switchValue == 3) then", lua);
+        Assert.Contains("return 30", lua);
+        Assert.Contains("else", lua);
+        Assert.Contains("result = 99", lua);
+        Assert.Contains("until true", lua);
+
+        var loopIndex = lua.IndexOf("while (i < 3) do", StringComparison.Ordinal);
+        Assert.True(loopIndex >= 0, lua);
+        var switchIndex = lua.IndexOf("repeat", loopIndex, StringComparison.Ordinal);
+        var switchEndIndex = lua.IndexOf("until true", switchIndex, StringComparison.Ordinal);
+        var afterSwitchIndex = lua.IndexOf("total = (total + 10)", switchEndIndex, StringComparison.Ordinal);
+        Assert.True(switchIndex >= 0 && switchEndIndex > switchIndex && afterSwitchIndex > switchEndIndex, lua);
+    }
+
+    [Fact]
+    public async Task Switch_goto_case_returns_pipeline_error()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "GotoCase.cs"), """
+            public static class GotoCase
+            {
+                public static int Run(int value)
+                {
+                    switch (value)
+                    {
+                        case 1:
+                            goto case 2;
+                        case 2:
+                            return 2;
+                        default:
+                            return 0;
+                    }
+                }
+            }
+            """);
 
         var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
             InputDirectory: dir,

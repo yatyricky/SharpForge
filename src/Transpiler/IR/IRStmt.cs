@@ -19,6 +19,8 @@ public sealed record IRBaseConstructorCall(IRTypeReference BaseType, string Init
 public sealed record IRReturn(IRExpr? Value) : IRStmt;
 public sealed record IRMultiReturn(IReadOnlyList<IRExpr> Values) : IRStmt;
 public sealed record IRIf(IRExpr Condition, IRBlock Then, IRBlock? Else) : IRStmt;
+public sealed record IRSwitch(IRExpr Value, IReadOnlyList<IRSwitchSection> Sections) : IRStmt;
+public sealed record IRSwitchSection(IReadOnlyList<IRExpr> Labels, bool IsDefault, IRBlock Body);
 public sealed record IRWhile(IRExpr Condition, IRBlock Body) : IRStmt;
 public sealed record IRFor(IRStmt? Initializer, IRExpr? Condition, IReadOnlyList<IRStmt> Incrementors, IRBlock Body) : IRStmt;
 public sealed record IRForEach(string ItemName, IRExpr Collection, IRBlock Body, bool UseListIterator = false) : IRStmt;

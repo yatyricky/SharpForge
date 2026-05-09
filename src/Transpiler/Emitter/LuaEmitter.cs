@@ -924,6 +924,9 @@ public sealed class LuaEmitter
             case IRIf i:
                 EmitIf(i);
                 break;
+            case IRSwitch s:
+                EmitSwitch(s);
+                break;
             case IRWhile w:
                 WriteIndent();
                 _sb.Append("while ");
@@ -1031,6 +1034,67 @@ public sealed class LuaEmitter
             }
         }
         WriteLine("end");
+    }
+
+    private void EmitSwitch(IRSwitch switchStmt)
+    {
+        var valueName = NewTemp("switchValue");
+        var defaultSection = switchStmt.Sections.FirstOrDefault(section => section.IsDefault);
+        var caseSections = switchStmt.Sections.Where(section => !section.IsDefault && section.Labels.Count > 0).ToArray();
+
+        WriteLine("repeat");
+        _indent++;
+        WriteIndent();
+        _sb.Append("local ").Append(valueName).Append(" = ");
+        EmitExpr(switchStmt.Value);
+        _sb.Append('\n');
+
+        if (caseSections.Length > 0 || defaultSection is not null)
+        {
+            var emittedBranch = false;
+            foreach (var section in caseSections)
+            {
+                WriteIndent();
+                _sb.Append(emittedBranch ? "elseif " : "if ");
+                EmitSwitchCondition(valueName, section.Labels);
+                _sb.Append(" then\n");
+                _indent++;
+                EmitBlock(section.Body);
+                _indent--;
+                emittedBranch = true;
+            }
+
+            if (defaultSection is not null)
+            {
+                WriteLine(emittedBranch ? "else" : "if true then");
+                _indent++;
+                EmitBlock(defaultSection.Body);
+                _indent--;
+                emittedBranch = true;
+            }
+
+            if (emittedBranch)
+            {
+                WriteLine("end");
+            }
+        }
+
+        _indent--;
+        WriteLine("until true");
+    }
+
+    private void EmitSwitchCondition(string valueName, IReadOnlyList<IRExpr> labels)
+    {
+        for (int i = 0; i < labels.Count; i++)
+        {
+            if (i > 0)
+            {
+                _sb.Append(" or ");
+            }
+            _sb.Append('(').Append(valueName).Append(" == ");
+            EmitExpr(labels[i]);
+            _sb.Append(')');
+        }
     }
 
     private void EmitFor(IRFor f)
@@ -1658,6 +1722,7 @@ public sealed class LuaEmitter
             IRReturn ret => ret.Value is not null && ExprUsesTernaryHelper(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesTernaryHelper),
             IRIf iff => ExprUsesTernaryHelper(iff.Condition) || BlockUsesTernaryHelper(iff.Then) || (iff.Else is not null && BlockUsesTernaryHelper(iff.Else)),
+            IRSwitch sw => ExprUsesTernaryHelper(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesTernaryHelper) || BlockUsesTernaryHelper(section.Body)),
             IRWhile wh => ExprUsesTernaryHelper(wh.Condition) || BlockUsesTernaryHelper(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesTernaryHelper(fr.Initializer))
                 || (fr.Condition is not null && ExprUsesTernaryHelper(fr.Condition))
@@ -1749,6 +1814,7 @@ public sealed class LuaEmitter
             IRReturn ret => ret.Value is not null && ExprUsesTypeChecks(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesTypeChecks),
             IRIf iff => ExprUsesTypeChecks(iff.Condition) || BlockUsesTypeChecks(iff.Then) || (iff.Else is not null && BlockUsesTypeChecks(iff.Else)),
+            IRSwitch sw => ExprUsesTypeChecks(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesTypeChecks) || BlockUsesTypeChecks(section.Body)),
             IRWhile wh => ExprUsesTypeChecks(wh.Condition) || BlockUsesTypeChecks(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesTypeChecks(fr.Initializer))
                 || (fr.Condition is not null && ExprUsesTypeChecks(fr.Condition))
@@ -1776,6 +1842,7 @@ public sealed class LuaEmitter
             IRReturn ret => ret.Value is not null && ExprUsesDictionaryHelpers(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesDictionaryHelpers),
             IRIf iff => ExprUsesDictionaryHelpers(iff.Condition) || BlockUsesDictionaryHelpers(iff.Then) || (iff.Else is not null && BlockUsesDictionaryHelpers(iff.Else)),
+            IRSwitch sw => ExprUsesDictionaryHelpers(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesDictionaryHelpers) || BlockUsesDictionaryHelpers(section.Body)),
             IRWhile wh => ExprUsesDictionaryHelpers(wh.Condition) || BlockUsesDictionaryHelpers(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesDictionaryHelpers(fr.Initializer))
                 || (fr.Condition is not null && ExprUsesDictionaryHelpers(fr.Condition))
@@ -1803,6 +1870,7 @@ public sealed class LuaEmitter
             IRReturn ret => ret.Value is not null && ExprUsesListHelpers(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesListHelpers),
             IRIf iff => ExprUsesListHelpers(iff.Condition) || BlockUsesListHelpers(iff.Then) || (iff.Else is not null && BlockUsesListHelpers(iff.Else)),
+            IRSwitch sw => ExprUsesListHelpers(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesListHelpers) || BlockUsesListHelpers(section.Body)),
             IRWhile wh => ExprUsesListHelpers(wh.Condition) || BlockUsesListHelpers(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesListHelpers(fr.Initializer))
                 || (fr.Condition is not null && ExprUsesListHelpers(fr.Condition))
@@ -1830,6 +1898,7 @@ public sealed class LuaEmitter
             IRReturn ret => ret.Value is not null && ExprUsesCoroutineHelpers(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesCoroutineHelpers),
             IRIf iff => ExprUsesCoroutineHelpers(iff.Condition) || BlockUsesCoroutineHelpers(iff.Then) || (iff.Else is not null && BlockUsesCoroutineHelpers(iff.Else)),
+            IRSwitch sw => ExprUsesCoroutineHelpers(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesCoroutineHelpers) || BlockUsesCoroutineHelpers(section.Body)),
             IRWhile wh => ExprUsesCoroutineHelpers(wh.Condition) || BlockUsesCoroutineHelpers(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesCoroutineHelpers(fr.Initializer))
                 || (fr.Condition is not null && ExprUsesCoroutineHelpers(fr.Condition))
@@ -1857,6 +1926,7 @@ public sealed class LuaEmitter
             IRReturn ret => ret.Value is not null && ExprUsesStringConcat(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesStringConcat),
             IRIf iff => ExprUsesStringConcat(iff.Condition) || BlockUsesStringConcat(iff.Then) || (iff.Else is not null && BlockUsesStringConcat(iff.Else)),
+            IRSwitch sw => ExprUsesStringConcat(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesStringConcat) || BlockUsesStringConcat(section.Body)),
             IRWhile wh => ExprUsesStringConcat(wh.Condition) || BlockUsesStringConcat(wh.Body),
             IRFor fr => (fr.Initializer is not null && StmtUsesStringConcat(fr.Initializer))
                 || (fr.Condition is not null && ExprUsesStringConcat(fr.Condition))
@@ -2151,6 +2221,14 @@ public sealed class LuaEmitter
                 CollectIdentifiers(iff.Condition);
                 CollectIdentifiers(iff.Then);
                 if (iff.Else is not null) CollectIdentifiers(iff.Else);
+                break;
+            case IRSwitch sw:
+                CollectIdentifiers(sw.Value);
+                foreach (var section in sw.Sections)
+                {
+                    foreach (var label in section.Labels) CollectIdentifiers(label);
+                    CollectIdentifiers(section.Body);
+                }
                 break;
             case IRWhile wh:
                 CollectIdentifiers(wh.Condition);

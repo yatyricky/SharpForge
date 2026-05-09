@@ -886,6 +886,9 @@ public sealed class IRLowering
                 }
                 return new IRIf(LowerExpr(ifs.Condition, model), thenBlk, elseBlk);
 
+            case SwitchStatementSyntax switchStatement:
+                return LowerSwitch(switchStatement, model, ct);
+
             case WhileStatementSyntax ws:
                 var whileBody = new IRBlock();
                 LowerBlock(ws.Statement, whileBody, model, ct);
@@ -897,9 +900,48 @@ public sealed class IRLowering
             case ContinueStatementSyntax:
                 return new IRContinue();
 
+            case GotoStatementSyntax gotoStatement:
+                AddUnsupportedDiagnostic(gotoStatement, "statement");
+                return new IRRawComment($"unsupported stmt: {gotoStatement.Kind()}");
+
             default:
                 return UnsupportedStatement(s);
         }
+    }
+
+    private IRStmt LowerSwitch(SwitchStatementSyntax switchStatement, SemanticModel model, CancellationToken ct)
+    {
+        var sections = new List<IRSwitchSection>();
+        foreach (var section in switchStatement.Sections)
+        {
+            var labels = new List<IRExpr>();
+            var isDefault = false;
+            foreach (var label in section.Labels)
+            {
+                switch (label)
+                {
+                    case CaseSwitchLabelSyntax caseLabel:
+                        if (!model.GetConstantValue(caseLabel.Value, ct).HasValue)
+                        {
+                            AddDiagnostic(caseLabel.GetLocation(), "switch case labels must be compile-time constants");
+                        }
+                        labels.Add(LowerExpr(caseLabel.Value, model));
+                        break;
+                    case DefaultSwitchLabelSyntax:
+                        isDefault = true;
+                        break;
+                    default:
+                        AddUnsupportedDiagnostic(label, "switch label");
+                        break;
+                }
+            }
+
+            var body = new IRBlock();
+            LowerStatements(section.Statements, body, model, ct);
+            sections.Add(new IRSwitchSection(labels, isDefault, body));
+        }
+
+        return new IRSwitch(LowerExpr(switchStatement.Expression, model), sections);
     }
 
     private IRStmt LowerFor(ForStatementSyntax fs, SemanticModel model, CancellationToken ct)
@@ -3098,6 +3140,17 @@ public sealed class IRLowering
                 if (ifStmt.Else is not null)
                 {
                     CollectTypeReferences(ifStmt.Else, dependencies);
+                }
+                break;
+            case IRSwitch switchStmt:
+                CollectTypeReferences(switchStmt.Value, dependencies);
+                foreach (var section in switchStmt.Sections)
+                {
+                    foreach (var label in section.Labels)
+                    {
+                        CollectTypeReferences(label, dependencies);
+                    }
+                    CollectTypeReferences(section.Body, dependencies);
                 }
                 break;
             case IRWhile whileStmt:
