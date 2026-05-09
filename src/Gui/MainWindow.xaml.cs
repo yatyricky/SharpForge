@@ -32,6 +32,7 @@ public sealed partial class MainWindow : Window
     private const string DefaultRootTable = "SF__";
     private const string DefaultIgnoreClass = "JASS";
     private const string DefaultLibraryFolder = "libs";
+    private const string DefaultLuaFileName = "sharpforge.lua";
     private const string DefaultJassHostClass = "JASS";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
@@ -162,7 +163,6 @@ public sealed partial class MainWindow : Window
     {
         FillDefaultsFromMap();
         FillDefaultsFromCSharpPath();
-        FillDefaultsFromTranspileOutput();
     }
 
     private void FillDefaultsFromMap()
@@ -181,17 +181,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        var defaultLuaPath = Path.Combine(csharpPath, DefaultLuaFileName);
         if (string.IsNullOrWhiteSpace(TranspileOutputBox.Text))
         {
-            TranspileOutputBox.Text = Path.Combine(csharpPath, "sharpforge.lua");
+            TranspileOutputBox.Text = defaultLuaPath;
         }
-    }
 
-    private void FillDefaultsFromTranspileOutput()
-    {
-        if (string.IsNullOrWhiteSpace(MainLuaBox.Text) && !string.IsNullOrWhiteSpace(TranspileOutputBox.Text))
+        if (string.IsNullOrWhiteSpace(MainLuaBox.Text))
         {
-            MainLuaBox.Text = TranspileOutputBox.Text.Trim();
+            MainLuaBox.Text = defaultLuaPath;
         }
     }
 
@@ -708,14 +706,8 @@ public sealed partial class MainWindow : Window
             return mainLua;
         }
 
-        var transpileOutput = TranspileOutputBox.Text.Trim();
-        if (transpileOutput.Length > 0)
-        {
-            return transpileOutput;
-        }
-
         var csharpPath = CSharpPathBox.Text.Trim();
-        return csharpPath.Length == 0 ? string.Empty : Path.Combine(csharpPath, "sharpforge.lua");
+        return csharpPath.Length == 0 ? string.Empty : Path.Combine(csharpPath, DefaultLuaFileName);
     }
 
     private static string FormatCommand(string executable, IReadOnlyList<string> args)
@@ -886,7 +878,15 @@ public sealed partial class MainWindow : Window
             "sf-jassgen" => "JassGen",
             _ => toolName,
         };
-        return Path.Combine(repo, "src", project, "bin", "Debug", "net10.0", "win-x64", exeName);
+
+        var debugOutput = Path.Combine(repo, "src", project, "bin", "Debug", "net10.0", exeName);
+        if (File.Exists(debugOutput))
+        {
+            return debugOutput;
+        }
+
+        var runtimeOutput = Path.Combine(repo, "src", project, "bin", "Debug", "net10.0", "win-x64", exeName);
+        return File.Exists(runtimeOutput) ? runtimeOutput : debugOutput;
     }
 
     private static string? FindRepoRoot()
@@ -940,7 +940,6 @@ public sealed partial class MainWindow : Window
         {
             CSharpPathBox.Text = path;
             FillDefaultsFromCSharpPath();
-            FillDefaultsFromTranspileOutput();
             SaveSettingsFromFields();
         }
     }
@@ -948,7 +947,6 @@ public sealed partial class MainWindow : Window
     private void SelectTranspileOutput(object sender, RoutedEventArgs e)
     {
         SelectSavePath(TranspileOutputBox, "Lua files (*.lua)|*.lua|All files (*.*)|*.*");
-        FillDefaultsFromTranspileOutput();
     }
 
     private void SelectMainLua(object sender, RoutedEventArgs e) => SelectOpenPath(MainLuaBox, "Lua files (*.lua)|*.lua|All files (*.*)|*.*");
@@ -1063,7 +1061,6 @@ public sealed partial class MainWindow : Window
         }
 
         ClearValidationError(TranspileOutputBox);
-        FillDefaultsFromTranspileOutput();
         UpdateRunCommandPreview();
     }
 
@@ -1210,7 +1207,6 @@ public sealed partial class MainWindow : Window
             ]))
         {
             FillDefaultsFromCSharpPath();
-            FillDefaultsFromTranspileOutput();
             SaveSettingsFromFields();
             UpdateRunCommandPreview();
         }

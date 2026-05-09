@@ -21,14 +21,65 @@ public sealed class LuaEmitter
     private readonly StringBuilder _sb = new();
     private readonly HashSet<string> _emittedTablePaths = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedIdentifiers = new(StringComparer.Ordinal);
+    private readonly HashSet<DictionaryHelper> _dictionaryHelpers = [];
+    private readonly HashSet<ListHelper> _listHelpers = [];
     private int _indent;
     private int _tempId;
     private bool _emitTypeHelpers;
     private bool _emitStringConcatHelper;
-    private bool _emitDictionaryHelpers;
-    private bool _emitListHelpers;
     private bool _emitCoroutineHelpers;
     private bool _emitTernaryHelper;
+
+    private enum DictionaryHelper
+    {
+        Nil,
+        New,
+        Count,
+        Get,
+        Set,
+        Add,
+        Remove,
+        ContainsKey,
+        Clear,
+        Keys,
+        Values,
+        Iterate,
+        LinearNew,
+        LinearFind,
+        LinearCount,
+        LinearGet,
+        LinearSet,
+        LinearAdd,
+        LinearRemove,
+        LinearContainsKey,
+        LinearClear,
+        LinearKeys,
+        LinearValues,
+        LinearIterate,
+    }
+
+    private enum ListHelper
+    {
+        Nil,
+        Wrap,
+        Unwrap,
+        New,
+        Count,
+        Get,
+        Set,
+        Add,
+        AddRange,
+        Clear,
+        IndexOf,
+        Contains,
+        Insert,
+        RemoveAt,
+        Remove,
+        Reverse,
+        Iterate,
+        Sort,
+        ToArray,
+    }
 
     public LuaEmitter(string rootTable)
     {
@@ -47,10 +98,12 @@ public sealed class LuaEmitter
         _tempId = 0;
         _emitTypeHelpers = UsesTypeChecks(module);
         _emitStringConcatHelper = UsesStringConcat(module);
-        _emitDictionaryHelpers = UsesDictionaryHelpers(module);
-        _emitListHelpers = UsesListHelpers(module);
         _emitCoroutineHelpers = UsesCoroutineHelpers(module);
         _emitTernaryHelper = UsesTernaryHelper(module);
+        _dictionaryHelpers.Clear();
+        _listHelpers.Clear();
+        CollectCollectionHelpers(module);
+        AddCollectionHelperDependencies();
         _usedIdentifiers.Clear();
         CollectIdentifiers(module);
 
@@ -90,11 +143,11 @@ public sealed class LuaEmitter
             {
                 WriteCoroutineHelpers();
             }
-            if (_emitDictionaryHelpers)
+            if (_dictionaryHelpers.Count > 0)
             {
                 WriteDictionaryHelpers();
             }
-            if (_emitListHelpers)
+            if (_listHelpers.Count > 0)
             {
                 WriteListHelpers();
             }
@@ -237,21 +290,54 @@ public sealed class LuaEmitter
 
     private void WriteDictionaryHelpers()
     {
-        WriteLine($"{_rootTable}.DictNil__ = {_rootTable}.DictNil__ or {{}}");
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Nil)) WriteLine($"{_rootTable}.DictNil__ = {_rootTable}.DictNil__ or {{}}");
+        if (_dictionaryHelpers.Contains(DictionaryHelper.New)) WriteDictionaryNewHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Count)) WriteDictionaryCountHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Get)) WriteDictionaryGetHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Set)) WriteDictionarySetHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Add)) WriteDictionaryAddHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Remove)) WriteDictionaryRemoveHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.ContainsKey)) WriteDictionaryContainsKeyHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Clear)) WriteDictionaryClearHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Keys)) WriteDictionaryKeysHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Values)) WriteDictionaryValuesHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.Iterate)) WriteDictionaryIterateHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearNew)) WriteDictionaryLinearNewHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearFind)) WriteDictionaryLinearFindHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearCount)) WriteDictionaryLinearCountHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearGet)) WriteDictionaryLinearGetHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearSet)) WriteDictionaryLinearSetHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearAdd)) WriteDictionaryLinearAddHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearRemove)) WriteDictionaryLinearRemoveHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearContainsKey)) WriteDictionaryLinearContainsKeyHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearClear)) WriteDictionaryLinearClearHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearKeys)) WriteDictionaryLinearKeysHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearValues)) WriteDictionaryLinearValuesHelper();
+        if (_dictionaryHelpers.Contains(DictionaryHelper.LinearIterate)) WriteDictionaryLinearIterateHelper();
+    }
+
+    private void WriteDictionaryNewHelper()
+    {
         WriteLine($"function {_rootTable}.DictNew__()");
         _indent++;
         WriteLine("return { data = {}, keys = {}, version = 0 }");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryCountHelper()
+    {
         WriteLine($"function {_rootTable}.DictCount__(dict)");
         _indent++;
         WriteLine("return #dict.keys");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryGetHelper()
+    {
         WriteLine($"function {_rootTable}.DictGet__(dict, key)");
         _indent++;
         WriteLine("local value = dict.data[key]");
@@ -260,7 +346,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionarySetHelper()
+    {
         WriteLine($"function {_rootTable}.DictSet__(dict, key, value)");
         _indent++;
         WriteLine("if dict.data[key] == nil then");
@@ -273,7 +362,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryAddHelper()
+    {
         WriteLine($"function {_rootTable}.DictAdd__(dict, key, value)");
         _indent++;
         WriteLine("if dict.data[key] ~= nil then error(\"duplicate key\") end");
@@ -283,7 +375,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryRemoveHelper()
+    {
         WriteLine($"function {_rootTable}.DictRemove__(dict, key)");
         _indent++;
         WriteLine("if dict.data[key] ~= nil then");
@@ -307,14 +402,20 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryContainsKeyHelper()
+    {
         WriteLine($"function {_rootTable}.DictContainsKey__(dict, key)");
         _indent++;
         WriteLine("return dict.data[key] ~= nil");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryClearHelper()
+    {
         WriteLine($"function {_rootTable}.DictClear__(dict)");
         _indent++;
         WriteLine("dict.data = {}");
@@ -323,7 +424,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryKeysHelper()
+    {
         WriteLine($"function {_rootTable}.DictKeys__(dict)");
         _indent++;
         WriteLine("local items = {}");
@@ -332,7 +436,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryValuesHelper()
+    {
         WriteLine($"function {_rootTable}.DictValues__(dict)");
         _indent++;
         WriteLine($"local list = {_rootTable}.ListNew__({{}})");
@@ -347,7 +454,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryIterateHelper()
+    {
         WriteLine($"function {_rootTable}.DictIterate__(dict)");
         _indent++;
         WriteLine("local version = dict.version");
@@ -369,14 +479,20 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearNewHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearNew__(keyEquals)");
         _indent++;
         WriteLine("return { keys = {}, values = {}, version = 0, keyEquals = keyEquals }");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearFindHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearFind__(dict, key)");
         _indent++;
         WriteLine("for i, storedKey in ipairs(dict.keys) do");
@@ -388,14 +504,20 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearCountHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearCount__(dict)");
         _indent++;
         WriteLine("return #dict.keys");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearGetHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearGet__(dict, key)");
         _indent++;
         WriteLine($"local index = {_rootTable}.DictLinearFind__(dict, key)");
@@ -406,7 +528,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearSetHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearSet__(dict, key, value)");
         _indent++;
         WriteLine($"local index = {_rootTable}.DictLinearFind__(dict, key)");
@@ -424,7 +549,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearAddHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearAdd__(dict, key, value)");
         _indent++;
         WriteLine($"if {_rootTable}.DictLinearFind__(dict, key) ~= nil then error(\"duplicate key\") end");
@@ -434,7 +562,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearRemoveHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearRemove__(dict, key)");
         _indent++;
         WriteLine($"local index = {_rootTable}.DictLinearFind__(dict, key)");
@@ -450,14 +581,20 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearContainsKeyHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearContainsKey__(dict, key)");
         _indent++;
         WriteLine($"return {_rootTable}.DictLinearFind__(dict, key) ~= nil");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearClearHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearClear__(dict)");
         _indent++;
         WriteLine("dict.keys = {}");
@@ -466,14 +603,20 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearKeysHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearKeys__(dict)");
         _indent++;
         WriteLine($"return {_rootTable}.ListNew__(dict.keys)");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearValuesHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearValues__(dict)");
         _indent++;
         WriteLine($"local list = {_rootTable}.ListNew__({{}})");
@@ -487,7 +630,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteDictionaryLinearIterateHelper()
+    {
         WriteLine($"function {_rootTable}.DictLinearIterate__(dict)");
         _indent++;
         WriteLine("local version = dict.version");
@@ -513,15 +659,39 @@ public sealed class LuaEmitter
 
     private void WriteListHelpers()
     {
-        WriteLine($"{_rootTable}.ListNil__ = {_rootTable}.ListNil__ or {{}}");
+        if (_listHelpers.Contains(ListHelper.Nil)) WriteLine($"{_rootTable}.ListNil__ = {_rootTable}.ListNil__ or {{}}");
+        if (_listHelpers.Contains(ListHelper.Wrap)) WriteListWrapHelper();
+        if (_listHelpers.Contains(ListHelper.Unwrap)) WriteListUnwrapHelper();
+        if (_listHelpers.Contains(ListHelper.New)) WriteListNewHelper();
+        if (_listHelpers.Contains(ListHelper.Count)) WriteListCountHelper();
+        if (_listHelpers.Contains(ListHelper.Get)) WriteListGetHelper();
+        if (_listHelpers.Contains(ListHelper.Set)) WriteListSetHelper();
+        if (_listHelpers.Contains(ListHelper.Add)) WriteListAddHelper();
+        if (_listHelpers.Contains(ListHelper.AddRange)) WriteListAddRangeHelper();
+        if (_listHelpers.Contains(ListHelper.Clear)) WriteListClearHelper();
+        if (_listHelpers.Contains(ListHelper.IndexOf)) WriteListIndexOfHelper();
+        if (_listHelpers.Contains(ListHelper.Contains)) WriteListContainsHelper();
+        if (_listHelpers.Contains(ListHelper.Insert)) WriteListInsertHelper();
+        if (_listHelpers.Contains(ListHelper.RemoveAt)) WriteListRemoveAtHelper();
+        if (_listHelpers.Contains(ListHelper.Remove)) WriteListRemoveHelper();
+        if (_listHelpers.Contains(ListHelper.Reverse)) WriteListReverseHelper();
+        if (_listHelpers.Contains(ListHelper.Iterate)) WriteListIterateHelper();
+        if (_listHelpers.Contains(ListHelper.Sort)) WriteListSortHelper();
+        if (_listHelpers.Contains(ListHelper.ToArray)) WriteListToArrayHelper();
+    }
 
+    private void WriteListWrapHelper()
+    {
         WriteLine($"function {_rootTable}.ListWrap__(value)");
         _indent++;
         WriteLine($"return value == nil and {_rootTable}.ListNil__ or value");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListUnwrapHelper()
+    {
         WriteLine($"function {_rootTable}.ListUnwrap__(value)");
         _indent++;
         WriteLine($"if value == {_rootTable}.ListNil__ then return nil end");
@@ -529,7 +699,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListNewHelper()
+    {
         WriteLine($"function {_rootTable}.ListNew__(items)");
         _indent++;
         WriteLine("local list = { items = {}, version = 0 }");
@@ -546,21 +719,30 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListCountHelper()
+    {
         WriteLine($"function {_rootTable}.ListCount__(list)");
         _indent++;
         WriteLine("return #list.items");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListGetHelper()
+    {
         WriteLine($"function {_rootTable}.ListGet__(list, index)");
         _indent++;
         WriteLine($"return {_rootTable}.ListUnwrap__(list.items[index + 1])");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListSetHelper()
+    {
         WriteLine($"function {_rootTable}.ListSet__(list, index, value)");
         _indent++;
         WriteLine($"list.items[index + 1] = {_rootTable}.ListWrap__(value)");
@@ -568,7 +750,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListAddHelper()
+    {
         WriteLine($"function {_rootTable}.ListAdd__(list, value)");
         _indent++;
         WriteLine($"table.insert(list.items, {_rootTable}.ListWrap__(value))");
@@ -576,7 +761,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListAddRangeHelper()
+    {
         WriteLine($"function {_rootTable}.ListAddRange__(list, values)");
         _indent++;
         WriteLine("local source = values.items or values");
@@ -590,7 +778,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListClearHelper()
+    {
         WriteLine($"function {_rootTable}.ListClear__(list)");
         _indent++;
         WriteLine("list.items = {}");
@@ -598,7 +789,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListIndexOfHelper()
+    {
         WriteLine($"function {_rootTable}.ListIndexOf__(list, value, equals)");
         _indent++;
         WriteLine($"local stored = {_rootTable}.ListWrap__(value)");
@@ -619,14 +813,20 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListContainsHelper()
+    {
         WriteLine($"function {_rootTable}.ListContains__(list, value, equals)");
         _indent++;
         WriteLine($"return {_rootTable}.ListIndexOf__(list, value, equals) >= 0");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListInsertHelper()
+    {
         WriteLine($"function {_rootTable}.ListInsert__(list, index, value)");
         _indent++;
         WriteLine($"table.insert(list.items, index + 1, {_rootTable}.ListWrap__(value))");
@@ -634,7 +834,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListRemoveAtHelper()
+    {
         WriteLine($"function {_rootTable}.ListRemoveAt__(list, index)");
         _indent++;
         WriteLine("table.remove(list.items, index + 1)");
@@ -642,7 +845,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListRemoveHelper()
+    {
         WriteLine($"function {_rootTable}.ListRemove__(list, value, equals)");
         _indent++;
         WriteLine($"local index = {_rootTable}.ListIndexOf__(list, value, equals)");
@@ -656,7 +862,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListReverseHelper()
+    {
         WriteLine($"function {_rootTable}.ListReverse__(list)");
         _indent++;
         WriteLine("local items = list.items");
@@ -673,7 +882,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListIterateHelper()
+    {
         WriteLine($"function {_rootTable}.ListIterate__(list)");
         _indent++;
         WriteLine("local version = list.version");
@@ -689,7 +901,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListSortHelper()
+    {
         WriteLine($"function {_rootTable}.ListSort__(list, less)");
         _indent++;
         WriteLine("local compare = less or function(a, b) return a < b end");
@@ -712,7 +927,10 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
 
+    private void WriteListToArrayHelper()
+    {
         WriteLine($"function {_rootTable}.ListToArray__(list)");
         _indent++;
         WriteLine("local result = {}");
@@ -1893,17 +2111,371 @@ public sealed class LuaEmitter
     private static bool UsesStringConcat(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesStringConcat(m.Body));
 
-    private static bool UsesDictionaryHelpers(IRModule module)
-        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesDictionaryHelpers(m.Body));
-
-    private static bool UsesListHelpers(IRModule module)
-        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesListHelpers(m.Body));
-
     private static bool UsesCoroutineHelpers(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => m.IsCoroutine || BlockUsesCoroutineHelpers(m.Body));
 
     private static bool UsesTernaryHelper(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesTernaryHelper(m.Body));
+
+    private void CollectCollectionHelpers(IRModule module)
+    {
+        foreach (var method in module.Types.SelectMany(t => t.Methods))
+        {
+            CollectCollectionHelpers(method.Body);
+        }
+    }
+
+    private void AddCollectionHelperDependencies()
+    {
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+
+            if (_listHelpers.Contains(ListHelper.Wrap)) changed |= _listHelpers.Add(ListHelper.Nil);
+            if (_listHelpers.Contains(ListHelper.Unwrap)) changed |= _listHelpers.Add(ListHelper.Nil);
+            if (_listHelpers.Contains(ListHelper.New)) changed |= _listHelpers.Add(ListHelper.Wrap);
+            if (_listHelpers.Contains(ListHelper.Get)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.Set)) changed |= _listHelpers.Add(ListHelper.Wrap);
+            if (_listHelpers.Contains(ListHelper.Add)) changed |= _listHelpers.Add(ListHelper.Wrap);
+            if (_listHelpers.Contains(ListHelper.AddRange)) changed |= _listHelpers.Add(ListHelper.Wrap);
+            if (_listHelpers.Contains(ListHelper.IndexOf))
+            {
+                changed |= _listHelpers.Add(ListHelper.Wrap);
+                changed |= _listHelpers.Add(ListHelper.Unwrap);
+            }
+            if (_listHelpers.Contains(ListHelper.Contains)) changed |= _listHelpers.Add(ListHelper.IndexOf);
+            if (_listHelpers.Contains(ListHelper.Insert)) changed |= _listHelpers.Add(ListHelper.Wrap);
+            if (_listHelpers.Contains(ListHelper.Remove))
+            {
+                changed |= _listHelpers.Add(ListHelper.IndexOf);
+                changed |= _listHelpers.Add(ListHelper.RemoveAt);
+            }
+            if (_listHelpers.Contains(ListHelper.Iterate)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.Sort)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.ToArray)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+
+            if (_dictionaryHelpers.Contains(DictionaryHelper.Get)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.Set)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.Add)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.Values))
+            {
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+                changed |= _listHelpers.Add(ListHelper.New);
+                changed |= _listHelpers.Add(ListHelper.Wrap);
+            }
+            if (_dictionaryHelpers.Contains(DictionaryHelper.Iterate)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.Keys)) changed |= _listHelpers.Add(ListHelper.New);
+
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearGet))
+            {
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.LinearFind);
+            }
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearSet))
+            {
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.LinearFind);
+            }
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearAdd))
+            {
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.LinearFind);
+            }
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearRemove)) changed |= _dictionaryHelpers.Add(DictionaryHelper.LinearFind);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearContainsKey)) changed |= _dictionaryHelpers.Add(DictionaryHelper.LinearFind);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearValues))
+            {
+                changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+                changed |= _listHelpers.Add(ListHelper.New);
+                changed |= _listHelpers.Add(ListHelper.Wrap);
+            }
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearIterate)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
+            if (_dictionaryHelpers.Contains(DictionaryHelper.LinearKeys)) changed |= _listHelpers.Add(ListHelper.New);
+        }
+    }
+
+    private void CollectCollectionHelpers(IRBlock block)
+    {
+        foreach (var stmt in block.Statements)
+        {
+            CollectCollectionHelpers(stmt);
+        }
+    }
+
+    private void CollectCollectionHelpers(IRStmt stmt)
+    {
+        switch (stmt)
+        {
+            case IRBlock block:
+                CollectCollectionHelpers(block);
+                break;
+            case IRLocalDecl local when local.Initializer is not null:
+                CollectCollectionHelpers(local.Initializer);
+                break;
+            case IRMultiLocalDecl local:
+                foreach (var initializer in local.Initializers) CollectCollectionHelpers(initializer);
+                break;
+            case IRAssign assign:
+                CollectCollectionHelpers(assign.Target);
+                CollectCollectionHelpers(assign.Value);
+                break;
+            case IRMultiAssign assign:
+                foreach (var target in assign.Targets) CollectCollectionHelpers(target);
+                foreach (var value in assign.Values) CollectCollectionHelpers(value);
+                break;
+            case IRExprStmt exprStmt:
+                CollectCollectionHelpers(exprStmt.Expression);
+                break;
+            case IRBaseConstructorCall baseCall:
+                foreach (var argument in baseCall.Arguments) CollectCollectionHelpers(argument);
+                break;
+            case IRReturn ret when ret.Value is not null:
+                CollectCollectionHelpers(ret.Value);
+                break;
+            case IRMultiReturn ret:
+                foreach (var value in ret.Values) CollectCollectionHelpers(value);
+                break;
+            case IRIf iff:
+                CollectCollectionHelpers(iff.Condition);
+                CollectCollectionHelpers(iff.Then);
+                if (iff.Else is not null) CollectCollectionHelpers(iff.Else);
+                break;
+            case IRSwitch sw:
+                CollectCollectionHelpers(sw.Value);
+                foreach (var section in sw.Sections)
+                {
+                    foreach (var label in section.Labels) CollectCollectionHelpers(label);
+                    CollectCollectionHelpers(section.Body);
+                }
+                break;
+            case IRWhile wh:
+                CollectCollectionHelpers(wh.Condition);
+                CollectCollectionHelpers(wh.Body);
+                break;
+            case IRFor fr:
+                if (fr.Initializer is not null) CollectCollectionHelpers(fr.Initializer);
+                if (fr.Condition is not null) CollectCollectionHelpers(fr.Condition);
+                foreach (var incrementor in fr.Incrementors) CollectCollectionHelpers(incrementor);
+                CollectCollectionHelpers(fr.Body);
+                break;
+            case IRForEach fe:
+                if (fe.UseListIterator)
+                {
+                    _listHelpers.Add(ListHelper.Iterate);
+                }
+                CollectCollectionHelpers(fe.Collection);
+                CollectCollectionHelpers(fe.Body);
+                break;
+            case IRDictionaryForEach fe:
+                _dictionaryHelpers.Add(fe.UseLinearKeys ? DictionaryHelper.LinearIterate : DictionaryHelper.Iterate);
+                CollectCollectionHelpers(fe.Dictionary);
+                CollectCollectionHelpers(fe.Body);
+                break;
+            case IRTry tr:
+                CollectCollectionHelpers(tr.Try);
+                if (tr.Catch is not null) CollectCollectionHelpers(tr.Catch);
+                if (tr.Finally is not null) CollectCollectionHelpers(tr.Finally);
+                break;
+            case IRThrow th when th.Value is not null:
+                CollectCollectionHelpers(th.Value);
+                break;
+        }
+    }
+
+    private void CollectCollectionHelpers(IRExpr expr)
+    {
+        switch (expr)
+        {
+            case IRMemberAccess member:
+                CollectCollectionHelpers(member.Target);
+                break;
+            case IRElementAccess element:
+                CollectCollectionHelpers(element.Target);
+                CollectCollectionHelpers(element.Index);
+                break;
+            case IRLength length:
+                CollectCollectionHelpers(length.Target);
+                break;
+            case IRInvocation invocation:
+                CollectCollectionHelpers(invocation.Callee);
+                foreach (var argument in invocation.Arguments) CollectCollectionHelpers(argument);
+                break;
+            case IRFunctionExpression functionExpression:
+                CollectCollectionHelpers(functionExpression.Body);
+                break;
+            case IRArrayLiteral array:
+                foreach (var item in array.Items) CollectCollectionHelpers(item);
+                break;
+            case IRArrayNew arrayNew:
+                CollectCollectionHelpers(arrayNew.Size);
+                break;
+            case IRStringConcat concat:
+                foreach (var part in concat.Parts) CollectCollectionHelpers(part);
+                break;
+            case IRDictionaryNew dictionaryNew:
+                _dictionaryHelpers.Add(dictionaryNew.UseLinearKeys ? DictionaryHelper.LinearNew : DictionaryHelper.New);
+                if (dictionaryNew.KeyComparer is not null) CollectCollectionHelpers(dictionaryNew.KeyComparer);
+                break;
+            case IRDictionaryCount dictionaryCount:
+                _dictionaryHelpers.Add(dictionaryCount.UseLinearKeys ? DictionaryHelper.LinearCount : DictionaryHelper.Count);
+                CollectCollectionHelpers(dictionaryCount.Table);
+                break;
+            case IRDictionaryGet dictionaryGet:
+                _dictionaryHelpers.Add(dictionaryGet.UseLinearKeys ? DictionaryHelper.LinearGet : DictionaryHelper.Get);
+                CollectCollectionHelpers(dictionaryGet.Table);
+                CollectCollectionHelpers(dictionaryGet.Key);
+                break;
+            case IRDictionaryAdd dictionaryAdd:
+                _dictionaryHelpers.Add(dictionaryAdd.UseLinearKeys ? DictionaryHelper.LinearAdd : DictionaryHelper.Add);
+                CollectCollectionHelpers(dictionaryAdd.Table);
+                CollectCollectionHelpers(dictionaryAdd.Key);
+                CollectCollectionHelpers(dictionaryAdd.Value);
+                break;
+            case IRDictionarySet dictionarySet:
+                _dictionaryHelpers.Add(dictionarySet.UseLinearKeys ? DictionaryHelper.LinearSet : DictionaryHelper.Set);
+                CollectCollectionHelpers(dictionarySet.Table);
+                CollectCollectionHelpers(dictionarySet.Key);
+                CollectCollectionHelpers(dictionarySet.Value);
+                break;
+            case IRDictionaryRemove dictionaryRemove:
+                _dictionaryHelpers.Add(dictionaryRemove.UseLinearKeys ? DictionaryHelper.LinearRemove : DictionaryHelper.Remove);
+                CollectCollectionHelpers(dictionaryRemove.Table);
+                CollectCollectionHelpers(dictionaryRemove.Key);
+                break;
+            case IRDictionaryContainsKey dictionaryContainsKey:
+                _dictionaryHelpers.Add(dictionaryContainsKey.UseLinearKeys ? DictionaryHelper.LinearContainsKey : DictionaryHelper.ContainsKey);
+                CollectCollectionHelpers(dictionaryContainsKey.Table);
+                CollectCollectionHelpers(dictionaryContainsKey.Key);
+                break;
+            case IRDictionaryClear dictionaryClear:
+                _dictionaryHelpers.Add(dictionaryClear.UseLinearKeys ? DictionaryHelper.LinearClear : DictionaryHelper.Clear);
+                CollectCollectionHelpers(dictionaryClear.Table);
+                break;
+            case IRDictionaryKeys dictionaryKeys:
+                _dictionaryHelpers.Add(dictionaryKeys.UseLinearKeys ? DictionaryHelper.LinearKeys : DictionaryHelper.Keys);
+                CollectCollectionHelpers(dictionaryKeys.Table);
+                break;
+            case IRDictionaryValues dictionaryValues:
+                _dictionaryHelpers.Add(dictionaryValues.UseLinearKeys ? DictionaryHelper.LinearValues : DictionaryHelper.Values);
+                CollectCollectionHelpers(dictionaryValues.Table);
+                break;
+            case IRListNew listNew:
+                _listHelpers.Add(ListHelper.New);
+                foreach (var item in listNew.Items) CollectCollectionHelpers(item);
+                break;
+            case IRListCount listCount:
+                _listHelpers.Add(ListHelper.Count);
+                CollectCollectionHelpers(listCount.List);
+                break;
+            case IRListGet listGet:
+                _listHelpers.Add(ListHelper.Get);
+                CollectCollectionHelpers(listGet.List);
+                CollectCollectionHelpers(listGet.Index);
+                break;
+            case IRListSet listSet:
+                _listHelpers.Add(ListHelper.Set);
+                CollectCollectionHelpers(listSet.List);
+                CollectCollectionHelpers(listSet.Index);
+                CollectCollectionHelpers(listSet.Value);
+                break;
+            case IRListAdd listAdd:
+                _listHelpers.Add(ListHelper.Add);
+                CollectCollectionHelpers(listAdd.List);
+                CollectCollectionHelpers(listAdd.Value);
+                break;
+            case IRListAddRange listAddRange:
+                _listHelpers.Add(ListHelper.AddRange);
+                CollectCollectionHelpers(listAddRange.List);
+                CollectCollectionHelpers(listAddRange.Items);
+                break;
+            case IRListClear listClear:
+                _listHelpers.Add(ListHelper.Clear);
+                CollectCollectionHelpers(listClear.List);
+                break;
+            case IRListContains listContains:
+                _listHelpers.Add(ListHelper.Contains);
+                CollectCollectionHelpers(listContains.List);
+                CollectCollectionHelpers(listContains.Value);
+                if (listContains.EqualityComparer is not null) CollectCollectionHelpers(listContains.EqualityComparer);
+                break;
+            case IRListIndexOf listIndexOf:
+                _listHelpers.Add(ListHelper.IndexOf);
+                CollectCollectionHelpers(listIndexOf.List);
+                CollectCollectionHelpers(listIndexOf.Value);
+                if (listIndexOf.EqualityComparer is not null) CollectCollectionHelpers(listIndexOf.EqualityComparer);
+                break;
+            case IRListInsert listInsert:
+                _listHelpers.Add(ListHelper.Insert);
+                CollectCollectionHelpers(listInsert.List);
+                CollectCollectionHelpers(listInsert.Index);
+                CollectCollectionHelpers(listInsert.Value);
+                break;
+            case IRListRemove listRemove:
+                _listHelpers.Add(ListHelper.Remove);
+                CollectCollectionHelpers(listRemove.List);
+                CollectCollectionHelpers(listRemove.Value);
+                if (listRemove.EqualityComparer is not null) CollectCollectionHelpers(listRemove.EqualityComparer);
+                break;
+            case IRListRemoveAt listRemoveAt:
+                _listHelpers.Add(ListHelper.RemoveAt);
+                CollectCollectionHelpers(listRemoveAt.List);
+                CollectCollectionHelpers(listRemoveAt.Index);
+                break;
+            case IRListReverse listReverse:
+                _listHelpers.Add(ListHelper.Reverse);
+                CollectCollectionHelpers(listReverse.List);
+                break;
+            case IRListSort listSort:
+                _listHelpers.Add(ListHelper.Sort);
+                CollectCollectionHelpers(listSort.List);
+                if (listSort.Comparer is not null) CollectCollectionHelpers(listSort.Comparer);
+                break;
+            case IRListToArray listToArray:
+                _listHelpers.Add(ListHelper.ToArray);
+                CollectCollectionHelpers(listToArray.List);
+                break;
+            case IRLuaRequire luaRequire:
+                CollectCollectionHelpers(luaRequire.ModuleName);
+                break;
+            case IRLuaGlobal luaGlobal:
+                CollectCollectionHelpers(luaGlobal.Name);
+                break;
+            case IRLuaAccess luaAccess:
+                CollectCollectionHelpers(luaAccess.Target);
+                CollectCollectionHelpers(luaAccess.Name);
+                break;
+            case IRLuaMethodInvocation luaMethodInvocation:
+                CollectCollectionHelpers(luaMethodInvocation.Target);
+                CollectCollectionHelpers(luaMethodInvocation.Name);
+                foreach (var argument in luaMethodInvocation.Arguments) CollectCollectionHelpers(argument);
+                break;
+            case IRRuntimeInvocation runtimeInvocation:
+                foreach (var argument in runtimeInvocation.Arguments) CollectCollectionHelpers(argument);
+                break;
+            case IRTableLiteralNew tableLiteralNew:
+                foreach (var (_, value) in tableLiteralNew.Fields) CollectCollectionHelpers(value);
+                break;
+            case IRBinary binary:
+                CollectCollectionHelpers(binary.Left);
+                CollectCollectionHelpers(binary.Right);
+                break;
+            case IRUnary unary:
+                CollectCollectionHelpers(unary.Operand);
+                break;
+            case IRTernary ternary:
+                CollectCollectionHelpers(ternary.Condition);
+                CollectCollectionHelpers(ternary.WhenTrue);
+                CollectCollectionHelpers(ternary.WhenFalse);
+                break;
+            case IRIs isExpr:
+                CollectCollectionHelpers(isExpr.Value);
+                break;
+            case IRAs asExpr:
+                CollectCollectionHelpers(asExpr.Value);
+                break;
+        }
+    }
 
     private static bool BlockUsesTernaryHelper(IRBlock block)
         => block.Statements.Any(StmtUsesTernaryHelper);
@@ -1991,12 +2563,6 @@ public sealed class LuaEmitter
     private static bool BlockUsesStringConcat(IRBlock block)
         => block.Statements.Any(StmtUsesStringConcat);
 
-    private static bool BlockUsesDictionaryHelpers(IRBlock block)
-        => block.Statements.Any(StmtUsesDictionaryHelpers);
-
-    private static bool BlockUsesListHelpers(IRBlock block)
-        => block.Statements.Any(StmtUsesListHelpers);
-
     private static bool BlockUsesCoroutineHelpers(IRBlock block)
         => block.Statements.Any(StmtUsesCoroutineHelpers);
 
@@ -2025,62 +2591,6 @@ public sealed class LuaEmitter
                 || (tr.Catch is not null && BlockUsesTypeChecks(tr.Catch))
                 || (tr.Finally is not null && BlockUsesTypeChecks(tr.Finally)),
             IRThrow th => th.Value is not null && ExprUsesTypeChecks(th.Value),
-            _ => false,
-        };
-
-    private static bool StmtUsesDictionaryHelpers(IRStmt stmt)
-        => stmt switch
-        {
-            IRBlock block => BlockUsesDictionaryHelpers(block),
-            IRLocalDecl local => local.Initializer is not null && ExprUsesDictionaryHelpers(local.Initializer),
-            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesDictionaryHelpers),
-            IRAssign assign => ExprUsesDictionaryHelpers(assign.Target) || ExprUsesDictionaryHelpers(assign.Value),
-            IRMultiAssign assign => assign.Targets.Any(ExprUsesDictionaryHelpers) || assign.Values.Any(ExprUsesDictionaryHelpers),
-            IRExprStmt exprStmt => ExprUsesDictionaryHelpers(exprStmt.Expression),
-            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesDictionaryHelpers),
-            IRReturn ret => ret.Value is not null && ExprUsesDictionaryHelpers(ret.Value),
-            IRMultiReturn ret => ret.Values.Any(ExprUsesDictionaryHelpers),
-            IRIf iff => ExprUsesDictionaryHelpers(iff.Condition) || BlockUsesDictionaryHelpers(iff.Then) || (iff.Else is not null && BlockUsesDictionaryHelpers(iff.Else)),
-            IRSwitch sw => ExprUsesDictionaryHelpers(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesDictionaryHelpers) || BlockUsesDictionaryHelpers(section.Body)),
-            IRWhile wh => ExprUsesDictionaryHelpers(wh.Condition) || BlockUsesDictionaryHelpers(wh.Body),
-            IRFor fr => (fr.Initializer is not null && StmtUsesDictionaryHelpers(fr.Initializer))
-                || (fr.Condition is not null && ExprUsesDictionaryHelpers(fr.Condition))
-                || fr.Incrementors.Any(StmtUsesDictionaryHelpers)
-                || BlockUsesDictionaryHelpers(fr.Body),
-            IRForEach fe => ExprUsesDictionaryHelpers(fe.Collection) || BlockUsesDictionaryHelpers(fe.Body),
-            IRDictionaryForEach => true,
-            IRTry tr => BlockUsesDictionaryHelpers(tr.Try)
-                || (tr.Catch is not null && BlockUsesDictionaryHelpers(tr.Catch))
-                || (tr.Finally is not null && BlockUsesDictionaryHelpers(tr.Finally)),
-            IRThrow th => th.Value is not null && ExprUsesDictionaryHelpers(th.Value),
-            _ => false,
-        };
-
-    private static bool StmtUsesListHelpers(IRStmt stmt)
-        => stmt switch
-        {
-            IRBlock block => BlockUsesListHelpers(block),
-            IRLocalDecl local => local.Initializer is not null && ExprUsesListHelpers(local.Initializer),
-            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesListHelpers),
-            IRAssign assign => ExprUsesListHelpers(assign.Target) || ExprUsesListHelpers(assign.Value),
-            IRMultiAssign assign => assign.Targets.Any(ExprUsesListHelpers) || assign.Values.Any(ExprUsesListHelpers),
-            IRExprStmt exprStmt => ExprUsesListHelpers(exprStmt.Expression),
-            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesListHelpers),
-            IRReturn ret => ret.Value is not null && ExprUsesListHelpers(ret.Value),
-            IRMultiReturn ret => ret.Values.Any(ExprUsesListHelpers),
-            IRIf iff => ExprUsesListHelpers(iff.Condition) || BlockUsesListHelpers(iff.Then) || (iff.Else is not null && BlockUsesListHelpers(iff.Else)),
-            IRSwitch sw => ExprUsesListHelpers(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesListHelpers) || BlockUsesListHelpers(section.Body)),
-            IRWhile wh => ExprUsesListHelpers(wh.Condition) || BlockUsesListHelpers(wh.Body),
-            IRFor fr => (fr.Initializer is not null && StmtUsesListHelpers(fr.Initializer))
-                || (fr.Condition is not null && ExprUsesListHelpers(fr.Condition))
-                || fr.Incrementors.Any(StmtUsesListHelpers)
-                || BlockUsesListHelpers(fr.Body),
-            IRForEach fe => fe.UseListIterator || ExprUsesListHelpers(fe.Collection) || BlockUsesListHelpers(fe.Body),
-            IRDictionaryForEach fe => ExprUsesListHelpers(fe.Dictionary) || BlockUsesListHelpers(fe.Body),
-            IRTry tr => BlockUsesListHelpers(tr.Try)
-                || (tr.Catch is not null && BlockUsesListHelpers(tr.Catch))
-                || (tr.Finally is not null && BlockUsesListHelpers(tr.Finally)),
-            IRThrow th => th.Value is not null && ExprUsesListHelpers(th.Value),
             _ => false,
         };
 
@@ -2234,81 +2744,6 @@ public sealed class LuaEmitter
             IRUnary unary => ExprUsesStringConcat(unary.Operand),
             IRIs isExpr => ExprUsesStringConcat(isExpr.Value),
             IRAs asExpr => ExprUsesStringConcat(asExpr.Value),
-            _ => false,
-        };
-
-    private static bool ExprUsesDictionaryHelpers(IRExpr expr)
-        => expr switch
-        {
-            IRDictionaryCount or IRDictionaryGet or IRDictionaryAdd or IRDictionarySet or IRDictionaryRemove or IRDictionaryContainsKey or IRDictionaryClear or IRDictionaryKeys or IRDictionaryValues => true,
-            IRDictionaryNew => true,
-            IRListNew listNew => listNew.Items.Any(ExprUsesDictionaryHelpers),
-            IRListCount listCount => ExprUsesDictionaryHelpers(listCount.List),
-            IRListGet listGet => ExprUsesDictionaryHelpers(listGet.List) || ExprUsesDictionaryHelpers(listGet.Index),
-            IRListSet listSet => ExprUsesDictionaryHelpers(listSet.List) || ExprUsesDictionaryHelpers(listSet.Index) || ExprUsesDictionaryHelpers(listSet.Value),
-            IRListAdd listAdd => ExprUsesDictionaryHelpers(listAdd.List) || ExprUsesDictionaryHelpers(listAdd.Value),
-            IRListAddRange listAddRange => ExprUsesDictionaryHelpers(listAddRange.List) || ExprUsesDictionaryHelpers(listAddRange.Items),
-            IRListClear listClear => ExprUsesDictionaryHelpers(listClear.List),
-            IRListContains listContains => ExprUsesDictionaryHelpers(listContains.List) || ExprUsesDictionaryHelpers(listContains.Value) || (listContains.EqualityComparer is not null && ExprUsesDictionaryHelpers(listContains.EqualityComparer)),
-            IRListIndexOf listIndexOf => ExprUsesDictionaryHelpers(listIndexOf.List) || ExprUsesDictionaryHelpers(listIndexOf.Value) || (listIndexOf.EqualityComparer is not null && ExprUsesDictionaryHelpers(listIndexOf.EqualityComparer)),
-            IRListInsert listInsert => ExprUsesDictionaryHelpers(listInsert.List) || ExprUsesDictionaryHelpers(listInsert.Index) || ExprUsesDictionaryHelpers(listInsert.Value),
-            IRListRemove listRemove => ExprUsesDictionaryHelpers(listRemove.List) || ExprUsesDictionaryHelpers(listRemove.Value) || (listRemove.EqualityComparer is not null && ExprUsesDictionaryHelpers(listRemove.EqualityComparer)),
-            IRListRemoveAt listRemoveAt => ExprUsesDictionaryHelpers(listRemoveAt.List) || ExprUsesDictionaryHelpers(listRemoveAt.Index),
-            IRListReverse listReverse => ExprUsesDictionaryHelpers(listReverse.List),
-            IRListSort listSort => ExprUsesDictionaryHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesDictionaryHelpers(listSort.Comparer)),
-            IRListToArray listToArray => ExprUsesDictionaryHelpers(listToArray.List),
-            IRLuaRequire luaRequire => ExprUsesDictionaryHelpers(luaRequire.ModuleName),
-            IRLuaGlobal luaGlobal => ExprUsesDictionaryHelpers(luaGlobal.Name),
-            IRLuaAccess luaAccess => ExprUsesDictionaryHelpers(luaAccess.Target) || ExprUsesDictionaryHelpers(luaAccess.Name),
-            IRLuaMethodInvocation luaMethodInvocation => ExprUsesDictionaryHelpers(luaMethodInvocation.Target) || ExprUsesDictionaryHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesDictionaryHelpers),
-            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesDictionaryHelpers),
-            IRMemberAccess member => ExprUsesDictionaryHelpers(member.Target),
-            IRElementAccess element => ExprUsesDictionaryHelpers(element.Target) || ExprUsesDictionaryHelpers(element.Index),
-            IRLength length => ExprUsesDictionaryHelpers(length.Target),
-            IRInvocation invocation => ExprUsesDictionaryHelpers(invocation.Callee) || invocation.Arguments.Any(ExprUsesDictionaryHelpers),
-            IRFunctionExpression functionExpression => BlockUsesDictionaryHelpers(functionExpression.Body),
-            IRArrayLiteral array => array.Items.Any(ExprUsesDictionaryHelpers),
-            IRArrayNew arrayNew => ExprUsesDictionaryHelpers(arrayNew.Size),
-            IRStringConcat concat => concat.Parts.Any(ExprUsesDictionaryHelpers),
-            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesDictionaryHelpers(f.Value)),
-            IRBinary binary => ExprUsesDictionaryHelpers(binary.Left) || ExprUsesDictionaryHelpers(binary.Right),
-            IRUnary unary => ExprUsesDictionaryHelpers(unary.Operand),
-            IRIs isExpr => ExprUsesDictionaryHelpers(isExpr.Value),
-            IRAs asExpr => ExprUsesDictionaryHelpers(asExpr.Value),
-            _ => false,
-        };
-
-    private static bool ExprUsesListHelpers(IRExpr expr)
-        => expr switch
-        {
-            IRListNew or IRListCount or IRListGet or IRListSet or IRListAdd or IRListAddRange or IRListClear or IRListContains or IRListIndexOf or IRListInsert or IRListRemove or IRListRemoveAt or IRListReverse or IRListSort or IRListToArray => true,
-            IRMemberAccess member => ExprUsesListHelpers(member.Target),
-            IRElementAccess element => ExprUsesListHelpers(element.Target) || ExprUsesListHelpers(element.Index),
-            IRLength length => ExprUsesListHelpers(length.Target),
-            IRInvocation invocation => ExprUsesListHelpers(invocation.Callee) || invocation.Arguments.Any(ExprUsesListHelpers),
-            IRFunctionExpression functionExpression => BlockUsesListHelpers(functionExpression.Body),
-            IRArrayLiteral array => array.Items.Any(ExprUsesListHelpers),
-            IRArrayNew arrayNew => ExprUsesListHelpers(arrayNew.Size),
-            IRStringConcat concat => concat.Parts.Any(ExprUsesListHelpers),
-            IRDictionaryCount dictionaryCount => ExprUsesListHelpers(dictionaryCount.Table),
-            IRDictionaryGet dictionaryGet => ExprUsesListHelpers(dictionaryGet.Table) || ExprUsesListHelpers(dictionaryGet.Key),
-            IRDictionaryAdd dictionaryAdd => ExprUsesListHelpers(dictionaryAdd.Table) || ExprUsesListHelpers(dictionaryAdd.Key) || ExprUsesListHelpers(dictionaryAdd.Value),
-            IRDictionarySet dictionarySet => ExprUsesListHelpers(dictionarySet.Table) || ExprUsesListHelpers(dictionarySet.Key) || ExprUsesListHelpers(dictionarySet.Value),
-            IRDictionaryRemove dictionaryRemove => ExprUsesListHelpers(dictionaryRemove.Table) || ExprUsesListHelpers(dictionaryRemove.Key),
-            IRDictionaryContainsKey dictionaryContainsKey => ExprUsesListHelpers(dictionaryContainsKey.Table) || ExprUsesListHelpers(dictionaryContainsKey.Key),
-            IRDictionaryClear dictionaryClear => ExprUsesListHelpers(dictionaryClear.Table),
-            IRDictionaryKeys => true,
-            IRDictionaryValues => true,
-            IRLuaRequire luaRequire => ExprUsesListHelpers(luaRequire.ModuleName),
-            IRLuaGlobal luaGlobal => ExprUsesListHelpers(luaGlobal.Name),
-            IRLuaAccess luaAccess => ExprUsesListHelpers(luaAccess.Target) || ExprUsesListHelpers(luaAccess.Name),
-            IRLuaMethodInvocation luaMethodInvocation => ExprUsesListHelpers(luaMethodInvocation.Target) || ExprUsesListHelpers(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesListHelpers),
-            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesListHelpers),
-            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesListHelpers(f.Value)),
-            IRBinary binary => ExprUsesListHelpers(binary.Left) || ExprUsesListHelpers(binary.Right),
-            IRUnary unary => ExprUsesListHelpers(unary.Operand),
-            IRIs isExpr => ExprUsesListHelpers(isExpr.Value),
-            IRAs asExpr => ExprUsesListHelpers(asExpr.Value),
             _ => false,
         };
 

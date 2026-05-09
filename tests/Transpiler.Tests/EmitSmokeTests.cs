@@ -1330,6 +1330,9 @@ public class EmitSmokeTests
         Assert.Contains("in SF__.DictLinearIterate__(dict", lua);
         Assert.Contains("SF__.DictLinearRemove__(cells", lua);
         Assert.Contains("SF__.DictLinearClear__(cells)", lua);
+        Assert.DoesNotContain("function SF__.DictNew__()", lua);
+        Assert.DoesNotContain("function SF__.DictAdd__(dict, key, value)", lua);
+        Assert.DoesNotContain("function SF__.DictSet__(dict, key, value)", lua);
         Assert.DoesNotContain("SF__.DictAdd__(cells", lua);
         Assert.DoesNotContain("SF__.DictSet__(cells", lua);
         Assert.DoesNotContain("GetHashCode", lua);
@@ -1547,6 +1550,124 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task List_usage_emits_only_required_helpers()
+    {
+        var src = """
+            using System.Collections.Generic;
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var values = new List<int>();
+                    values.Add(1);
+                    return values.Count;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "MinimalListHelpers.cs");
+
+        Assert.Contains("SF__.ListNil__ = SF__.ListNil__ or {}", lua);
+        Assert.Contains("function SF__.ListWrap__(value)", lua);
+        Assert.Contains("function SF__.ListNew__(items)", lua);
+        Assert.Contains("function SF__.ListAdd__(list, value)", lua);
+        Assert.Contains("function SF__.ListCount__(list)", lua);
+        Assert.DoesNotContain("function SF__.ListUnwrap__(value)", lua);
+        Assert.DoesNotContain("function SF__.ListGet__(list, index)", lua);
+        Assert.DoesNotContain("function SF__.ListSort__(list, less)", lua);
+        Assert.DoesNotContain("function SF__.ListRemove__(list, value, equals)", lua);
+        Assert.DoesNotContain("function SF__.ListIterate__(list)", lua);
+        Assert.DoesNotContain("function SF__.ListToArray__(list)", lua);
+    }
+
+    [Fact]
+    public async Task Dictionary_usage_emits_only_required_helpers()
+    {
+        var src = """
+            using SFLib;
+
+            namespace SFLib
+            {
+                public class Dictionary<K, V>
+                {
+                    public int Count => 0;
+                    public void Add(K key, V value) { }
+                    public bool ContainsKey(K key) { return false; }
+                }
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var table = new Dictionary<string, int>();
+                    table.Add("a", 1);
+                    var hasA = table.ContainsKey("a");
+                    return table.Count;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "MinimalDictionaryHelpers.cs");
+
+        Assert.Contains("SF__.DictNil__ = SF__.DictNil__ or {}", lua);
+        Assert.Contains("function SF__.DictNew__()", lua);
+        Assert.Contains("function SF__.DictAdd__(dict, key, value)", lua);
+        Assert.Contains("function SF__.DictContainsKey__(dict, key)", lua);
+        Assert.Contains("function SF__.DictCount__(dict)", lua);
+        Assert.DoesNotContain("function SF__.DictGet__(dict, key)", lua);
+        Assert.DoesNotContain("function SF__.DictRemove__(dict, key)", lua);
+        Assert.DoesNotContain("function SF__.DictKeys__(dict)", lua);
+        Assert.DoesNotContain("function SF__.DictValues__(dict)", lua);
+        Assert.DoesNotContain("function SF__.DictIterate__(dict)", lua);
+        Assert.DoesNotContain("function SF__.DictLinear", lua);
+        Assert.DoesNotContain("function SF__.List", lua);
+    }
+
+    [Fact]
+    public async Task Dictionary_keys_emit_minimal_list_dependencies()
+    {
+        var src = """
+            using SFLib;
+
+            namespace SFLib
+            {
+                public class List<T>
+                {
+                }
+
+                public class Dictionary<K, V>
+                {
+                    public List<K> Keys => default!;
+                }
+            }
+
+            public static class Demo
+            {
+                public static List<string> Run()
+                {
+                    var table = new Dictionary<string, int>();
+                    return table.Keys;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "DictionaryKeysListDependencies.cs");
+
+        Assert.Contains("function SF__.DictNew__()", lua);
+        Assert.Contains("function SF__.DictKeys__(dict)", lua);
+        Assert.Contains("function SF__.ListNew__(items)", lua);
+        Assert.Contains("function SF__.ListWrap__(value)", lua);
+        Assert.Contains("SF__.ListNil__ = SF__.ListNil__ or {}", lua);
+        Assert.DoesNotContain("function SF__.DictValues__(dict)", lua);
+        Assert.DoesNotContain("function SF__.DictIterate__(dict)", lua);
+        Assert.DoesNotContain("function SF__.ListAdd__(list, value)", lua);
+        Assert.DoesNotContain("function SF__.ListGet__(list, index)", lua);
+        Assert.DoesNotContain("function SF__.ListIterate__(list)", lua);
+    }
+
+    [Fact]
     public async Task SFLib_collections_emit_stub_backed_lua_helpers()
     {
         var src = """
@@ -1624,6 +1745,10 @@ public class EmitSmokeTests
                     values.Reverse();
                     values.Sort();
                     values.Sort((a, b) => a > b);
+                    foreach (var item in values)
+                    {
+                        index += item;
+                    }
                     var array = values.ToArray();
                     values.Clear();
 
