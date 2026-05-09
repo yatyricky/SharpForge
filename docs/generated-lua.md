@@ -65,7 +65,7 @@ Implemented lowering includes:
 - exception MVP with one `catch` and `finally`
 - interfaces, `is`, and `as`
 - arrays and minimal `List<T>`/dictionary helpers
-- struct field flattening and multi-return lowering; see [Struct.md](Struct.md)
+- struct field flattening and multi-return lowering; see [struct](struct.md)
 - computed properties, indexers, delegates, and field-like events
 - synchronous `await` and simple `yield return` materialization
 - custom root table names

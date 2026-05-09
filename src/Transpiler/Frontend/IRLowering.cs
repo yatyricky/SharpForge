@@ -1154,6 +1154,11 @@ public sealed class IRLowering
                     return collectionLength;
                 }
 
+                if (TryLowerDictionaryKeysOrValuesAccess(ma, model) is { } dictionaryKeysOrValues)
+                {
+                    return dictionaryKeysOrValues;
+                }
+
                 if (TryLowerPropertyGet(ma, model) is { } propertyGet)
                 {
                     return propertyGet;
@@ -1290,14 +1295,74 @@ public sealed class IRLowering
             return new IRListAdd(LowerExpr(addAccess.Expression, model), args[0]);
         }
 
+        if (symbol is { Name: "AddRange", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax addRangeAccess && args.Count == 1)
+        {
+            return new IRListAddRange(LowerExpr(addRangeAccess.Expression, model), args[0]);
+        }
+
+        if (symbol is { Name: "Clear", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax clearAccess && args.Count == 0)
+        {
+            return new IRListClear(LowerExpr(clearAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Contains", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax containsAccess && args.Count == 1)
+        {
+            return new IRListContains(LowerExpr(containsAccess.Expression, model), args[0]);
+        }
+
+        if (symbol is { Name: "IndexOf", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax indexOfAccess && args.Count == 1)
+        {
+            return new IRListIndexOf(LowerExpr(indexOfAccess.Expression, model), args[0]);
+        }
+
+        if (symbol is { Name: "Insert", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax insertAccess && args.Count == 2)
+        {
+            return new IRListInsert(LowerExpr(insertAccess.Expression, model), args[0], args[1]);
+        }
+
+        if (symbol is { Name: "Remove", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax removeAccess && args.Count == 1)
+        {
+            return new IRListRemove(LowerExpr(removeAccess.Expression, model), args[0]);
+        }
+
+        if (symbol is { Name: "RemoveAt", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax removeAtAccess && args.Count == 1)
+        {
+            return new IRListRemoveAt(LowerExpr(removeAtAccess.Expression, model), args[0]);
+        }
+
+        if (symbol is { Name: "Reverse", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax reverseAccess && args.Count == 0)
+        {
+            return new IRListReverse(LowerExpr(reverseAccess.Expression, model));
+        }
+
         if (symbol is { Name: "Sort", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax sortAccess && args.Count <= 1)
         {
             return new IRListSort(LowerExpr(sortAccess.Expression, model), args.Count == 0 ? null : args[0]);
         }
 
-        if (symbol is { Name: "Add" or "Set", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictSetAccess && args.Count == 2)
+        if (symbol is { Name: "ToArray", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax toArrayAccess && args.Count == 0)
+        {
+            return new IRListToArray(LowerExpr(toArrayAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Add", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictAddAccess && args.Count == 2)
+        {
+            return new IRDictionaryAdd(LowerExpr(dictAddAccess.Expression, model), args[0], args[1]);
+        }
+
+        if (symbol is { Name: "Set", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictSetAccess && args.Count == 2)
         {
             return new IRDictionarySet(LowerExpr(dictSetAccess.Expression, model), args[0], args[1]);
+        }
+
+        if (symbol is { Name: "Clear", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictClearAccess && args.Count == 0)
+        {
+            return new IRDictionaryClear(LowerExpr(dictClearAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "ContainsKey", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictContainsKeyAccess && args.Count == 1)
+        {
+            return new IRDictionaryContainsKey(LowerExpr(dictContainsKeyAccess.Expression, model), args[0]);
         }
 
         if (symbol is { Name: "Remove", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictRemoveAccess && args.Count == 1)
@@ -2113,6 +2178,11 @@ public sealed class IRLowering
 
         if (IsDictionaryType(type))
         {
+            if (HasFlattenableStructDictionaryKey(type))
+            {
+                AddDiagnostic(obj.GetLocation(), "struct dictionary keys are not supported yet; SharpForge will use typed Equals(T) linear lookup instead of hashes in a future implementation");
+            }
+
             return new IRDictionaryNew();
         }
 
@@ -2218,6 +2288,20 @@ public sealed class IRLowering
         return null;
     }
 
+    private IRExpr? TryLowerDictionaryKeysOrValuesAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Keys" or "Values" } property
+            || !IsDictionaryType(model.GetTypeInfo(access.Expression).Type))
+        {
+            return null;
+        }
+
+        var table = LowerExpr(access.Expression, model);
+        return property.Name == "Keys"
+            ? new IRDictionaryKeys(table)
+            : new IRDictionaryValues(table);
+    }
+
     private IRExpr? TryLowerLuaObjectMemberAccess(MemberAccessExpressionSyntax access, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(access).Symbol;
@@ -2250,6 +2334,11 @@ public sealed class IRLowering
     private static bool IsDictionaryType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "Dictionary", ContainingNamespace: { } ns }
            && IsSharpLibNamespace(ns);
+
+    private bool HasFlattenableStructDictionaryKey(ITypeSymbol? type)
+        => type is INamedTypeSymbol { TypeArguments.Length: > 0 } namedType
+           && IsDictionaryType(namedType)
+           && IsFlattenableStructType(namedType.TypeArguments[0]);
 
     private static bool IsSharpLibKeyValueType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "KeyValue", ContainingNamespace: { } ns }
@@ -3101,6 +3190,11 @@ public sealed class IRLowering
                 CollectTypeReferences(dictionaryGet.Table, dependencies);
                 CollectTypeReferences(dictionaryGet.Key, dependencies);
                 break;
+            case IRDictionaryAdd dictionaryAdd:
+                CollectTypeReferences(dictionaryAdd.Table, dependencies);
+                CollectTypeReferences(dictionaryAdd.Key, dependencies);
+                CollectTypeReferences(dictionaryAdd.Value, dependencies);
+                break;
             case IRDictionarySet dictionarySet:
                 CollectTypeReferences(dictionarySet.Table, dependencies);
                 CollectTypeReferences(dictionarySet.Key, dependencies);
@@ -3109,6 +3203,19 @@ public sealed class IRLowering
             case IRDictionaryRemove dictionaryRemove:
                 CollectTypeReferences(dictionaryRemove.Table, dependencies);
                 CollectTypeReferences(dictionaryRemove.Key, dependencies);
+                break;
+            case IRDictionaryContainsKey dictionaryContainsKey:
+                CollectTypeReferences(dictionaryContainsKey.Table, dependencies);
+                CollectTypeReferences(dictionaryContainsKey.Key, dependencies);
+                break;
+            case IRDictionaryClear dictionaryClear:
+                CollectTypeReferences(dictionaryClear.Table, dependencies);
+                break;
+            case IRDictionaryKeys dictionaryKeys:
+                CollectTypeReferences(dictionaryKeys.Table, dependencies);
+                break;
+            case IRDictionaryValues dictionaryValues:
+                CollectTypeReferences(dictionaryValues.Table, dependencies);
                 break;
             case IRListNew listNew:
                 foreach (var item in listNew.Items)
@@ -3132,12 +3239,46 @@ public sealed class IRLowering
                 CollectTypeReferences(listAdd.List, dependencies);
                 CollectTypeReferences(listAdd.Value, dependencies);
                 break;
+            case IRListAddRange listAddRange:
+                CollectTypeReferences(listAddRange.List, dependencies);
+                CollectTypeReferences(listAddRange.Items, dependencies);
+                break;
+            case IRListClear listClear:
+                CollectTypeReferences(listClear.List, dependencies);
+                break;
+            case IRListContains listContains:
+                CollectTypeReferences(listContains.List, dependencies);
+                CollectTypeReferences(listContains.Value, dependencies);
+                break;
+            case IRListIndexOf listIndexOf:
+                CollectTypeReferences(listIndexOf.List, dependencies);
+                CollectTypeReferences(listIndexOf.Value, dependencies);
+                break;
+            case IRListInsert listInsert:
+                CollectTypeReferences(listInsert.List, dependencies);
+                CollectTypeReferences(listInsert.Index, dependencies);
+                CollectTypeReferences(listInsert.Value, dependencies);
+                break;
+            case IRListRemove listRemove:
+                CollectTypeReferences(listRemove.List, dependencies);
+                CollectTypeReferences(listRemove.Value, dependencies);
+                break;
+            case IRListRemoveAt listRemoveAt:
+                CollectTypeReferences(listRemoveAt.List, dependencies);
+                CollectTypeReferences(listRemoveAt.Index, dependencies);
+                break;
+            case IRListReverse listReverse:
+                CollectTypeReferences(listReverse.List, dependencies);
+                break;
             case IRListSort listSort:
                 CollectTypeReferences(listSort.List, dependencies);
                 if (listSort.Comparer is not null)
                 {
                     CollectTypeReferences(listSort.Comparer, dependencies);
                 }
+                break;
+            case IRListToArray listToArray:
+                CollectTypeReferences(listToArray.List, dependencies);
                 break;
             case IRLuaRequire luaRequire:
                 CollectTypeReferences(luaRequire.ModuleName, dependencies);

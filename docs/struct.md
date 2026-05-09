@@ -1,4 +1,4 @@
-# Struct Lowering
+﻿# Struct Lowering
 
 This page documents the current `struct` lowering strategy in `sf-transpile`.
 
@@ -301,7 +301,7 @@ local result__x, result__y = SF__.Demo.Make()
 
 #### Why Not Interleaved Array
 
-An alternative is a single flat table with fields interleaved by stride (`{x0, y0, x1, y1, …}`). This was rejected for the following reasons, ordered by the [lowering feature design priorities](.github/instructions/lowering-feature-design.instructions.md):
+An alternative is a single flat table with fields interleaved by stride (`{x0, y0, x1, y1, …}`). This was rejected for the following reasons, ordered by the [lowering feature design priorities](../.github/instructions/lowering-feature-design.instructions.md):
 
 | Priority | Interleaved array | Struct-of-arrays |
 |---|---|---|
@@ -588,7 +588,7 @@ Problems with string hashing:
 
 Neither is trivial. The dual-storage approach mirrors the List SoA design and could reuse the same flattening infrastructure, but the iteration path (`IRDictionaryForEach`) would need to be struct-aware.
 
-**Diagnostic for v1.** Given the complexity and the established constraint that structs carry no runtime type metadata (see [TypeCasting.md](TypeCasting.md)), **struct-keyed dictionaries are not supported in the initial implementation**. The transpiler should emit a diagnostic when it detects a `Dictionary<Struct, …>` instantiation.
+**Diagnostic for v1.** Given the complexity and the established constraint that structs carry no runtime type metadata (see [type-casting](type-casting.md)), **struct-keyed dictionaries are not supported in the initial implementation**. The transpiler should emit a diagnostic when it detects a `Dictionary<Struct, …>` instantiation.
 
 Users can work around this by using a primitive key and managing the struct separately:
 

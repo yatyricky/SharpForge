@@ -993,6 +993,49 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Struct_dictionary_keys_are_diagnostic_until_equality_storage_exists()
+    {
+        var src = """
+            namespace SFLib
+            {
+                public class Dictionary<K, V>
+                {
+                }
+            }
+
+            public struct Cell
+            {
+                public int X;
+                public int Y;
+
+                public bool Equals(Cell other)
+                {
+                    return X == other.X && Y == other.Y;
+                }
+            }
+
+            public static class Demo
+            {
+                public static void Run()
+                {
+                    var cells = new SFLib.Dictionary<Cell, int>();
+                }
+            }
+            """;
+
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var file = Path.Combine(dir.FullName, "StructDictionaryKeys.cs");
+        await File.WriteAllTextAsync(file, src);
+
+        var compilation = await new RoslynFrontend(Array.Empty<string>())
+            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
+        var module = new IRLowering().Lower(compilation, CancellationToken.None);
+
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct dictionary keys are not supported yet", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("typed Equals(T) linear lookup instead of hashes", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Struct_interfaces_are_not_emitted_as_runtime_metadata()
     {
         var src = """
@@ -1116,7 +1159,18 @@ public class EmitSmokeTests
                     public int Count => 0;
                     public T this[int index] { get => default!; set { } }
                     public void Add(T item) { }
+                    public void AddRange(List<T> items) { }
+                    public void AddRange(T[] items) { }
+                    public void Clear() { }
+                    public bool Contains(T item) { return false; }
+                    public int IndexOf(T item) { return -1; }
+                    public void Insert(int index, T item) { }
+                    public bool Remove(T item) { return false; }
+                    public void RemoveAt(int index) { }
+                    public void Reverse() { }
                     public void Sort() { }
+                    public void Sort(global::System.Func<T, T, bool> less) { }
+                    public T[] ToArray() { return default!; }
                     public Enumerator GetEnumerator() => default!;
                     public class Enumerator
                     {
@@ -1128,8 +1182,12 @@ public class EmitSmokeTests
                 public class Dictionary<K, V>
                 {
                     public int Count => 0;
+                    public List<K> Keys => default!;
+                    public List<V> Values => default!;
                     public V this[K key] { get => default!; set { } }
                     public void Add(K key, V value) { }
+                    public void Clear() { }
+                    public bool ContainsKey(K key) { return false; }
                     public V? Get(K key) { return default; }
                     public void Set(K key, V value) { }
                     public bool Remove(K key) { return false; }
@@ -1154,21 +1212,38 @@ public class EmitSmokeTests
                 {
                     var values = new List<int>();
                     values.Add(1);
+                    values.Insert(1, 3);
+                    var hasThree = values.Contains(3);
+                    var index = values.IndexOf(3);
+                    values.RemoveAt(0);
+                    var removed = values.Remove(3);
+                    values.AddRange(new[] { 4, 5 });
+                    var more = new List<int>();
+                    more.Add(6);
+                    values.AddRange(more);
+                    values.Reverse();
                     values.Sort();
+                    values.Sort((a, b) => a > b);
+                    var array = values.ToArray();
+                    values.Clear();
 
                     var table = new Dictionary<string, int>();
                     table["key"] = 1;
                     table.Add("k2", 2);
+                    var hasKey = table.ContainsKey("key");
+                    var keys = table.Keys;
+                    var dictValues = table.Values;
                     var value = table["key"];
                     var nullable = new Dictionary<string, int?>();
                     nullable["gone"] = null;
                     nullable.Remove("gone");
+                    table.Clear();
                     foreach (var kv in table)
                     {
                         var text = kv.Key + " = " + kv.Value;
                     }
 
-                    return value + values[0];
+                    return value + array[0] + index;
                 }
             }
             """;
@@ -1177,35 +1252,73 @@ public class EmitSmokeTests
 
         Assert.Contains("function SF__.DictNew__()", lua);
         Assert.Contains("function SF__.DictGet__(dict, key)", lua);
+        Assert.Contains("function SF__.DictAdd__(dict, key, value)", lua);
         Assert.Contains("function SF__.DictSet__(dict, key, value)", lua);
         Assert.Contains("function SF__.DictRemove__(dict, key)", lua);
+        Assert.Contains("function SF__.DictContainsKey__(dict, key)", lua);
+        Assert.Contains("function SF__.DictClear__(dict)", lua);
+        Assert.Contains("function SF__.DictKeys__(dict)", lua);
+        Assert.Contains("function SF__.DictValues__(dict)", lua);
         Assert.Contains("function SF__.DictIterate__(dict)", lua);
         Assert.Contains("SF__.DictNil__ = SF__.DictNil__ or {}", lua);
         Assert.Contains("return { data = {}, keys = {}, version = 0 }", lua);
         Assert.Contains("local value = dict.data[key]", lua);
         Assert.Contains("if value == SF__.DictNil__ then return nil end", lua);
+        Assert.Contains("if dict.data[key] ~= nil then error(\"duplicate key\") end", lua);
         Assert.Contains("table.insert(dict.keys, key)", lua);
         Assert.Contains("dict.version = dict.version + 1", lua);
+        Assert.Contains("return dict.data[key] ~= nil", lua);
+        Assert.Contains("dict.data = {}", lua);
+        Assert.Contains("dict.keys = {}", lua);
+        Assert.Contains("return SF__.ListNew__(items)", lua);
+        Assert.Contains("list.items[i] = SF__.ListWrap__(value)", lua);
         Assert.Contains("local version = dict.version", lua);
         Assert.Contains("if dict.version ~= version then error(\"collection was modified during iteration\") end", lua);
         Assert.DoesNotContain("keySet", lua);
+        Assert.Contains("SF__.ListNil__ = SF__.ListNil__ or {}", lua);
+        Assert.Contains("function SF__.ListWrap__(value)", lua);
+        Assert.Contains("function SF__.ListUnwrap__(value)", lua);
         Assert.Contains("function SF__.ListNew__(items)", lua);
-        Assert.Contains("return { items = items or {}, version = 0 }", lua);
+        Assert.Contains("local list = { items = {}, version = 0 }", lua);
         Assert.Contains("function SF__.ListAdd__(list, value)", lua);
+        Assert.Contains("function SF__.ListAddRange__(list, values)", lua);
+        Assert.Contains("function SF__.ListClear__(list)", lua);
+        Assert.Contains("function SF__.ListContains__(list, value)", lua);
+        Assert.Contains("function SF__.ListIndexOf__(list, value)", lua);
+        Assert.Contains("function SF__.ListInsert__(list, index, value)", lua);
+        Assert.Contains("function SF__.ListRemove__(list, value)", lua);
+        Assert.Contains("function SF__.ListRemoveAt__(list, index)", lua);
+        Assert.Contains("function SF__.ListReverse__(list)", lua);
         Assert.Contains("function SF__.ListIterate__(list)", lua);
         Assert.Contains("if list.version ~= version then error(\"collection was modified during iteration\") end", lua);
         Assert.Contains("local values = SF__.ListNew__({})", lua);
         Assert.Contains("SF__.ListAdd__(values, 1)", lua);
+        Assert.Contains("SF__.ListInsert__(values, 1, 3)", lua);
+        Assert.Contains("local hasThree = SF__.ListContains__(values, 3)", lua);
+        Assert.Contains("local index = SF__.ListIndexOf__(values, 3)", lua);
+        Assert.Contains("SF__.ListRemoveAt__(values, 0)", lua);
+        Assert.Contains("local removed = SF__.ListRemove__(values, 3)", lua);
+        Assert.Contains("SF__.ListAddRange__(values, {4, 5})", lua);
+        Assert.Contains("SF__.ListAddRange__(values, more)", lua);
+        Assert.Contains("SF__.ListReverse__(values)", lua);
         Assert.Contains("function SF__.ListSort__(list, less)", lua);
         Assert.Contains("local items = list.items", lua);
-        Assert.Contains("while j >= 1 and compare(value, items[j]) do", lua);
+        Assert.Contains("while j >= 1 and compare(SF__.ListUnwrap__(value), SF__.ListUnwrap__(items[j])) do", lua);
         Assert.Contains("SF__.ListSort__(values)", lua);
+        Assert.Contains("SF__.ListSort__(values, function(a, b)", lua);
+        Assert.Contains("function SF__.ListToArray__(list)", lua);
+        Assert.Contains("local array = SF__.ListToArray__(values)", lua);
+        Assert.Contains("SF__.ListClear__(values)", lua);
         Assert.Contains("local KW__table = SF__.DictNew__()", lua);
         Assert.Contains("SF__.DictSet__(KW__table, \"key\", 1)", lua);
-        Assert.Contains("SF__.DictSet__(KW__table, \"k2\", 2)", lua);
+        Assert.Contains("SF__.DictAdd__(KW__table, \"k2\", 2)", lua);
+        Assert.Contains("local hasKey = SF__.DictContainsKey__(KW__table, \"key\")", lua);
+        Assert.Contains("local keys = SF__.DictKeys__(KW__table)", lua);
+        Assert.Contains("local dictValues = SF__.DictValues__(KW__table)", lua);
         Assert.Contains("local value = SF__.DictGet__(KW__table, \"key\")", lua);
         Assert.Contains("SF__.DictSet__(nullable, \"gone\", nil)", lua);
         Assert.Contains("SF__.DictRemove__(nullable, \"gone\")", lua);
+        Assert.Contains("SF__.DictClear__(KW__table)", lua);
         Assert.Contains("in SF__.DictIterate__(dict)", lua);
         Assert.Contains("for kv__Key, kv__Value in SF__.DictIterate__(dict) do", lua);
         Assert.DoesNotContain("local kv = {", lua);

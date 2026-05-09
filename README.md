@@ -1,4 +1,6 @@
-# SharpForge
+﻿# SharpForge
+
+> **This project is under active development.**
 
 SharpForge is a C# scripting toolchain for Warcraft III: Reforged map development. It lets map authors write selected systems in strongly typed C#, emit plain Lua, bundle that Lua with existing Lua projects, and inject the result into a `.w3x` map.
 
@@ -21,12 +23,14 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 
 ## Documentation
 
-- [CLI.md](CLI.md) - man page for `sf-transpile`, `sf-build`, and `sf-jassgen`.
-- [GUI.md](GUI.md) - GUI wrapper behavior and fields.
-- [GeneratedLua.md](GeneratedLua.md) - emitted Lua shape, root table contract, lowering coverage, and build notes.
-- [LuaInterop.md](LuaInterop.md) - raw `LuaInterop` calls and typed `LuaObject` wrappers for existing Lua modules.
-- [Collections.md](Collections.md) - minimal collection runtime notes.
-- [Struct.md](Struct.md) - current struct flattening behavior and open method-lowering work.
+- [CLI](docs/cli.md) - man page for `sf-transpile`, `sf-build`, and `sf-jassgen`.
+- [GUI](docs/gui.md) - GUI wrapper behavior and fields.
+- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, root table contract, lowering coverage, and build notes.
+- [Lua Interop](docs/lua-interop.md) - raw `LuaInterop` calls and typed `LuaObject` wrappers for existing Lua modules.
+- [Collections](docs/collections.md) - minimal collection runtime notes.
+- [Struct Lowering](docs/struct.md) - current struct flattening behavior and open method-lowering work.
+- [Conditional Expression](docs/conditional-expression.md) - ternary `?:` lowering strategy.
+- [Type Casting](docs/type-casting.md) - explicit casting, `is`/`as`, and struct equality constraints.
 
 ## Repository Layout
 
