@@ -76,6 +76,22 @@ public sealed class IRLowering
             var model = compilation.GetSemanticModel(tree);
             var root = (CompilationUnitSyntax)tree.GetRoot(cancellationToken);
 
+            foreach (var enumDecl in root.DescendantNodes().OfType<EnumDeclarationSyntax>())
+            {
+                if (model.GetDeclaredSymbol(enumDecl, cancellationToken) is not { } symbol)
+                {
+                    continue;
+                }
+
+                if (_ignoredClasses.Contains(symbol.Name) || IsSharpLibType(symbol))
+                {
+                    continue;
+                }
+
+                ValidateReservedIdentifiers(enumDecl);
+                module.Enums.Add(LowerEnum(enumDecl, symbol, model, cancellationToken));
+            }
+
             foreach (var typeDecl in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
             {
                 var symbol = model.GetDeclaredSymbol(typeDecl, cancellationToken);
@@ -112,11 +128,47 @@ public sealed class IRLowering
             }
         }
 
+        module.Enums.Sort((left, right) => StringComparer.Ordinal.Compare(left.FullName, right.FullName));
         AddReferencedSharpLibInterfaceTypes(module);
         SortTypesByInheritance(module.Types);
         ValidateEntryPoints(module);
         _module = null;
         return module;
+    }
+
+    private IREnum LowerEnum(EnumDeclarationSyntax enumDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
+    {
+        var nsSegments = GetTypeContainerSegments(symbol);
+        var irEnum = new IREnum
+        {
+            NamespaceSegments = nsSegments,
+            Name = symbol.Name,
+            FullName = string.Join('.', nsSegments.Append(symbol.Name)),
+        };
+        irEnum.Comments.AddRange(ExtractComments(enumDecl.GetLeadingTrivia()));
+
+        if (HasFlagsAttribute(symbol))
+        {
+            AddDiagnostic(enumDecl.GetLocation(), "[Flags] enums are not supported yet; SharpForge currently emits plain numeric enum constants only");
+        }
+
+        foreach (var memberDecl in enumDecl.Members)
+        {
+            if (model.GetDeclaredSymbol(memberDecl, ct) is not IFieldSymbol memberSymbol)
+            {
+                continue;
+            }
+
+            var member = new IREnumMember
+            {
+                Name = memberDecl.Identifier.ValueText,
+                Value = LowerEnumMemberValue(memberSymbol, memberDecl),
+            };
+            member.Comments.AddRange(ExtractComments(memberDecl.GetLeadingTrivia()));
+            irEnum.Members.Add(member);
+        }
+
+        return irEnum;
     }
 
     private static void AddReferencedSharpLibInterfaceTypes(IRModule module)
@@ -219,7 +271,7 @@ public sealed class IRLowering
                         {
                             Name = v.Identifier.ValueText,
                             Initializer = v.Initializer is null
-                                ? LowerDefaultValue(f.Declaration.Type)
+                                ? LowerDefaultValue(model.GetTypeInfo(f.Declaration.Type).Type ?? throw new InvalidOperationException("Field type was not bound."))
                                 : LowerExpr(v.Initializer.Value, model),
                             IsStatic = true,
                         };
@@ -248,7 +300,7 @@ public sealed class IRLowering
                         {
                             Name = v.Identifier.ValueText,
                             Initializer = v.Initializer is null
-                                ? LowerDefaultValue(f.Declaration.Type)
+                                ? LowerDefaultValue(model.GetTypeInfo(f.Declaration.Type).Type ?? throw new InvalidOperationException("Field type was not bound."))
                                 : LowerExpr(v.Initializer.Value, model),
                             IsStatic = false,
                         };
@@ -276,7 +328,7 @@ public sealed class IRLowering
                         {
                             Name = p.Identifier.ValueText,
                             Initializer = p.Initializer is null
-                                ? LowerDefaultValue(p.Type)
+                                ? LowerDefaultValue(model.GetTypeInfo(p.Type).Type ?? throw new InvalidOperationException("Property type was not bound."))
                                 : LowerExpr(p.Initializer.Value, model),
                             IsStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword),
                         };
@@ -3489,7 +3541,9 @@ public sealed class IRLowering
     }
 
     private static IRExpr LowerDefaultValue(ITypeSymbol type)
-        => type.SpecialType switch
+        => type.TypeKind == TypeKind.Enum
+            ? new IRLiteral(0, IRLiteralKind.Integer)
+            : type.SpecialType switch
         {
             SpecialType.System_Boolean => new IRLiteral(false, IRLiteralKind.Boolean),
             SpecialType.System_Byte or SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_UInt16
@@ -3499,6 +3553,41 @@ public sealed class IRLowering
                 => new IRLiteral(0.0, IRLiteralKind.Real),
             _ => new IRLiteral(null, IRLiteralKind.Nil),
         };
+
+    private IRLiteral LowerEnumMemberValue(IFieldSymbol member, EnumMemberDeclarationSyntax declaration)
+    {
+        const long maxExactLuaInteger = 9_007_199_254_740_991L;
+        if (!member.HasConstantValue || member.ConstantValue is null)
+        {
+            return new IRLiteral(0, IRLiteralKind.Integer);
+        }
+
+        long value;
+        try
+        {
+            value = member.ConstantValue switch
+            {
+                ulong unsigned when unsigned <= maxExactLuaInteger => (long)unsigned,
+                ulong => throw new OverflowException(),
+                _ => Convert.ToInt64(member.ConstantValue, System.Globalization.CultureInfo.InvariantCulture),
+            };
+        }
+        catch (OverflowException)
+        {
+            AddDiagnostic(declaration.GetLocation(), $"enum member '{member.Name}' has a value that cannot be represented exactly as a Lua number");
+            return new IRLiteral(0, IRLiteralKind.Integer);
+        }
+
+        if (value < -maxExactLuaInteger || value > maxExactLuaInteger)
+        {
+            AddDiagnostic(declaration.GetLocation(), $"enum member '{member.Name}' has a value that cannot be represented exactly as a Lua number");
+        }
+
+        return new IRLiteral(value, IRLiteralKind.Integer);
+    }
+
+    private static bool HasFlagsAttribute(INamedTypeSymbol symbol)
+        => symbol.GetAttributes().Any(attribute => attribute.AttributeClass?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.FlagsAttribute");
 
     private static string MapBinaryOp(string op) => op switch
     {

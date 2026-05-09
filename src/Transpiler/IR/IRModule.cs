@@ -6,8 +6,28 @@ namespace SharpForge.Transpiler.IR;
 /// </summary>
 public sealed class IRModule
 {
+    public List<IREnum> Enums { get; } = new();
     public List<IRType> Types { get; } = new();
     public List<string> Diagnostics { get; } = new();
+}
+
+public sealed class IREnum
+{
+    public List<string> Comments { get; } = new();
+
+    public required IReadOnlyList<string> NamespaceSegments { get; init; }
+    public required string Name { get; init; }
+    public required string FullName { get; init; }
+
+    public List<IREnumMember> Members { get; } = new();
+}
+
+public sealed class IREnumMember
+{
+    public List<string> Comments { get; } = new();
+
+    public required string Name { get; init; }
+    public required IRLiteral Value { get; init; }
 }
 
 public sealed class IRType

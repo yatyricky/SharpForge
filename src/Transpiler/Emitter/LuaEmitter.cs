@@ -56,6 +56,11 @@ public sealed class LuaEmitter
 
         EnsureRootEmitted();
 
+        foreach (var enumType in module.Enums)
+        {
+            EmitEnum(enumType);
+        }
+
         for (int i = 0; i < module.Types.Count; i++)
         {
             EmitType(module.Types[i]);
@@ -581,6 +586,31 @@ public sealed class LuaEmitter
         {
             WriteLine($"{path} = {path} or {{}}");
         }
+    }
+
+    private void EmitEnum(IREnum enumType)
+    {
+        EmitComments(enumType.Comments);
+
+        var path = _rootTable;
+        foreach (var seg in enumType.NamespaceSegments)
+        {
+            path = path + "." + seg;
+            if (_emittedTablePaths.Add(path))
+            {
+                WriteLine($"{path} = {path} or {{}}");
+            }
+        }
+
+        var enumPath = path + "." + enumType.Name;
+        WriteLine($"-- {enumType.FullName}");
+        WriteLine($"{enumPath} = {enumPath} or {{}}");
+        foreach (var member in enumType.Members)
+        {
+            EmitComments(member.Comments);
+            WriteLine($"{enumPath}.{member.Name} = {FormatLiteral(member.Value)}");
+        }
+        _sb.Append('\n');
     }
 
     private void EmitType(IRType type)
