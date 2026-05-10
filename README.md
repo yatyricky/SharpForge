@@ -10,7 +10,7 @@ SharpForge is a C# scripting toolchain for Warcraft III: Reforged map developmen
 - **Integrate with your current toolchain.** World Editor still owns terrain, object data, and placed units. SharpForge fits beside your editor, source tree, Lua modules, and map build process.
 - **Do not reinvent the JASS API.** SharpForge does not translate platform calls into a fantasy object model. `KillUnit(unit)` stays `KillUnit(unit)`, not `unit.Kill()`.
 - **Migrate incrementally.** Existing Lua modules keep working. New C# code can call into Lua, Lua can call generated output, and projects can move one subsystem at a time.
-- **Emit performant Lua.** Generated code is direct Lua with a small helper surface. The bundled C# library is intentionally minimal, such as a usable `List<T>` shape, not a full clone of every .NET collection interface.
+- **Emit performant Lua.** Generated code is direct Lua with a small helper surface. The bundled C# library is intentionally minimal, such as usable `List<T>`, `Dictionary<K,V>`, `Queue<T>`, `Stack<T>`, and `HashSet<T>` shapes, not a full clone of every .NET collection interface.
 - **Keep the runtime small.** SharpForge provides only the helpers needed by emitted code and interop stubs. It does not ship a broad standard-library translation layer.
 
 ## Discussion

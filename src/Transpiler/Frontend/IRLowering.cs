@@ -97,7 +97,7 @@ public sealed class IRLowering
                     continue;
                 }
 
-                if (_ignoredClasses.Contains(symbol.Name) || IsSharpLibType(symbol))
+                if (_ignoredClasses.Contains(symbol.Name) || IsSFLibType(symbol))
                 {
                     continue;
                 }
@@ -119,7 +119,7 @@ public sealed class IRLowering
                     continue;
                 }
 
-                if (IsSharpLibType(symbol))
+                if (IsSFLibType(symbol))
                 {
                     continue;
                 }
@@ -143,7 +143,7 @@ public sealed class IRLowering
         }
 
         module.Enums.Sort((left, right) => StringComparer.Ordinal.Compare(left.FullName, right.FullName));
-        AddReferencedSharpLibInterfaceTypes(module);
+        AddReferencedSFLibInterfaceTypes(module);
         SortTypesByInheritance(module.Types);
         ValidateEntryPoints(module);
         _module = null;
@@ -185,12 +185,12 @@ public sealed class IRLowering
         return irEnum;
     }
 
-    private static void AddReferencedSharpLibInterfaceTypes(IRModule module)
+    private static void AddReferencedSFLibInterfaceTypes(IRModule module)
     {
         var existingTypes = new HashSet<string>(module.Types.Select(t => t.FullName), StringComparer.Ordinal);
         var interfaces = module.Types
             .SelectMany(type => type.Interfaces)
-            .Where(IsSharpLibTypeReference)
+            .Where(IsSFLibTypeReference)
             .DistinctBy(GetTypeReferenceFullName)
             .OrderBy(GetTypeReferenceFullName, StringComparer.Ordinal)
             .ToArray();
@@ -1163,11 +1163,25 @@ public sealed class IRLowering
         var collection = LowerExpr(fe.Expression, model);
         var itemSymbol = model.GetDeclaredSymbol(fe, ct);
         var body = new IRBlock();
+        if (IsHashSetType(collectionType))
+        {
+            var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
+            LowerBlock(fe.Statement, body, model, ct);
+            return new IRHashSetForEach(itemName, collection, body, TryBuildHashSetValueComparer(collectionType, fe.GetLocation(), out _));
+        }
+
+        if (IsStackType(collectionType))
+        {
+            var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
+            LowerBlock(fe.Statement, body, model, ct);
+            return new IRStackForEach(itemName, collection, body);
+        }
+
         if (!IsDictionaryType(collectionType))
         {
             var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
             LowerBlock(fe.Statement, body, model, ct);
-            return new IRForEach(itemName, collection, body, UseListIterator: IsListType(collectionType));
+            return new IRForEach(itemName, collection, body, UseListIterator: IsListType(collectionType) || IsQueueType(collectionType));
         }
 
         var itemBaseName = EscapeLuaKeyword(fe.Identifier.ValueText);
@@ -1395,7 +1409,7 @@ public sealed class IRLowering
                     return flattenedStructFieldAccess;
                 }
 
-                if (TryLowerSharpLibKeyValueAccess(ma, model) is { } keyValueAccess)
+                if (TryLowerSFLibKeyValueAccess(ma, model) is { } keyValueAccess)
                 {
                     return keyValueAccess;
                 }
@@ -1616,6 +1630,119 @@ public sealed class IRLowering
         if (symbol is { Name: "ToArray", IsStatic: false } && IsListType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax toArrayAccess && args.Count == 0)
         {
             return new IRListToArray(LowerExpr(toArrayAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Enqueue", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax enqueueAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            return new IRListAdd(
+                LowerExpr(enqueueAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model));
+        }
+
+        if (symbol is { Name: "Dequeue", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dequeueAccess && args.Count == 0)
+        {
+            return new IRQueueDequeue(LowerExpr(dequeueAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Peek", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queuePeekAccess && args.Count == 0)
+        {
+            return new IRQueuePeek(LowerExpr(queuePeekAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Clear", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queueClearAccess && args.Count == 0)
+        {
+            return new IRListClear(LowerExpr(queueClearAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Contains", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queueContainsAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            TryBuildStructEqualityComparer(GetCollectionElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
+            return new IRListContains(
+                LowerExpr(queueContainsAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
+                comparer);
+        }
+
+        if (symbol is { Name: "ToArray", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queueToArrayAccess && args.Count == 0)
+        {
+            return new IRListToArray(LowerExpr(queueToArrayAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Push", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax pushAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            return new IRListAdd(
+                LowerExpr(pushAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model));
+        }
+
+        if (symbol is { Name: "Pop", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax popAccess && args.Count == 0)
+        {
+            return new IRStackPop(LowerExpr(popAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Peek", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackPeekAccess && args.Count == 0)
+        {
+            return new IRStackPeek(LowerExpr(stackPeekAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Clear", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackClearAccess && args.Count == 0)
+        {
+            return new IRListClear(LowerExpr(stackClearAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Contains", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackContainsAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            TryBuildStructEqualityComparer(GetCollectionElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
+            return new IRListContains(
+                LowerExpr(stackContainsAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
+                comparer);
+        }
+
+        if (symbol is { Name: "ToArray", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackToArrayAccess && args.Count == 0)
+        {
+            return new IRStackToArray(LowerExpr(stackToArrayAccess.Expression, model));
+        }
+
+        if (symbol is { Name: "Add", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setAddAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            var useLinearKeys = TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRHashSetAdd(
+                LowerExpr(setAddAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
+                useLinearKeys);
+        }
+
+        if (symbol is { Name: "Contains", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setContainsAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            var useLinearKeys = TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRHashSetContains(
+                LowerExpr(setContainsAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
+                useLinearKeys);
+        }
+
+        if (symbol is { Name: "Remove", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setRemoveAccess && inv.ArgumentList.Arguments.Count == 1)
+        {
+            var useLinearKeys = TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _);
+            return new IRHashSetRemove(
+                LowerExpr(setRemoveAccess.Expression, model),
+                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
+                useLinearKeys);
+        }
+
+        if (symbol is { Name: "Clear", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setClearAccess && args.Count == 0)
+        {
+            return new IRHashSetClear(
+                LowerExpr(setClearAccess.Expression, model),
+                TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _));
+        }
+
+        if (symbol is { Name: "ToArray", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setToArrayAccess && args.Count == 0)
+        {
+            return new IRHashSetToArray(
+                LowerExpr(setToArrayAccess.Expression, model),
+                TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _));
         }
 
         if (symbol is { Name: "Add", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictAddAccess && inv.ArgumentList.Arguments.Count == 2)
@@ -2697,9 +2824,20 @@ public sealed class IRLowering
             return new IRDictionaryNew(useLinearKeys, keyComparer);
         }
 
+        if (IsHashSetType(type))
+        {
+            var useLinearKeys = TryBuildHashSetValueComparer(type, obj.GetLocation(), out var valueComparer);
+            return new IRHashSetNew(useLinearKeys, valueComparer);
+        }
+
         if (IsListType(type))
         {
             return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerListElementValue(item, type, model)).ToArray() ?? Array.Empty<IRExpr>());
+        }
+
+        if (IsQueueType(type) || IsStackType(type))
+        {
+            return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerCollectionElementValue(item, type, model)).ToArray() ?? Array.Empty<IRExpr>());
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
@@ -2796,11 +2934,23 @@ public sealed class IRLowering
             return new IRListCount(LowerExpr(access.Expression, model));
         }
 
+        if (IsQueueType(type) || IsStackType(type))
+        {
+            return new IRListCount(LowerExpr(access.Expression, model));
+        }
+
         if (IsDictionaryType(type))
         {
             return new IRDictionaryCount(
                 LowerExpr(access.Expression, model),
                 TryBuildDictionaryKeyComparer(type, access.GetLocation(), out _));
+        }
+
+        if (IsHashSetType(type))
+        {
+            return new IRHashSetCount(
+                LowerExpr(access.Expression, model),
+                TryBuildHashSetValueComparer(type, access.GetLocation(), out _));
         }
 
         return null;
@@ -2849,14 +2999,32 @@ public sealed class IRLowering
 
     private static bool IsListType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "List", ContainingNamespace: { } ns }
-           && (ns.ToDisplayString() == "System.Collections.Generic" || IsSharpLibNamespace(ns));
+           && (ns.ToDisplayString() == "System.Collections.Generic" || IsSFLibCollectionNamespace(ns));
 
     private static bool IsDictionaryType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "Dictionary", ContainingNamespace: { } ns }
-           && IsSharpLibNamespace(ns);
+           && IsSFLibCollectionNamespace(ns);
+
+    private static bool IsQueueType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "Queue", ContainingNamespace: { } ns }
+           && IsSFLibCollectionNamespace(ns);
+
+    private static bool IsStackType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "Stack", ContainingNamespace: { } ns }
+           && IsSFLibCollectionNamespace(ns);
+
+    private static bool IsHashSetType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { Name: "HashSet", ContainingNamespace: { } ns }
+           && IsSFLibCollectionNamespace(ns);
 
     private static ITypeSymbol? GetListElementType(ITypeSymbol? type)
         => type is INamedTypeSymbol { TypeArguments.Length: 1 } namedType && IsListType(namedType)
+            ? namedType.TypeArguments[0]
+            : null;
+
+    private static ITypeSymbol? GetCollectionElementType(ITypeSymbol? type)
+        => type is INamedTypeSymbol { TypeArguments.Length: 1 } namedType
+           && (IsListType(namedType) || IsQueueType(namedType) || IsStackType(namedType) || IsHashSetType(namedType))
             ? namedType.TypeArguments[0]
             : null;
 
@@ -2864,6 +3032,17 @@ public sealed class IRLowering
     {
         comparer = null;
         if (dictionaryType is not INamedTypeSymbol { TypeArguments.Length: > 0 } namedType || !IsDictionaryType(namedType))
+        {
+            return false;
+        }
+
+        return TryBuildStructEqualityComparer(namedType.TypeArguments[0], location, out comparer);
+    }
+
+    private bool TryBuildHashSetValueComparer(ITypeSymbol? setType, Location location, out IRExpr? comparer)
+    {
+        comparer = null;
+        if (setType is not INamedTypeSymbol { TypeArguments.Length: > 0 } namedType || !IsHashSetType(namedType))
         {
             return false;
         }
@@ -2927,13 +3106,13 @@ public sealed class IRLowering
         => type is INamedTypeSymbol { Name: "Regex", ContainingNamespace: { } ns }
            && ns.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Text.RegularExpressions";
 
-    private static bool IsSharpLibKeyValueType(ITypeSymbol? type)
+    private static bool IsSFLibKeyValueType(ITypeSymbol? type)
         => type is INamedTypeSymbol { Name: "KeyValue", ContainingNamespace: { } ns }
-           && IsSharpLibNamespace(ns);
+           && IsSFLibCollectionNamespace(ns);
 
     private static bool IsTaskDelay(IMethodSymbol symbol)
         => symbol is { Name: "Delay", IsStatic: true, ContainingType: { Name: "Task", ContainingNamespace: { } ns } }
-           && (IsSharpLibNamespace(ns) || ns.ToDisplayString() == "System.Threading.Tasks");
+           && (IsSFLibAsyncNamespace(ns) || ns.ToDisplayString() == "System.Threading.Tasks");
 
     private IRStmt? TryLowerLuaInteropStatement(ExpressionSyntax expression, SemanticModel model)
     {
@@ -2975,7 +3154,7 @@ public sealed class IRLowering
 
     private static bool IsLuaInteropMethod(IMethodSymbol symbol)
         => symbol is { IsStatic: true, ContainingType: { Name: "LuaInterop", ContainingNamespace: { } ns } }
-           && IsSharpLibNamespace(ns);
+           && IsSFLibInteropNamespace(ns);
 
     private static bool IsLuaObjectType(INamedTypeSymbol symbol)
         => InheritsFromLuaObject(symbol);
@@ -2990,7 +3169,7 @@ public sealed class IRLowering
     {
         for (var type = symbol; type is not null; type = type.BaseType)
         {
-            if (type is { Name: "LuaObject", ContainingNamespace: { } ns } && IsSharpLibNamespace(ns))
+            if (type is { Name: "LuaObject", ContainingNamespace: { } ns } && IsSFLibInteropNamespace(ns))
             {
                 return true;
             }
@@ -3005,19 +3184,45 @@ public sealed class IRLowering
             .Select(invocation => model.GetSymbolInfo(invocation).Symbol as IMethodSymbol)
             .Any(symbol => symbol is not null && IsTaskDelay(symbol));
 
-    private static bool IsSharpLibType(INamedTypeSymbol symbol)
-        => IsSharpLibNamespace(symbol.ContainingNamespace);
+    private static bool IsSFLibType(INamedTypeSymbol symbol)
+        => IsSFLibNamespace(symbol.ContainingNamespace);
 
-    private static bool IsSharpLibTypeReference(IRTypeReference type)
-        => IsSharpLibNamespaceName(string.Join('.', type.NamespaceSegments));
+    private static bool IsSFLibTypeReference(IRTypeReference type)
+        => IsSFLibNamespaceName(string.Join('.', type.NamespaceSegments));
 
-    private static bool IsSharpLibNamespace(INamespaceSymbol ns)
-        => IsSharpLibNamespaceName(ns.ToDisplayString());
+    private static bool IsSFLibNamespace(INamespaceSymbol ns)
+        => IsSFLibNamespaceName(ns.ToDisplayString());
 
-    private static bool IsSharpLibNamespaceName(string name)
-        => name == "SFLib"
-           || name == "SharpLib"
-           || name == "SharpLib.Collections";
+    private static bool IsSFLibCollectionNamespace(INamespaceSymbol ns)
+        => IsSFLibCollectionNamespaceName(ns.ToDisplayString());
+
+    private static bool IsSFLibAsyncNamespace(INamespaceSymbol ns)
+        => IsSFLibAsyncNamespaceName(ns.ToDisplayString());
+
+    private static bool IsSFLibInteropNamespace(INamespaceSymbol ns)
+        => IsSFLibInteropNamespaceName(ns.ToDisplayString());
+
+    private static bool IsSFLibDiagnosticsNamespace(INamespaceSymbol ns)
+        => IsSFLibDiagnosticsNamespaceName(ns.ToDisplayString());
+
+    private static bool IsSFLibNamespaceName(string name)
+        => name == "SFLib.Async"
+           || name == "SFLib.Collections"
+           || name == "SFLib.Contracts"
+           || name == "SFLib.Diagnostics"
+           || name == "SFLib.Interop";
+
+    private static bool IsSFLibCollectionNamespaceName(string name)
+        => name == "SFLib.Collections";
+
+    private static bool IsSFLibAsyncNamespaceName(string name)
+        => name == "SFLib.Async";
+
+    private static bool IsSFLibInteropNamespaceName(string name)
+        => name == "SFLib.Interop";
+
+    private static bool IsSFLibDiagnosticsNamespaceName(string name)
+        => name == "SFLib.Diagnostics";
 
     private bool IsInLibraryFolder(SyntaxTree tree)
     {
@@ -3108,6 +3313,11 @@ public sealed class IRLowering
             ? LowerStructCollectionValue(expression, structType, model)
             : LowerExpr(expression, model);
 
+    private IRExpr LowerCollectionElementValue(ExpressionSyntax expression, ITypeSymbol? collectionType, SemanticModel model)
+        => GetCollectionElementType(collectionType) is INamedTypeSymbol structType && CanFlattenStructType(structType)
+            ? LowerStructCollectionValue(expression, structType, model)
+            : LowerExpr(expression, model);
+
     private IRExpr LowerStructCollectionValue(ExpressionSyntax expression, INamedTypeSymbol structType, SemanticModel model)
     {
         var fields = GetFlattenableStructFields(structType).ToArray();
@@ -3124,9 +3334,9 @@ public sealed class IRLowering
         return new IRStructValueTable(LowerExpr(expression, model), fields.Select(field => field.Name).ToArray());
     }
 
-    private IRExpr? TryLowerSharpLibKeyValueAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    private IRExpr? TryLowerSFLibKeyValueAccess(MemberAccessExpressionSyntax access, SemanticModel model)
     {
-        if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Key" or "Value" } property || !IsSharpLibKeyValueType(property.ContainingType))
+        if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Key" or "Value" } property || !IsSFLibKeyValueType(property.ContainingType))
         {
             return null;
         }
@@ -3154,7 +3364,7 @@ public sealed class IRLowering
                 && access.Expression == id
                 && access.Name.Identifier.ValueText is "Key" or "Value"
                 && model.GetSymbolInfo(access).Symbol is IPropertySymbol { Name: "Key" or "Value" } property
-                && IsSharpLibKeyValueType(property.ContainingType))
+                && IsSFLibKeyValueType(property.ContainingType))
             {
                 continue;
             }
@@ -3546,7 +3756,7 @@ public sealed class IRLowering
         foreach (var attribute in symbol.GetAttributes())
         {
             if (attribute.AttributeClass is not { Name: "LuaAttribute", ContainingNamespace: { } ns }
-                || !IsSharpLibNamespace(ns))
+                || !IsSFLibInteropNamespace(ns))
             {
                 continue;
             }
@@ -3567,7 +3777,7 @@ public sealed class IRLowering
         foreach (var attribute in symbol.GetAttributes())
         {
             if (attribute.AttributeClass is { Name: "DebuggerAttribute", ContainingNamespace: { } ns }
-                && IsSharpLibNamespace(ns))
+                && IsSFLibDiagnosticsNamespace(ns))
             {
                 return true;
             }
@@ -3581,7 +3791,7 @@ public sealed class IRLowering
         foreach (var attribute in symbol.GetAttributes())
         {
             if (attribute.AttributeClass is not { Name: "LuaAttribute", ContainingNamespace: { } ns }
-                || !IsSharpLibNamespace(ns))
+                || !IsSFLibInteropNamespace(ns))
             {
                 continue;
             }
@@ -3784,6 +3994,14 @@ public sealed class IRLowering
                 CollectTypeReferences(dictionaryForEach.Dictionary, dependencies);
                 CollectTypeReferences(dictionaryForEach.Body, dependencies);
                 break;
+            case IRStackForEach stackForEach:
+                CollectTypeReferences(stackForEach.Stack, dependencies);
+                CollectTypeReferences(stackForEach.Body, dependencies);
+                break;
+            case IRHashSetForEach hashSetForEach:
+                CollectTypeReferences(hashSetForEach.Set, dependencies);
+                CollectTypeReferences(hashSetForEach.Body, dependencies);
+                break;
             case IRTry tryStmt:
                 CollectTypeReferences(tryStmt.Try, dependencies);
                 if (tryStmt.Catch is not null)
@@ -3951,6 +4169,45 @@ public sealed class IRLowering
                 break;
             case IRListToArray listToArray:
                 CollectTypeReferences(listToArray.List, dependencies);
+                break;
+            case IRQueueDequeue queueDequeue:
+                CollectTypeReferences(queueDequeue.Queue, dependencies);
+                break;
+            case IRQueuePeek queuePeek:
+                CollectTypeReferences(queuePeek.Queue, dependencies);
+                break;
+            case IRStackPop stackPop:
+                CollectTypeReferences(stackPop.Stack, dependencies);
+                break;
+            case IRStackPeek stackPeek:
+                CollectTypeReferences(stackPeek.Stack, dependencies);
+                break;
+            case IRStackToArray stackToArray:
+                CollectTypeReferences(stackToArray.Stack, dependencies);
+                break;
+            case IRHashSetNew hashSetNew when hashSetNew.KeyComparer is not null:
+                CollectTypeReferences(hashSetNew.KeyComparer, dependencies);
+                break;
+            case IRHashSetCount hashSetCount:
+                CollectTypeReferences(hashSetCount.Set, dependencies);
+                break;
+            case IRHashSetAdd hashSetAdd:
+                CollectTypeReferences(hashSetAdd.Set, dependencies);
+                CollectTypeReferences(hashSetAdd.Value, dependencies);
+                break;
+            case IRHashSetRemove hashSetRemove:
+                CollectTypeReferences(hashSetRemove.Set, dependencies);
+                CollectTypeReferences(hashSetRemove.Value, dependencies);
+                break;
+            case IRHashSetContains hashSetContains:
+                CollectTypeReferences(hashSetContains.Set, dependencies);
+                CollectTypeReferences(hashSetContains.Value, dependencies);
+                break;
+            case IRHashSetClear hashSetClear:
+                CollectTypeReferences(hashSetClear.Set, dependencies);
+                break;
+            case IRHashSetToArray hashSetToArray:
+                CollectTypeReferences(hashSetToArray.Set, dependencies);
                 break;
             case IRLuaRequire luaRequire:
                 CollectTypeReferences(luaRequire.ModuleName, dependencies);

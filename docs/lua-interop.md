@@ -49,10 +49,10 @@ Keep interop wrapper files under a configured `--library-folder` such as `libs`.
 
 ## Raw `LuaInterop`
 
-`SFLib.LuaInterop` is a raw escape hatch. Users are responsible for matching the Lua value and function shape they access.
+`SFLib.Interop.LuaInterop` is a raw escape hatch. Users are responsible for matching the Lua value and function shape they access.
 
 ```csharp
-using SFLib;
+using SFLib.Interop;
 
 LuaObject frameTimer = LuaInterop.Require("Lib.FrameTimer");
 LuaObject itemSystem = LuaInterop.Require("System.ItemSystem");
@@ -100,7 +100,7 @@ Lua modules can be wrapped with small C# extern types by inheriting from `LuaObj
 
 ```csharp
 using System;
-using SFLib;
+using SFLib.Interop;
 
 namespace Lua;
 

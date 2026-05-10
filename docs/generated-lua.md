@@ -40,7 +40,7 @@ Common C# constructs lower to direct Lua patterns:
 | String interpolation | nil-safe `SF__.StrConcat__(...)` calls; supported format clauses use `string.format(...)` |
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding |
 | `is` / `as` | emitted type metadata helpers when needed |
-| `List<T>` | compact table helper runtime |
+| `List<T>`, `Dictionary<K,V>`, `Queue<T>`, `Stack<T>`, `HashSet<T>` | compact table helper runtimes |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.
 
@@ -60,10 +60,10 @@ Supported interpolation format specifiers are `F`/`f`, `D`/`d`, and `X`/`x`, eac
 
 ## Debugger Probes
 
-Decorate a method with `SFLib.DebuggerAttribute` to ask the transpiler to insert Warcraft debug messages between source statements:
+Decorate a method with `SFLib.Diagnostics.DebuggerAttribute` to ask the transpiler to insert Warcraft debug messages between source statements:
 
 ```csharp
-using SFLib;
+using SFLib.Diagnostics;
 
 public static class Waves
 {
@@ -106,7 +106,7 @@ Implemented lowering includes:
 - `base(...)` and `base.Method()`
 - exception MVP with one `catch` and `finally`
 - interfaces, `is`, and `as`
-- arrays and minimal `List<T>`/dictionary helpers
+- arrays and minimal `List<T>`, `Dictionary<K,V>`, `Queue<T>`, `Stack<T>`, and `HashSet<T>` helpers
 - struct field flattening and multi-return lowering; see [struct](struct.md)
 - validated `Regex.IsMatch` subset; see [regular expressions](regex.md)
 - computed properties, indexers, delegates, and field-like events
@@ -119,7 +119,7 @@ Planned or partial areas include broader conditional pruning, source-map line an
 
 ## Minimal Runtime Bias
 
-SharpForge emits only helpers needed by the lowered code. For example, `List<T>` uses a compact Lua table with helper functions for add, count, indexing, iteration, and sorting. It is not a full .NET `List<T>` surface translated into Lua.
+SharpForge emits only helpers needed by the lowered code. For example, `List<T>` uses a compact Lua table with helper functions for add, count, indexing, iteration, and sorting, while `HashSet<T>` uses membership helpers over key tables. These are not full .NET collection surfaces translated into Lua.
 
 That bias keeps output small and predictable: use platform functions directly, model only what the generated Lua needs, and avoid a broad compatibility runtime.
 

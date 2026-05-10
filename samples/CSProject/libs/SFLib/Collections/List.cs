@@ -1,0 +1,80 @@
+namespace SFLib.Collections;
+
+public sealed class List<T>
+{
+    public int Count => 0;
+
+    public T this[int index]
+    {
+        get => default!;
+        set { }
+    }
+
+    public void Add(T item)
+    {
+    }
+
+    public void AddRange(List<T> items)
+    {
+    }
+
+    public void AddRange(T[] items)
+    {
+    }
+
+    public void Clear()
+    {
+    }
+
+    public bool Contains(T item)
+    {
+        return false;
+    }
+
+    public int IndexOf(T item)
+    {
+        return -1;
+    }
+
+    public void Insert(int index, T item)
+    {
+    }
+
+    public bool Remove(T item)
+    {
+        return false;
+    }
+
+    public void RemoveAt(int index)
+    {
+    }
+
+    public void Reverse()
+    {
+    }
+
+    public void Sort()
+    {
+    }
+
+    public void Sort(global::System.Func<T, T, bool> less)
+    {
+    }
+
+    public T[] ToArray()
+    {
+        return default!;
+    }
+
+    public Enumerator GetEnumerator() => default!;
+
+    public class Enumerator
+    {
+        public T Current => default!;
+
+        public bool MoveNext()
+        {
+            return false;
+        }
+    }
+}

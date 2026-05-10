@@ -23,6 +23,7 @@ public sealed class LuaEmitter
     private readonly HashSet<string> _usedIdentifiers = new(StringComparer.Ordinal);
     private readonly HashSet<DictionaryHelper> _dictionaryHelpers = [];
     private readonly HashSet<ListHelper> _listHelpers = [];
+    private readonly HashSet<HashSetHelper> _hashSetHelpers = [];
     private int _indent;
     private int _tempId;
     private bool _emitTypeHelpers;
@@ -79,6 +80,33 @@ public sealed class LuaEmitter
         Iterate,
         Sort,
         ToArray,
+        QueueDequeue,
+        QueuePeek,
+        StackPop,
+        StackPeek,
+        StackIterate,
+        StackToArray,
+    }
+
+    private enum HashSetHelper
+    {
+        New,
+        Count,
+        Add,
+        Remove,
+        Contains,
+        Clear,
+        ToArray,
+        Iterate,
+        LinearNew,
+        LinearFind,
+        LinearCount,
+        LinearAdd,
+        LinearRemove,
+        LinearContains,
+        LinearClear,
+        LinearToArray,
+        LinearIterate,
     }
 
     public LuaEmitter(string rootTable)
@@ -102,6 +130,7 @@ public sealed class LuaEmitter
         _emitTernaryHelper = UsesTernaryHelper(module);
         _dictionaryHelpers.Clear();
         _listHelpers.Clear();
+        _hashSetHelpers.Clear();
         CollectCollectionHelpers(module);
         AddCollectionHelperDependencies();
         _usedIdentifiers.Clear();
@@ -150,6 +179,10 @@ public sealed class LuaEmitter
             if (_listHelpers.Count > 0)
             {
                 WriteListHelpers();
+            }
+            if (_hashSetHelpers.Count > 0)
+            {
+                WriteHashSetHelpers();
             }
             if (_emitTernaryHelper)
             {
@@ -678,6 +711,12 @@ public sealed class LuaEmitter
         if (_listHelpers.Contains(ListHelper.Iterate)) WriteListIterateHelper();
         if (_listHelpers.Contains(ListHelper.Sort)) WriteListSortHelper();
         if (_listHelpers.Contains(ListHelper.ToArray)) WriteListToArrayHelper();
+        if (_listHelpers.Contains(ListHelper.QueueDequeue)) WriteQueueDequeueHelper();
+        if (_listHelpers.Contains(ListHelper.QueuePeek)) WriteQueuePeekHelper();
+        if (_listHelpers.Contains(ListHelper.StackPop)) WriteStackPopHelper();
+        if (_listHelpers.Contains(ListHelper.StackPeek)) WriteStackPeekHelper();
+        if (_listHelpers.Contains(ListHelper.StackIterate)) WriteStackIterateHelper();
+        if (_listHelpers.Contains(ListHelper.StackToArray)) WriteStackToArrayHelper();
     }
 
     private void WriteListWrapHelper()
@@ -940,6 +979,340 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         WriteLine("return result");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteQueueDequeueHelper()
+    {
+        WriteLine($"function {_rootTable}.QueueDequeue__(queue)");
+        _indent++;
+        WriteLine("if #queue.items == 0 then error(\"queue is empty\") end");
+        WriteLine("local value = queue.items[1]");
+        WriteLine("table.remove(queue.items, 1)");
+        WriteLine("queue.version = queue.version + 1");
+        WriteLine($"return {_rootTable}.ListUnwrap__(value)");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteQueuePeekHelper()
+    {
+        WriteLine($"function {_rootTable}.QueuePeek__(queue)");
+        _indent++;
+        WriteLine("if #queue.items == 0 then error(\"queue is empty\") end");
+        WriteLine($"return {_rootTable}.ListUnwrap__(queue.items[1])");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteStackPopHelper()
+    {
+        WriteLine($"function {_rootTable}.StackPop__(stack)");
+        _indent++;
+        WriteLine("local index = #stack.items");
+        WriteLine("if index == 0 then error(\"stack is empty\") end");
+        WriteLine("local value = stack.items[index]");
+        WriteLine("stack.items[index] = nil");
+        WriteLine("stack.version = stack.version + 1");
+        WriteLine($"return {_rootTable}.ListUnwrap__(value)");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteStackPeekHelper()
+    {
+        WriteLine($"function {_rootTable}.StackPeek__(stack)");
+        _indent++;
+        WriteLine("local index = #stack.items");
+        WriteLine("if index == 0 then error(\"stack is empty\") end");
+        WriteLine($"return {_rootTable}.ListUnwrap__(stack.items[index])");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteStackIterateHelper()
+    {
+        WriteLine($"function {_rootTable}.StackIterate__(stack)");
+        _indent++;
+        WriteLine("local version = stack.version");
+        WriteLine("local i = #stack.items + 1");
+        WriteLine("return function()");
+        _indent++;
+        WriteLine("if stack.version ~= version then error(\"collection was modified during iteration\") end");
+        WriteLine("i = i - 1");
+        WriteLine("local value = stack.items[i]");
+        WriteLine($"if value ~= nil then return i, {_rootTable}.ListUnwrap__(value) end");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteStackToArrayHelper()
+    {
+        WriteLine($"function {_rootTable}.StackToArray__(stack)");
+        _indent++;
+        WriteLine("local result = {}");
+        WriteLine("local output = 1");
+        WriteLine("for i = #stack.items, 1, -1 do");
+        _indent++;
+        WriteLine($"result[output] = {_rootTable}.ListUnwrap__(stack.items[i])");
+        WriteLine("output = output + 1");
+        _indent--;
+        WriteLine("end");
+        WriteLine("return result");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetHelpers()
+    {
+        if (_hashSetHelpers.Contains(HashSetHelper.New)) WriteHashSetNewHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.Count)) WriteHashSetCountHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.Add)) WriteHashSetAddHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.Remove)) WriteHashSetRemoveHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.Contains)) WriteHashSetContainsHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.Clear)) WriteHashSetClearHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.ToArray)) WriteHashSetToArrayHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.Iterate)) WriteHashSetIterateHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearNew)) WriteHashSetLinearNewHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearFind)) WriteHashSetLinearFindHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearCount)) WriteHashSetLinearCountHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearAdd)) WriteHashSetLinearAddHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearRemove)) WriteHashSetLinearRemoveHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearContains)) WriteHashSetLinearContainsHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearClear)) WriteHashSetLinearClearHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearToArray)) WriteHashSetLinearToArrayHelper();
+        if (_hashSetHelpers.Contains(HashSetHelper.LinearIterate)) WriteHashSetLinearIterateHelper();
+    }
+
+    private void WriteHashSetNewHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetNew__()");
+        _indent++;
+        WriteLine("return { data = {}, keys = {}, version = 0 }");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetCountHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetCount__(set)");
+        _indent++;
+        WriteLine("return #set.keys");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetAddHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetAdd__(set, value)");
+        _indent++;
+        WriteLine("if set.data[value] ~= nil then return false end");
+        WriteLine("set.data[value] = true");
+        WriteLine("table.insert(set.keys, value)");
+        WriteLine("set.version = set.version + 1");
+        WriteLine("return true");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetRemoveHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetRemove__(set, value)");
+        _indent++;
+        WriteLine("if set.data[value] == nil then return false end");
+        WriteLine("set.data[value] = nil");
+        WriteLine("for i, storedValue in ipairs(set.keys) do");
+        _indent++;
+        WriteLine("if storedValue == value then");
+        _indent++;
+        WriteLine("table.remove(set.keys, i)");
+        WriteLine("break");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+        WriteLine("set.version = set.version + 1");
+        WriteLine("return true");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetContainsHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetContains__(set, value)");
+        _indent++;
+        WriteLine("return set.data[value] ~= nil");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetClearHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetClear__(set)");
+        _indent++;
+        WriteLine("set.data = {}");
+        WriteLine("set.keys = {}");
+        WriteLine("set.version = set.version + 1");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetToArrayHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetToArray__(set)");
+        _indent++;
+        WriteLine("local result = {}");
+        WriteLine("for i, value in ipairs(set.keys) do result[i] = value end");
+        WriteLine("return result");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetIterateHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetIterate__(set)");
+        _indent++;
+        WriteLine("local version = set.version");
+        WriteLine("local i = 0");
+        WriteLine("return function()");
+        _indent++;
+        WriteLine("if set.version ~= version then error(\"collection was modified during iteration\") end");
+        WriteLine("i = i + 1");
+        WriteLine("local value = set.keys[i]");
+        WriteLine("if value ~= nil then return i, value end");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearNewHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearNew__(equals)");
+        _indent++;
+        WriteLine("return { keys = {}, version = 0, equals = equals }");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearFindHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearFind__(set, value)");
+        _indent++;
+        WriteLine("for i, storedValue in ipairs(set.keys) do");
+        _indent++;
+        WriteLine("if set.equals(storedValue, value) then return i end");
+        _indent--;
+        WriteLine("end");
+        WriteLine("return nil");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearCountHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearCount__(set)");
+        _indent++;
+        WriteLine("return #set.keys");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearAddHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearAdd__(set, value)");
+        _indent++;
+        WriteLine($"if {_rootTable}.HashSetLinearFind__(set, value) ~= nil then return false end");
+        WriteLine("table.insert(set.keys, value)");
+        WriteLine("set.version = set.version + 1");
+        WriteLine("return true");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearRemoveHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearRemove__(set, value)");
+        _indent++;
+        WriteLine($"local index = {_rootTable}.HashSetLinearFind__(set, value)");
+        WriteLine("if index == nil then return false end");
+        WriteLine("table.remove(set.keys, index)");
+        WriteLine("set.version = set.version + 1");
+        WriteLine("return true");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearContainsHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearContains__(set, value)");
+        _indent++;
+        WriteLine($"return {_rootTable}.HashSetLinearFind__(set, value) ~= nil");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearClearHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearClear__(set)");
+        _indent++;
+        WriteLine("set.keys = {}");
+        WriteLine("set.version = set.version + 1");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearToArrayHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearToArray__(set)");
+        _indent++;
+        WriteLine("local result = {}");
+        WriteLine("for i, value in ipairs(set.keys) do result[i] = value end");
+        WriteLine("return result");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteHashSetLinearIterateHelper()
+    {
+        WriteLine($"function {_rootTable}.HashSetLinearIterate__(set)");
+        _indent++;
+        WriteLine("local version = set.version");
+        WriteLine("local i = 0");
+        WriteLine("return function()");
+        _indent++;
+        WriteLine("if set.version ~= version then error(\"collection was modified during iteration\") end");
+        WriteLine("i = i + 1");
+        WriteLine("local value = set.keys[i]");
+        WriteLine("if value ~= nil then return i, value end");
+        _indent--;
+        WriteLine("end");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
@@ -1343,6 +1716,12 @@ public sealed class LuaEmitter
             case IRDictionaryForEach f:
                 EmitDictionaryForEach(f);
                 break;
+            case IRStackForEach f:
+                EmitStackForEach(f);
+                break;
+            case IRHashSetForEach f:
+                EmitHashSetForEach(f);
+                break;
             case IRTry t:
                 EmitTry(t);
                 break;
@@ -1566,6 +1945,47 @@ public sealed class LuaEmitter
         {
             WriteLine($"local {f.ItemName} = {{k = {f.KeyName}, v = {f.ValueName}}}");
         }
+        EmitBlock(f.Body);
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+    }
+
+    private void EmitStackForEach(IRStackForEach f)
+    {
+        var stackName = NewTemp("stack");
+        var indexName = NewTemp("i");
+
+        WriteLine("do");
+        _indent++;
+        WriteIndent();
+        _sb.Append("local ").Append(stackName).Append(" = ");
+        EmitExpr(f.Stack);
+        _sb.Append('\n');
+        WriteLine($"for {indexName}, {f.ItemName} in {_rootTable}.StackIterate__({stackName}) do");
+        _indent++;
+        EmitBlock(f.Body);
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+    }
+
+    private void EmitHashSetForEach(IRHashSetForEach f)
+    {
+        var setName = NewTemp("set");
+        var indexName = NewTemp("i");
+
+        WriteLine("do");
+        _indent++;
+        WriteIndent();
+        _sb.Append("local ").Append(setName).Append(" = ");
+        EmitExpr(f.Set);
+        _sb.Append('\n');
+        var iterator = f.UseLinearKeys ? $"{_rootTable}.HashSetLinearIterate__({setName})" : $"{_rootTable}.HashSetIterate__({setName})";
+        WriteLine($"for {indexName}, {f.ItemName} in {iterator} do");
+        _indent++;
         EmitBlock(f.Body);
         _indent--;
         WriteLine("end");
@@ -1920,6 +2340,75 @@ public sealed class LuaEmitter
                 EmitExpr(listToArray.List);
                 _sb.Append(')');
                 break;
+            case IRQueueDequeue queueDequeue:
+                _sb.Append(_rootTable).Append(".QueueDequeue__(");
+                EmitExpr(queueDequeue.Queue);
+                _sb.Append(')');
+                break;
+            case IRQueuePeek queuePeek:
+                _sb.Append(_rootTable).Append(".QueuePeek__(");
+                EmitExpr(queuePeek.Queue);
+                _sb.Append(')');
+                break;
+            case IRStackPop stackPop:
+                _sb.Append(_rootTable).Append(".StackPop__(");
+                EmitExpr(stackPop.Stack);
+                _sb.Append(')');
+                break;
+            case IRStackPeek stackPeek:
+                _sb.Append(_rootTable).Append(".StackPeek__(");
+                EmitExpr(stackPeek.Stack);
+                _sb.Append(')');
+                break;
+            case IRStackToArray stackToArray:
+                _sb.Append(_rootTable).Append(".StackToArray__(");
+                EmitExpr(stackToArray.Stack);
+                _sb.Append(')');
+                break;
+            case IRHashSetNew hashSetNew:
+                _sb.Append(_rootTable).Append(hashSetNew.UseLinearKeys ? ".HashSetLinearNew__(" : ".HashSetNew__(");
+                if (hashSetNew.UseLinearKeys && hashSetNew.KeyComparer is not null)
+                {
+                    EmitExpr(hashSetNew.KeyComparer);
+                }
+                _sb.Append(')');
+                break;
+            case IRHashSetCount hashSetCount:
+                _sb.Append(_rootTable).Append(hashSetCount.UseLinearKeys ? ".HashSetLinearCount__(" : ".HashSetCount__(");
+                EmitExpr(hashSetCount.Set);
+                _sb.Append(')');
+                break;
+            case IRHashSetAdd hashSetAdd:
+                _sb.Append(_rootTable).Append(hashSetAdd.UseLinearKeys ? ".HashSetLinearAdd__(" : ".HashSetAdd__(");
+                EmitExpr(hashSetAdd.Set);
+                _sb.Append(", ");
+                EmitExpr(hashSetAdd.Value);
+                _sb.Append(')');
+                break;
+            case IRHashSetRemove hashSetRemove:
+                _sb.Append(_rootTable).Append(hashSetRemove.UseLinearKeys ? ".HashSetLinearRemove__(" : ".HashSetRemove__(");
+                EmitExpr(hashSetRemove.Set);
+                _sb.Append(", ");
+                EmitExpr(hashSetRemove.Value);
+                _sb.Append(')');
+                break;
+            case IRHashSetContains hashSetContains:
+                _sb.Append(_rootTable).Append(hashSetContains.UseLinearKeys ? ".HashSetLinearContains__(" : ".HashSetContains__(");
+                EmitExpr(hashSetContains.Set);
+                _sb.Append(", ");
+                EmitExpr(hashSetContains.Value);
+                _sb.Append(')');
+                break;
+            case IRHashSetClear hashSetClear:
+                _sb.Append(_rootTable).Append(hashSetClear.UseLinearKeys ? ".HashSetLinearClear__(" : ".HashSetClear__(");
+                EmitExpr(hashSetClear.Set);
+                _sb.Append(')');
+                break;
+            case IRHashSetToArray hashSetToArray:
+                _sb.Append(_rootTable).Append(hashSetToArray.UseLinearKeys ? ".HashSetLinearToArray__(" : ".HashSetToArray__(");
+                EmitExpr(hashSetToArray.Set);
+                _sb.Append(')');
+                break;
             case IRLuaRequire luaRequire:
                 _sb.Append("require(");
                 EmitExpr(luaRequire.ModuleName);
@@ -2177,6 +2666,12 @@ public sealed class LuaEmitter
             if (_listHelpers.Contains(ListHelper.Iterate)) changed |= _listHelpers.Add(ListHelper.Unwrap);
             if (_listHelpers.Contains(ListHelper.Sort)) changed |= _listHelpers.Add(ListHelper.Unwrap);
             if (_listHelpers.Contains(ListHelper.ToArray)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.QueueDequeue)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.QueuePeek)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.StackPop)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.StackPeek)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.StackIterate)) changed |= _listHelpers.Add(ListHelper.Unwrap);
+            if (_listHelpers.Contains(ListHelper.StackToArray)) changed |= _listHelpers.Add(ListHelper.Unwrap);
 
             if (_dictionaryHelpers.Contains(DictionaryHelper.Get)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
             if (_dictionaryHelpers.Contains(DictionaryHelper.Set)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
@@ -2215,6 +2710,10 @@ public sealed class LuaEmitter
             }
             if (_dictionaryHelpers.Contains(DictionaryHelper.LinearIterate)) changed |= _dictionaryHelpers.Add(DictionaryHelper.Nil);
             if (_dictionaryHelpers.Contains(DictionaryHelper.LinearKeys)) changed |= _listHelpers.Add(ListHelper.New);
+
+            if (_hashSetHelpers.Contains(HashSetHelper.LinearAdd)) changed |= _hashSetHelpers.Add(HashSetHelper.LinearFind);
+            if (_hashSetHelpers.Contains(HashSetHelper.LinearRemove)) changed |= _hashSetHelpers.Add(HashSetHelper.LinearFind);
+            if (_hashSetHelpers.Contains(HashSetHelper.LinearContains)) changed |= _hashSetHelpers.Add(HashSetHelper.LinearFind);
         }
     }
 
@@ -2293,6 +2792,16 @@ public sealed class LuaEmitter
             case IRDictionaryForEach fe:
                 _dictionaryHelpers.Add(fe.UseLinearKeys ? DictionaryHelper.LinearIterate : DictionaryHelper.Iterate);
                 CollectCollectionHelpers(fe.Dictionary);
+                CollectCollectionHelpers(fe.Body);
+                break;
+            case IRStackForEach fe:
+                _listHelpers.Add(ListHelper.StackIterate);
+                CollectCollectionHelpers(fe.Stack);
+                CollectCollectionHelpers(fe.Body);
+                break;
+            case IRHashSetForEach fe:
+                _hashSetHelpers.Add(fe.UseLinearKeys ? HashSetHelper.LinearIterate : HashSetHelper.Iterate);
+                CollectCollectionHelpers(fe.Set);
                 CollectCollectionHelpers(fe.Body);
                 break;
             case IRTry tr:
@@ -2458,6 +2967,57 @@ public sealed class LuaEmitter
                 _listHelpers.Add(ListHelper.ToArray);
                 CollectCollectionHelpers(listToArray.List);
                 break;
+            case IRQueueDequeue queueDequeue:
+                _listHelpers.Add(ListHelper.QueueDequeue);
+                CollectCollectionHelpers(queueDequeue.Queue);
+                break;
+            case IRQueuePeek queuePeek:
+                _listHelpers.Add(ListHelper.QueuePeek);
+                CollectCollectionHelpers(queuePeek.Queue);
+                break;
+            case IRStackPop stackPop:
+                _listHelpers.Add(ListHelper.StackPop);
+                CollectCollectionHelpers(stackPop.Stack);
+                break;
+            case IRStackPeek stackPeek:
+                _listHelpers.Add(ListHelper.StackPeek);
+                CollectCollectionHelpers(stackPeek.Stack);
+                break;
+            case IRStackToArray stackToArray:
+                _listHelpers.Add(ListHelper.StackToArray);
+                CollectCollectionHelpers(stackToArray.Stack);
+                break;
+            case IRHashSetNew hashSetNew:
+                _hashSetHelpers.Add(hashSetNew.UseLinearKeys ? HashSetHelper.LinearNew : HashSetHelper.New);
+                if (hashSetNew.KeyComparer is not null) CollectCollectionHelpers(hashSetNew.KeyComparer);
+                break;
+            case IRHashSetCount hashSetCount:
+                _hashSetHelpers.Add(hashSetCount.UseLinearKeys ? HashSetHelper.LinearCount : HashSetHelper.Count);
+                CollectCollectionHelpers(hashSetCount.Set);
+                break;
+            case IRHashSetAdd hashSetAdd:
+                _hashSetHelpers.Add(hashSetAdd.UseLinearKeys ? HashSetHelper.LinearAdd : HashSetHelper.Add);
+                CollectCollectionHelpers(hashSetAdd.Set);
+                CollectCollectionHelpers(hashSetAdd.Value);
+                break;
+            case IRHashSetRemove hashSetRemove:
+                _hashSetHelpers.Add(hashSetRemove.UseLinearKeys ? HashSetHelper.LinearRemove : HashSetHelper.Remove);
+                CollectCollectionHelpers(hashSetRemove.Set);
+                CollectCollectionHelpers(hashSetRemove.Value);
+                break;
+            case IRHashSetContains hashSetContains:
+                _hashSetHelpers.Add(hashSetContains.UseLinearKeys ? HashSetHelper.LinearContains : HashSetHelper.Contains);
+                CollectCollectionHelpers(hashSetContains.Set);
+                CollectCollectionHelpers(hashSetContains.Value);
+                break;
+            case IRHashSetClear hashSetClear:
+                _hashSetHelpers.Add(hashSetClear.UseLinearKeys ? HashSetHelper.LinearClear : HashSetHelper.Clear);
+                CollectCollectionHelpers(hashSetClear.Set);
+                break;
+            case IRHashSetToArray hashSetToArray:
+                _hashSetHelpers.Add(hashSetToArray.UseLinearKeys ? HashSetHelper.LinearToArray : HashSetHelper.ToArray);
+                CollectCollectionHelpers(hashSetToArray.Set);
+                break;
             case IRLuaRequire luaRequire:
                 CollectCollectionHelpers(luaRequire.ModuleName);
                 break;
@@ -2570,6 +3130,18 @@ public sealed class LuaEmitter
             IRListReverse listReverse => ExprUsesTernaryHelper(listReverse.List),
             IRListSort listSort => ExprUsesTernaryHelper(listSort.List) || (listSort.Comparer is not null && ExprUsesTernaryHelper(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesTernaryHelper(listToArray.List),
+            IRQueueDequeue queueDequeue => ExprUsesTernaryHelper(queueDequeue.Queue),
+            IRQueuePeek queuePeek => ExprUsesTernaryHelper(queuePeek.Queue),
+            IRStackPop stackPop => ExprUsesTernaryHelper(stackPop.Stack),
+            IRStackPeek stackPeek => ExprUsesTernaryHelper(stackPeek.Stack),
+            IRStackToArray stackToArray => ExprUsesTernaryHelper(stackToArray.Stack),
+            IRHashSetNew hashSetNew => hashSetNew.KeyComparer is not null && ExprUsesTernaryHelper(hashSetNew.KeyComparer),
+            IRHashSetCount hashSetCount => ExprUsesTernaryHelper(hashSetCount.Set),
+            IRHashSetAdd hashSetAdd => ExprUsesTernaryHelper(hashSetAdd.Set) || ExprUsesTernaryHelper(hashSetAdd.Value),
+            IRHashSetRemove hashSetRemove => ExprUsesTernaryHelper(hashSetRemove.Set) || ExprUsesTernaryHelper(hashSetRemove.Value),
+            IRHashSetContains hashSetContains => ExprUsesTernaryHelper(hashSetContains.Set) || ExprUsesTernaryHelper(hashSetContains.Value),
+            IRHashSetClear hashSetClear => ExprUsesTernaryHelper(hashSetClear.Set),
+            IRHashSetToArray hashSetToArray => ExprUsesTernaryHelper(hashSetToArray.Set),
             IRStructValueTable structValueTable => ExprUsesTernaryHelper(structValueTable.Value),
             IRLuaRequire luaRequire => ExprUsesTernaryHelper(luaRequire.ModuleName),
             IRLuaGlobal luaGlobal => ExprUsesTernaryHelper(luaGlobal.Name),
@@ -2614,6 +3186,8 @@ public sealed class LuaEmitter
                 || BlockUsesTypeChecks(fr.Body),
             IRForEach fe => ExprUsesTypeChecks(fe.Collection) || BlockUsesTypeChecks(fe.Body),
             IRDictionaryForEach fe => ExprUsesTypeChecks(fe.Dictionary) || BlockUsesTypeChecks(fe.Body),
+            IRStackForEach fe => ExprUsesTypeChecks(fe.Stack) || BlockUsesTypeChecks(fe.Body),
+            IRHashSetForEach fe => ExprUsesTypeChecks(fe.Set) || BlockUsesTypeChecks(fe.Body),
             IRTry tr => BlockUsesTypeChecks(tr.Try)
                 || (tr.Catch is not null && BlockUsesTypeChecks(tr.Catch))
                 || (tr.Finally is not null && BlockUsesTypeChecks(tr.Finally)),
@@ -2642,6 +3216,8 @@ public sealed class LuaEmitter
                 || BlockUsesCoroutineHelpers(fr.Body),
             IRForEach fe => ExprUsesCoroutineHelpers(fe.Collection) || BlockUsesCoroutineHelpers(fe.Body),
             IRDictionaryForEach fe => ExprUsesCoroutineHelpers(fe.Dictionary) || BlockUsesCoroutineHelpers(fe.Body),
+            IRStackForEach fe => ExprUsesCoroutineHelpers(fe.Stack) || BlockUsesCoroutineHelpers(fe.Body),
+            IRHashSetForEach fe => ExprUsesCoroutineHelpers(fe.Set) || BlockUsesCoroutineHelpers(fe.Body),
             IRTry tr => BlockUsesCoroutineHelpers(tr.Try)
                 || (tr.Catch is not null && BlockUsesCoroutineHelpers(tr.Catch))
                 || (tr.Finally is not null && BlockUsesCoroutineHelpers(tr.Finally)),
@@ -2670,6 +3246,8 @@ public sealed class LuaEmitter
                 || BlockUsesStringConcat(fr.Body),
             IRForEach fe => ExprUsesStringConcat(fe.Collection) || BlockUsesStringConcat(fe.Body),
             IRDictionaryForEach fe => ExprUsesStringConcat(fe.Dictionary) || BlockUsesStringConcat(fe.Body),
+            IRStackForEach fe => ExprUsesStringConcat(fe.Stack) || BlockUsesStringConcat(fe.Body),
+            IRHashSetForEach fe => ExprUsesStringConcat(fe.Set) || BlockUsesStringConcat(fe.Body),
             IRTry tr => BlockUsesStringConcat(tr.Try)
                 || (tr.Catch is not null && BlockUsesStringConcat(tr.Catch))
                 || (tr.Finally is not null && BlockUsesStringConcat(tr.Finally)),
@@ -2714,6 +3292,18 @@ public sealed class LuaEmitter
             IRListReverse listReverse => ExprUsesTypeChecks(listReverse.List),
             IRListSort listSort => ExprUsesTypeChecks(listSort.List) || (listSort.Comparer is not null && ExprUsesTypeChecks(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesTypeChecks(listToArray.List),
+            IRQueueDequeue queueDequeue => ExprUsesTypeChecks(queueDequeue.Queue),
+            IRQueuePeek queuePeek => ExprUsesTypeChecks(queuePeek.Queue),
+            IRStackPop stackPop => ExprUsesTypeChecks(stackPop.Stack),
+            IRStackPeek stackPeek => ExprUsesTypeChecks(stackPeek.Stack),
+            IRStackToArray stackToArray => ExprUsesTypeChecks(stackToArray.Stack),
+            IRHashSetNew hashSetNew => hashSetNew.KeyComparer is not null && ExprUsesTypeChecks(hashSetNew.KeyComparer),
+            IRHashSetCount hashSetCount => ExprUsesTypeChecks(hashSetCount.Set),
+            IRHashSetAdd hashSetAdd => ExprUsesTypeChecks(hashSetAdd.Set) || ExprUsesTypeChecks(hashSetAdd.Value),
+            IRHashSetRemove hashSetRemove => ExprUsesTypeChecks(hashSetRemove.Set) || ExprUsesTypeChecks(hashSetRemove.Value),
+            IRHashSetContains hashSetContains => ExprUsesTypeChecks(hashSetContains.Set) || ExprUsesTypeChecks(hashSetContains.Value),
+            IRHashSetClear hashSetClear => ExprUsesTypeChecks(hashSetClear.Set),
+            IRHashSetToArray hashSetToArray => ExprUsesTypeChecks(hashSetToArray.Set),
             IRLuaRequire luaRequire => ExprUsesTypeChecks(luaRequire.ModuleName),
             IRLuaGlobal luaGlobal => ExprUsesTypeChecks(luaGlobal.Name),
             IRLuaAccess luaAccess => ExprUsesTypeChecks(luaAccess.Target) || ExprUsesTypeChecks(luaAccess.Name),
@@ -2755,6 +3345,18 @@ public sealed class LuaEmitter
             IRListReverse listReverse => ExprUsesStringConcat(listReverse.List),
             IRListSort listSort => ExprUsesStringConcat(listSort.List) || (listSort.Comparer is not null && ExprUsesStringConcat(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesStringConcat(listToArray.List),
+            IRQueueDequeue queueDequeue => ExprUsesStringConcat(queueDequeue.Queue),
+            IRQueuePeek queuePeek => ExprUsesStringConcat(queuePeek.Queue),
+            IRStackPop stackPop => ExprUsesStringConcat(stackPop.Stack),
+            IRStackPeek stackPeek => ExprUsesStringConcat(stackPeek.Stack),
+            IRStackToArray stackToArray => ExprUsesStringConcat(stackToArray.Stack),
+            IRHashSetNew hashSetNew => hashSetNew.KeyComparer is not null && ExprUsesStringConcat(hashSetNew.KeyComparer),
+            IRHashSetCount hashSetCount => ExprUsesStringConcat(hashSetCount.Set),
+            IRHashSetAdd hashSetAdd => ExprUsesStringConcat(hashSetAdd.Set) || ExprUsesStringConcat(hashSetAdd.Value),
+            IRHashSetRemove hashSetRemove => ExprUsesStringConcat(hashSetRemove.Set) || ExprUsesStringConcat(hashSetRemove.Value),
+            IRHashSetContains hashSetContains => ExprUsesStringConcat(hashSetContains.Set) || ExprUsesStringConcat(hashSetContains.Value),
+            IRHashSetClear hashSetClear => ExprUsesStringConcat(hashSetClear.Set),
+            IRHashSetToArray hashSetToArray => ExprUsesStringConcat(hashSetToArray.Set),
             IRLuaRequire luaRequire => ExprUsesStringConcat(luaRequire.ModuleName),
             IRLuaGlobal luaGlobal => ExprUsesStringConcat(luaGlobal.Name),
             IRLuaAccess luaAccess => ExprUsesStringConcat(luaAccess.Target) || ExprUsesStringConcat(luaAccess.Name),
@@ -2813,6 +3415,18 @@ public sealed class LuaEmitter
             IRListReverse listReverse => ExprUsesCoroutineHelpers(listReverse.List),
             IRListSort listSort => ExprUsesCoroutineHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesCoroutineHelpers(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesCoroutineHelpers(listToArray.List),
+            IRQueueDequeue queueDequeue => ExprUsesCoroutineHelpers(queueDequeue.Queue),
+            IRQueuePeek queuePeek => ExprUsesCoroutineHelpers(queuePeek.Queue),
+            IRStackPop stackPop => ExprUsesCoroutineHelpers(stackPop.Stack),
+            IRStackPeek stackPeek => ExprUsesCoroutineHelpers(stackPeek.Stack),
+            IRStackToArray stackToArray => ExprUsesCoroutineHelpers(stackToArray.Stack),
+            IRHashSetNew hashSetNew => hashSetNew.KeyComparer is not null && ExprUsesCoroutineHelpers(hashSetNew.KeyComparer),
+            IRHashSetCount hashSetCount => ExprUsesCoroutineHelpers(hashSetCount.Set),
+            IRHashSetAdd hashSetAdd => ExprUsesCoroutineHelpers(hashSetAdd.Set) || ExprUsesCoroutineHelpers(hashSetAdd.Value),
+            IRHashSetRemove hashSetRemove => ExprUsesCoroutineHelpers(hashSetRemove.Set) || ExprUsesCoroutineHelpers(hashSetRemove.Value),
+            IRHashSetContains hashSetContains => ExprUsesCoroutineHelpers(hashSetContains.Set) || ExprUsesCoroutineHelpers(hashSetContains.Value),
+            IRHashSetClear hashSetClear => ExprUsesCoroutineHelpers(hashSetClear.Set),
+            IRHashSetToArray hashSetToArray => ExprUsesCoroutineHelpers(hashSetToArray.Set),
             IRLuaRequire luaRequire => ExprUsesCoroutineHelpers(luaRequire.ModuleName),
             IRLuaGlobal luaGlobal => ExprUsesCoroutineHelpers(luaGlobal.Name),
             IRLuaAccess luaAccess => ExprUsesCoroutineHelpers(luaAccess.Target) || ExprUsesCoroutineHelpers(luaAccess.Name),
@@ -2914,6 +3528,16 @@ public sealed class LuaEmitter
                 _usedIdentifiers.Add(fe.KeyName);
                 _usedIdentifiers.Add(fe.ValueName);
                 CollectIdentifiers(fe.Dictionary);
+                CollectIdentifiers(fe.Body);
+                break;
+            case IRStackForEach fe:
+                _usedIdentifiers.Add(fe.ItemName);
+                CollectIdentifiers(fe.Stack);
+                CollectIdentifiers(fe.Body);
+                break;
+            case IRHashSetForEach fe:
+                _usedIdentifiers.Add(fe.ItemName);
+                CollectIdentifiers(fe.Set);
                 CollectIdentifiers(fe.Body);
                 break;
             case IRTry tr:
@@ -3064,6 +3688,45 @@ public sealed class LuaEmitter
                 break;
             case IRListToArray listToArray:
                 CollectIdentifiers(listToArray.List);
+                break;
+            case IRQueueDequeue queueDequeue:
+                CollectIdentifiers(queueDequeue.Queue);
+                break;
+            case IRQueuePeek queuePeek:
+                CollectIdentifiers(queuePeek.Queue);
+                break;
+            case IRStackPop stackPop:
+                CollectIdentifiers(stackPop.Stack);
+                break;
+            case IRStackPeek stackPeek:
+                CollectIdentifiers(stackPeek.Stack);
+                break;
+            case IRStackToArray stackToArray:
+                CollectIdentifiers(stackToArray.Stack);
+                break;
+            case IRHashSetNew hashSetNew:
+                if (hashSetNew.KeyComparer is not null) CollectIdentifiers(hashSetNew.KeyComparer);
+                break;
+            case IRHashSetCount hashSetCount:
+                CollectIdentifiers(hashSetCount.Set);
+                break;
+            case IRHashSetAdd hashSetAdd:
+                CollectIdentifiers(hashSetAdd.Set);
+                CollectIdentifiers(hashSetAdd.Value);
+                break;
+            case IRHashSetRemove hashSetRemove:
+                CollectIdentifiers(hashSetRemove.Set);
+                CollectIdentifiers(hashSetRemove.Value);
+                break;
+            case IRHashSetContains hashSetContains:
+                CollectIdentifiers(hashSetContains.Set);
+                CollectIdentifiers(hashSetContains.Value);
+                break;
+            case IRHashSetClear hashSetClear:
+                CollectIdentifiers(hashSetClear.Set);
+                break;
+            case IRHashSetToArray hashSetToArray:
+                CollectIdentifiers(hashSetToArray.Set);
                 break;
             case IRLuaRequire luaRequire:
                 CollectIdentifiers(luaRequire.ModuleName);

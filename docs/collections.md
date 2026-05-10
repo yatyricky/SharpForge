@@ -1,6 +1,10 @@
 # Collections
 
-SharpForge includes small `SFLib` collection helpers for emitted Lua. They support the collection operations that SharpForge lowers directly, not the full .NET collection interface surface.
+SharpForge includes small collection helpers in `SFLib.Collections` for emitted Lua. They support the collection operations that SharpForge lowers directly, not the full .NET collection interface surface.
+
+```csharp
+using SFLib.Collections;
+```
 
 ## List<T>
 
@@ -32,6 +36,40 @@ public bool Equals(MyStruct other)
 ```
 
 When that method exists, generated Lua calls it for `Contains`, `IndexOf`, and `Remove`. `Equals(object)` and `GetHashCode()` are not used for struct collection equality.
+
+## Queue<T>
+
+Supported `Queue<T>` members:
+
+- `Count`
+- `Enqueue`
+- `Dequeue`
+- `Peek`
+- `Clear`
+- `Contains`
+- `ToArray`
+- `foreach`
+
+Queues use first-in, first-out ordering. `Dequeue()`, `Peek()`, `ToArray()`, and `foreach` return values in queue order. `Dequeue()` and `Peek()` throw if the queue is empty.
+
+For flattened struct element types, `Contains` uses the same typed `Equals(T)` rule as `List<T>`.
+
+## Stack<T>
+
+Supported `Stack<T>` members:
+
+- `Count`
+- `Push`
+- `Pop`
+- `Peek`
+- `Clear`
+- `Contains`
+- `ToArray`
+- `foreach`
+
+Stacks use last-in, first-out ordering. `Pop()`, `Peek()`, `ToArray()`, and `foreach` return the most recently pushed value first. `Pop()` and `Peek()` throw if the stack is empty.
+
+For flattened struct element types, `Contains` uses the same typed `Equals(T)` rule as `List<T>`.
 
 ## Dictionary<K, V>
 
@@ -70,6 +108,28 @@ public bool Equals(MyStruct other)
 
 If the method is missing, SharpForge emits a diagnostic. Struct dictionary keys do not use `GetHashCode()` or `Equals(object)`.
 
+## HashSet<T>
+
+Supported `HashSet<T>` members:
+
+- `Count`
+- `Add`
+- `Contains`
+- `Remove`
+- `Clear`
+- `ToArray`
+- `foreach`
+
+For non-struct values, hash sets use Lua table key semantics plus an insertion-order value list. `Add` returns `false` when the value is already present. `Remove` returns `false` when the value is absent. `ToArray()` and `foreach` follow insertion order, and modifying a hash set during iteration throws.
+
+For flattened struct values, hash sets use a linear value list and the struct's typed `Equals(T)` method, matching struct-keyed dictionary behavior. Struct hash set values require:
+
+```csharp
+public bool Equals(MyStruct other)
+```
+
+If the method is missing, SharpForge emits a diagnostic. Struct hash set values do not use `GetHashCode()` or `Equals(object)`.
+
 ## Limits
 
-SharpForge collection helpers are runtime helpers for generated Lua. They are not drop-in replacements for all `System.Collections.Generic` APIs, collection interfaces, LINQ extension methods, or comparer-based .NET overloads.
+SharpForge collection helpers are runtime helpers for generated Lua. They are not drop-in replacements for all `System.Collections.Generic` APIs, collection interfaces, LINQ extension methods, capacity-based constructors, comparer-based .NET overloads, or set algebra APIs.

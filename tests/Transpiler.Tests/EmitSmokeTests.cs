@@ -249,9 +249,9 @@ public class EmitSmokeTests
     {
         var src = """
             using System;
-            using SFLib;
+            using SFLib.Diagnostics;
 
-            namespace SFLib
+            namespace SFLib.Diagnostics
             {
                 [AttributeUsage(AttributeTargets.Method)]
                 public class DebuggerAttribute : Attribute
@@ -371,7 +371,8 @@ public class EmitSmokeTests
         Assert.Equal(0, exitCode);
         Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "Natives.g.cs")));
         Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "GlobalUsings.g.cs")));
-        var luaInterop = await File.ReadAllTextAsync(Path.Combine(dir.FullName, "libs", "SFLib", "LuaInterop.cs"));
+        var luaInterop = await File.ReadAllTextAsync(Path.Combine(dir.FullName, "libs", "SFLib", "Interop", "LuaInterop.cs"));
+        Assert.Contains("namespace SFLib.Interop", luaInterop);
         Assert.Contains("public static class LuaInterop", luaInterop);
         Assert.Contains("public class LuaObject", luaInterop);
 
@@ -1310,7 +1311,7 @@ public class EmitSmokeTests
     public async Task Struct_dictionary_keys_use_linear_typed_equals_lookup()
     {
         var src = """
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class Dictionary<K, V>
                 {
@@ -1356,7 +1357,7 @@ public class EmitSmokeTests
             {
                 public static int Run()
                 {
-                    var cells = new SFLib.Dictionary<Cell, int>();
+                    var cells = new SFLib.Collections.Dictionary<Cell, int>();
                     var a = new Cell { X = 1, Y = 2 };
                     var b = new Cell { X = 1, Y = 2 };
                     cells.Add(a, 7);
@@ -1401,10 +1402,82 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Struct_hash_set_values_use_linear_typed_equals_lookup()
+    {
+        var src = """
+            namespace SFLib.Collections
+            {
+                public class HashSet<T>
+                {
+                    public int Count => 0;
+                    public bool Add(T item) { return false; }
+                    public bool Contains(T item) { return false; }
+                    public bool Remove(T item) { return false; }
+                    public void Clear() { }
+                    public Enumerator GetEnumerator() => default!;
+                    public class Enumerator
+                    {
+                        public T Current => default!;
+                        public bool MoveNext() { return false; }
+                    }
+                }
+            }
+
+            public struct Cell
+            {
+                public int X;
+                public int Y;
+
+                public bool Equals(Cell other)
+                {
+                    return X == other.X && Y == other.Y;
+                }
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var cells = new SFLib.Collections.HashSet<Cell>();
+                    var a = new Cell { X = 1, Y = 2 };
+                    var b = new Cell { X = 1, Y = 2 };
+                    var added = cells.Add(a);
+                    var duplicate = cells.Add(b);
+                    var hasB = cells.Contains(b);
+                    var count = cells.Count;
+                    foreach (var cell in cells)
+                    {
+                        count = count + cell.X;
+                    }
+                    var removed = cells.Remove(b);
+                    cells.Clear();
+                    return added && !duplicate && hasB && removed ? count : 0;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructHashSetValues.cs");
+
+        Assert.Contains("function SF__.HashSetLinearNew__(equals)", lua);
+        Assert.Contains("function SF__.HashSetLinearFind__(set, value)", lua);
+        Assert.Contains("if set.equals(storedValue, value) then return i end", lua);
+        Assert.Contains("local cells = SF__.HashSetLinearNew__(function(left, right)", lua);
+        Assert.Contains("return SF__.Cell.Equals(left.X, left.Y, right.X, right.Y)", lua);
+        Assert.Contains("local added = SF__.HashSetLinearAdd__(cells", lua);
+        Assert.Contains("local duplicate = SF__.HashSetLinearAdd__(cells", lua);
+        Assert.Contains("local hasB = SF__.HashSetLinearContains__(cells", lua);
+        Assert.Contains("local count = SF__.HashSetLinearCount__(cells)", lua);
+        Assert.Contains("in SF__.HashSetLinearIterate__(set)", lua);
+        Assert.Contains("local removed = SF__.HashSetLinearRemove__(cells", lua);
+        Assert.Contains("SF__.HashSetLinearClear__(cells)", lua);
+        Assert.DoesNotContain("function SF__.HashSetNew__()", lua);
+    }
+
+    [Fact]
     public async Task Struct_list_equality_operations_use_typed_equals()
     {
         var src = """
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class List<T>
                 {
@@ -1430,7 +1503,7 @@ public class EmitSmokeTests
             {
                 public static int Run()
                 {
-                    var cells = new SFLib.List<Cell>();
+                    var cells = new SFLib.Collections.List<Cell>();
                     var a = new Cell { X = 1, Y = 2 };
                     var b = new Cell { X = 1, Y = 2 };
                     cells.Add(a);
@@ -1458,7 +1531,7 @@ public class EmitSmokeTests
     public async Task Struct_list_items_use_parallel_field_arrays_for_supported_local_operations()
     {
         var src = """
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class List<T>
                 {
@@ -1486,7 +1559,7 @@ public class EmitSmokeTests
 
                 public static string Run()
                 {
-                    var datas = new SFLib.List<AbilityData>();
+                    var datas = new SFLib.Collections.List<AbilityData>();
                     datas.Add(GetAbilityData(1));
                     var data = datas[0];
                     return $"{datas[0].DamageScaling:F0}:{data.ArtOfWarChance:F0}";
@@ -1510,7 +1583,7 @@ public class EmitSmokeTests
     public async Task Struct_collection_equality_without_typed_equals_is_diagnostic()
     {
         var src = """
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class List<T>
                 {
@@ -1532,9 +1605,9 @@ public class EmitSmokeTests
             {
                 public static void Run()
                 {
-                    var list = new SFLib.List<Cell>();
+                    var list = new SFLib.Collections.List<Cell>();
                     var hasCell = list.Contains(new Cell { X = 1 });
-                    var cells = new SFLib.Dictionary<Cell, int>();
+                    var cells = new SFLib.Collections.Dictionary<Cell, int>();
                     cells[new Cell { X = 1 }] = 1;
                 }
             }
@@ -1699,9 +1772,9 @@ public class EmitSmokeTests
     public async Task Dictionary_usage_emits_only_required_helpers()
     {
         var src = """
-            using SFLib;
+            using SFLib.Collections;
 
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class Dictionary<K, V>
                 {
@@ -1743,9 +1816,9 @@ public class EmitSmokeTests
     public async Task Dictionary_keys_emit_minimal_list_dependencies()
     {
         var src = """
-            using SFLib;
+            using SFLib.Collections;
 
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class List<T>
                 {
@@ -1785,9 +1858,9 @@ public class EmitSmokeTests
     public async Task SFLib_collections_emit_stub_backed_lua_helpers()
     {
         var src = """
-            using SFLib;
+            using SFLib.Collections;
 
-            namespace SFLib
+            namespace SFLib.Collections
             {
                 public class List<T>
                 {
@@ -1962,8 +2035,8 @@ public class EmitSmokeTests
         Assert.Contains("for kv__Key, kv__Value in SF__.DictIterate__(dict) do", lua);
         Assert.DoesNotContain("local kv = {", lua);
         Assert.Contains("local text = SF__.StrConcat__(kv__Key, \" = \", kv__Value)", lua);
-        Assert.DoesNotContain("-- SFLib.List", lua);
-        Assert.DoesNotContain("-- SFLib.Dictionary", lua);
+        Assert.DoesNotContain("-- SFLib.Collections.List", lua);
+        Assert.DoesNotContain("-- SFLib.Collections.Dictionary", lua);
     }
 
     [Fact]
@@ -1971,7 +2044,7 @@ public class EmitSmokeTests
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            using SFLib;
+            using SFLib.Collections;
 
             public class Program
             {
@@ -2007,9 +2080,99 @@ public class EmitSmokeTests
         Assert.Contains("SF__.ListAdd__(list, \"World\")", lua);
         Assert.Contains("for i, item in SF__.ListIterate__(collection) do", lua);
         Assert.Contains("if list.version ~= version then error(\"collection was modified during iteration\") end", lua);
-        Assert.DoesNotContain("SF__.SFLib.List.New()", lua);
+        Assert.DoesNotContain("SF__.SFLib.Collections.List.New()", lua);
         Assert.DoesNotContain("list:Add", lua);
-        Assert.DoesNotContain("-- SFLib.List", lua);
+        Assert.DoesNotContain("-- SFLib.Collections.List", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_lowers_bundled_SFLib_queue_stack_and_hash_set_to_lua_helpers()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using SFLib.Collections;
+
+            public class Program
+            {
+                public static void Main(string[] args)
+                {
+                    var queue = new Queue<string>();
+                    queue.Enqueue("first");
+                    queue.Enqueue("second");
+                    var queuePeek = queue.Peek();
+                    var queueItem = queue.Dequeue();
+                    var queueHasSecond = queue.Contains("second");
+                    var queueArray = queue.ToArray();
+                    foreach (var item in queue)
+                    {
+                        BJDebugMsg(item);
+                    }
+
+                    var stack = new Stack<string>();
+                    stack.Push("bottom");
+                    stack.Push("top");
+                    var stackPeek = stack.Peek();
+                    var stackItem = stack.Pop();
+                    var stackHasBottom = stack.Contains("bottom");
+                    var stackArray = stack.ToArray();
+                    foreach (var item in stack)
+                    {
+                        BJDebugMsg(item);
+                    }
+
+                    var set = new HashSet<string>();
+                    var added = set.Add("alpha");
+                    var duplicate = set.Add("alpha");
+                    var hasAlpha = set.Contains("alpha");
+                    var setArray = set.ToArray();
+                    foreach (var item in set)
+                    {
+                        BJDebugMsg(item);
+                    }
+                    var removed = set.Remove("alpha");
+                    set.Clear();
+                    BJDebugMsg(queuePeek + queueItem + stackPeek + stackItem + queueHasSecond + stackHasBottom + added + duplicate + hasAlpha + removed + queueArray.Length + stackArray.Length + setArray.Length);
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("local queue = SF__.ListNew__({})", lua);
+        Assert.Contains("SF__.ListAdd__(queue, \"first\")", lua);
+        Assert.Contains("local queuePeek = SF__.QueuePeek__(queue)", lua);
+        Assert.Contains("local queueItem = SF__.QueueDequeue__(queue)", lua);
+        Assert.Contains("local queueHasSecond = SF__.ListContains__(queue, \"second\")", lua);
+        Assert.Contains("local queueArray = SF__.ListToArray__(queue)", lua);
+        Assert.Contains("local stack = SF__.ListNew__({})", lua);
+        Assert.Contains("SF__.ListAdd__(stack, \"bottom\")", lua);
+        Assert.Contains("local stackPeek = SF__.StackPeek__(stack)", lua);
+        Assert.Contains("local stackItem = SF__.StackPop__(stack)", lua);
+        Assert.Contains("local stackHasBottom = SF__.ListContains__(stack, \"bottom\")", lua);
+        Assert.Contains("local stackArray = SF__.StackToArray__(stack)", lua);
+        Assert.Contains("in SF__.StackIterate__(", lua);
+        Assert.Contains("local set = SF__.HashSetNew__()", lua);
+        Assert.Contains("local added = SF__.HashSetAdd__(set, \"alpha\")", lua);
+        Assert.Contains("local duplicate = SF__.HashSetAdd__(set, \"alpha\")", lua);
+        Assert.Contains("local hasAlpha = SF__.HashSetContains__(set, \"alpha\")", lua);
+        Assert.Contains("local setArray = SF__.HashSetToArray__(set)", lua);
+        Assert.Contains("in SF__.HashSetIterate__(", lua);
+        Assert.Contains("local removed = SF__.HashSetRemove__(set, \"alpha\")", lua);
+        Assert.Contains("SF__.HashSetClear__(set)", lua);
+        Assert.DoesNotContain("-- SFLib.Collections.Queue", lua);
+        Assert.DoesNotContain("-- SFLib.Collections.Stack", lua);
+        Assert.DoesNotContain("-- SFLib.Collections.HashSet", lua);
     }
 
     [Fact]
@@ -2017,7 +2180,7 @@ public class EmitSmokeTests
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            using SFLib;
+            using SFLib.Contracts;
 
             public class BluntData : IEquatable<BluntData>
             {
@@ -2043,9 +2206,9 @@ public class EmitSmokeTests
 
         Assert.Equal(0, exitCode);
         var lua = await File.ReadAllTextAsync(output.FullName);
-        Assert.Contains("-- SFLib.IEquatable", lua);
-        Assert.Contains("SF__.SFLib.IEquatable = SF__.SFLib.IEquatable or {}", lua);
-        Assert.Contains("SF__.BluntData.__sf_interfaces = {[SF__.SFLib.IEquatable] = true}", lua);
+        Assert.Contains("-- SFLib.Contracts.IEquatable", lua);
+        Assert.Contains("SF__.SFLib.Contracts.IEquatable = SF__.SFLib.Contracts.IEquatable or {}", lua);
+        Assert.Contains("SF__.BluntData.__sf_interfaces = {[SF__.SFLib.Contracts.IEquatable] = true}", lua);
     }
 
     [Fact]
@@ -2053,7 +2216,7 @@ public class EmitSmokeTests
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            using SFLib;
+            using SFLib.Interop;
 
             public class Program
             {
@@ -2097,8 +2260,8 @@ public class EmitSmokeTests
         Assert.Contains("frameTimer.start(created)", lua);
         Assert.Contains("created:Method(1, \"abc\")", lua);
         Assert.Contains("BJDebugMsg(\"ready\")", lua);
-        Assert.DoesNotContain("-- SFLib.LuaInterop", lua);
-        Assert.DoesNotContain("SF__.SFLib.LuaInterop", lua);
+        Assert.DoesNotContain("-- SFLib.Interop.LuaInterop", lua);
+        Assert.DoesNotContain("SF__.SFLib.Interop.LuaInterop", lua);
     }
 
     [Fact]
@@ -2108,7 +2271,7 @@ public class EmitSmokeTests
         var wrapperDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "Lua"));
         await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "FrameTimer.cs"), """
             using System;
-            using SFLib;
+            using SFLib.Interop;
 
             namespace Lua;
 
@@ -2133,7 +2296,7 @@ public class EmitSmokeTests
             }
             """);
         await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "Time.cs"), """
-            using SFLib;
+            using SFLib.Interop;
 
             namespace Lua;
 
@@ -2146,7 +2309,7 @@ public class EmitSmokeTests
             """);
         await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
             using Lua;
-            using SFLib;
+            using SFLib.Interop;
 
             public class Program
             {
@@ -2203,7 +2366,7 @@ public class EmitSmokeTests
         var wrapperDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "LuaWrapper"));
         var systemsDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "Systems"));
         await File.WriteAllTextAsync(Path.Combine(wrapperDir.FullName, "SystemBase.cs"), """
-            using SFLib;
+            using SFLib.Interop;
 
             namespace LuaWrapper;
 
@@ -2218,7 +2381,7 @@ public class EmitSmokeTests
             """);
         await File.WriteAllTextAsync(Path.Combine(systemsDir.FullName, "InitAbilitiesSystem.cs"), """
             using LuaWrapper;
-            using SFLib;
+            using SFLib.Interop;
 
             namespace Systems;
 
@@ -2275,7 +2438,7 @@ public class EmitSmokeTests
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         await File.WriteAllTextAsync(Path.Combine(dir.FullName, "EntryClass.cs"), """
-            using SFLib;
+            using SFLib.Interop;
 
             [Lua(Require = "Lib.class")]
             [Lua(Require = "Lib.maths")]
@@ -2411,10 +2574,10 @@ public class EmitSmokeTests
     {
         var src = """
             using System;
-            using SFLib;
+            using SFLib.Interop;
             using static JASS;
 
-            namespace SFLib
+            namespace SFLib.Interop
             {
                 public sealed class LuaObject { }
 
@@ -2792,9 +2955,9 @@ public class EmitSmokeTests
     public async Task TableLiteral_class_lowers_constructor_call_to_table_literal()
     {
         var src = """
-            using SFLib;
+            using SFLib.Interop;
 
-            namespace SFLib
+            namespace SFLib.Interop
             {
                 using System;
                 [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
@@ -2840,9 +3003,9 @@ public class EmitSmokeTests
     public async Task TableLiteral_class_lowers_object_initializer_to_table_literal()
     {
         var src = """
-            using SFLib;
+            using SFLib.Interop;
 
-            namespace SFLib
+            namespace SFLib.Interop
             {
                 using System;
                 [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]

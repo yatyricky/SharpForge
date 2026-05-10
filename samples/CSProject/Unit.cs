@@ -1,4 +1,3 @@
-using SharpLib;
 namespace Game;
 
 
@@ -18,11 +17,11 @@ public class Unit
         BJDebugMsg("Tick");
     }
 
-    private async Task TheExcitingPart()
+    private async SFLib.Async.Task TheExcitingPart()
     {
         while (true)
         {
-            await Task.Delay(1000);
+            await SFLib.Async.Task.Delay(1000);
             Update();
         }
     }
@@ -31,7 +30,7 @@ public class Unit
     {
         BJDebugMsg("Level Up!");
 
-        var messages = new SharpLib.List<string>();
+        var messages = new SFLib.Collections.List<string>();
         messages.Add("You have leveled up!");
         foreach (var message in messages)
         {
@@ -47,7 +46,7 @@ public class Unit
             }
         }
 
-        var dict = new Dictionary<string, int>();
+        var dict = new SFLib.Collections.Dictionary<string, int>();
         dict["Level"] = 2;
         dict["HP"] = 66;
         BJDebugMsg($"Level: {dict["Level"]}, HP: {dict["HP"]}");
