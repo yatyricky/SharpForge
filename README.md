@@ -10,7 +10,7 @@ SharpForge is a C# scripting toolchain for Warcraft III: Reforged map developmen
 - **Integrate with your current toolchain.** World Editor still owns terrain, object data, and placed units. SharpForge fits beside your editor, source tree, Lua modules, and map build process.
 - **Do not reinvent the JASS API.** SharpForge does not translate platform calls into a fantasy object model. `KillUnit(unit)` stays `KillUnit(unit)`, not `unit.Kill()`.
 - **Migrate incrementally.** Existing Lua modules keep working. New C# code can call into Lua, Lua can call generated output, and projects can move one subsystem at a time.
-- **Emit performant Lua.** Generated code is direct Lua with a small helper surface. The bundled C# library is intentionally minimal, such as usable `List<T>`, `Dictionary<K,V>`, `Queue<T>`, `Stack<T>`, and `HashSet<T>` shapes, not a full clone of every .NET collection interface.
+- **Emit performant Lua.** Generated code is direct Lua with a small helper surface. The bundled C# library is intentionally minimal: usable `List<T>` and `Dictionary<K,V>` shapes, not a full clone of every .NET collection interface.
 - **Keep the runtime small.** SharpForge provides only the helpers needed by emitted code and interop stubs. It does not ship a broad standard-library translation layer.
 
 ## Discussion
@@ -25,13 +25,30 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 
 - [CLI](docs/cli.md) - man page for `sf-transpile`, `sf-build`, and `sf-jassgen`.
 - [GUI](docs/gui.md) - GUI wrapper behavior and fields.
-- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, debugger probes, root table contract, lowering coverage, and build notes.
-- [Lua Interop](docs/lua-interop.md) - raw `LuaInterop` calls and typed `LuaObject` wrappers for existing Lua modules.
-- [Collections](docs/collections.md) - minimal collection runtime notes.
-- [Struct Lowering](docs/struct.md) - current struct flattening behavior and open method-lowering work.
-- [Conditional Expression](docs/conditional-expression.md) - ternary `?:` lowering strategy.
-- [Type Casting](docs/type-casting.md) - explicit casting, `is`/`as`, and struct equality constraints.
-- [Regular Expressions](docs/regex.md) - supported `Regex.IsMatch` subset and Lua pattern limits.
+- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, root table contract, runtime bias, and build notes.
+
+### API Reference
+
+Complete documentation for every supported language construct and how it lowers to Lua:
+
+- [Types](docs/api/types.md) — primitives, literals
+- [Operators](docs/api/operators.md) — binary, unary, compound assignment
+- [Strings](docs/api/strings.md) — interpolation, concatenation, format specifiers
+- [Control Flow](docs/api/control-flow.md) — if/else, while, for, foreach, switch, break, continue
+- [Arrays](docs/api/arrays.md) — creation, element access, length
+- [Classes](docs/api/classes.md) — static/instance, constructors, fields, auto-properties, events
+- [Inheritance](docs/api/inheritance.md) — single inheritance, virtual/override, base(), interfaces
+- [Structs](docs/api/structs.md) — field flattening, multi-return, SoA List
+- [Enums](docs/api/enums.md) — enum lowering, Flags diagnostic
+- [Exceptions](docs/api/exceptions.md) — try/catch/finally, throw
+- [Delegates](docs/api/delegates.md) — lambdas, Func\<\>, operator overloads
+- [Async](docs/api/async.md) — coroutines, Task.Delay, CorRun__/CorWait__
+- [Collections](docs/api/collections.md) — List\<T\> and Dictionary\<K,V\>
+- [Regex](docs/api/regex.md) — Regex.IsMatch subset
+- [Lua Interop](docs/api/lua-interop.md) — LuaInterop, LuaObject, [Lua(...)] attributes
+- [Casting](docs/api/casting.md) — explicit cast erasure, is/as
+- [Conditional](docs/api/conditional.md) — ternary ?:, Ternary__ helper
+- [Diagnostics](docs/api/diagnostics.md) — [Debugger] probes, DesyncLinter
 
 ## Repository Layout
 

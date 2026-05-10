@@ -5,16 +5,23 @@ applyTo: "src/Transpiler/**,tests/Transpiler.Tests/**,docs/**,*.md"
 
 # Planning Hazard Complexity
 
-As SharpForge grows, feature risk grows faster than the feature count. Every new lowering or runtime feature can interact with structs, collections, overload resolution, inheritance, interfaces, Lua/JASS interop, nil/null behavior, diagnostics, and docs. Treat that interaction surface as part of the design.
+As SharpForge grows, feature risk grows faster than the feature count. Every new lowering or runtime feature can interact with existing runtime and lowering features. Treat all potential interactions between the new feature and existing runtime/lowering features as part of the design.
 
-Before implementing a non-trivial feature, add a short hazard matrix to the plan:
+Before implementing a non-trivial feature, add a short hazard matrix to the plan. Evaluate interactions in this order (higher-risk categories first):
 
+**Representation layer** (check first — most likely to break generated correctness):
 - What changes in the core happy path?
 - What happens with structs and struct flattening?
 - What happens inside `List<T>`, `Dictionary<K,V>`, arrays, and `foreach`?
+
+**Type system layer** (check second):
 - What happens with overloads, virtual/override dispatch, inheritance, and interfaces?
 - What happens with `nil`, nullable values, default values, and sentinels?
+
+**Interop layer** (check third):
 - What happens when Lua values are JASS handles, `LuaObject` wrappers, raw tables, functions, or userdata?
+
+**Surface layer** (check last):
 - What unsupported intersections should become diagnostics instead of best-effort Lua?
 - Which docs must state behavior, limits, and escape hatches?
 

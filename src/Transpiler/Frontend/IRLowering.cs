@@ -32,6 +32,7 @@ public sealed class IRLowering
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
     private DebuggerLoweringContext? _debuggerContext;
+    private IAssemblySymbol? _compilationAssembly;
 
     private sealed record DebuggerValue(string Label, string LuaName, int ScopeDepth);
 
@@ -65,6 +66,7 @@ public sealed class IRLowering
     {
         var module = new IRModule();
         _module = module;
+        _compilationAssembly = compilation.Assembly;
         _luaNames.Clear();
         _luaObjectModuleNames.Clear();
         _luaModuleBlockContexts.Clear();
@@ -225,6 +227,7 @@ public sealed class IRLowering
         return false;
     }
 
+    // ref: docs/api/classes.md
     private IRType LowerType(TypeDeclarationSyntax typeDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
     {
         var nsSegments = GetTypeContainerSegments(symbol);
@@ -579,6 +582,7 @@ public sealed class IRLowering
         return GetImplicitBaseConstructorCall(owner);
     }
 
+    // ref: docs/api/async.md
     private IRFunction LowerMethod(MethodDeclarationSyntax m, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
         var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
@@ -848,6 +852,7 @@ public sealed class IRLowering
     private IReadOnlyDictionary<string, string> AddFlattenedStructSelfParameters(IRFunction fn, INamedTypeSymbol structType)
         => AddFlattenedStructParameters(fn, "self", structType);
 
+    // ref: docs/api/structs.md
     private IReadOnlyDictionary<string, string> AddFlattenedStructParameters(IRFunction fn, string baseName, INamedTypeSymbol structType)
     {
         var fieldLocals = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1092,6 +1097,7 @@ public sealed class IRLowering
         }
     }
 
+    // ref: docs/api/control-flow.md
     private IRStmt LowerSwitch(SwitchStatementSyntax switchStatement, SemanticModel model, CancellationToken ct)
     {
         var sections = new List<IRSwitchSection>();
@@ -1157,31 +1163,18 @@ public sealed class IRLowering
             _ => new IRExprStmt(LowerExpr(expression, model)),
         };
 
+    // ref: docs/api/control-flow.md
     private IRStmt LowerForEach(ForEachStatementSyntax fe, SemanticModel model, CancellationToken ct)
     {
         var collectionType = model.GetTypeInfo(fe.Expression).Type;
         var collection = LowerExpr(fe.Expression, model);
         var itemSymbol = model.GetDeclaredSymbol(fe, ct);
         var body = new IRBlock();
-        if (IsHashSetType(collectionType))
-        {
-            var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
-            LowerBlock(fe.Statement, body, model, ct);
-            return new IRHashSetForEach(itemName, collection, body, TryBuildHashSetValueComparer(collectionType, fe.GetLocation(), out _));
-        }
-
-        if (IsStackType(collectionType))
-        {
-            var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
-            LowerBlock(fe.Statement, body, model, ct);
-            return new IRStackForEach(itemName, collection, body);
-        }
-
         if (!IsDictionaryType(collectionType))
         {
             var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
             LowerBlock(fe.Statement, body, model, ct);
-            return new IRForEach(itemName, collection, body, UseListIterator: IsListType(collectionType) || IsQueueType(collectionType));
+            return new IRForEach(itemName, collection, body, UseListIterator: IsListType(collectionType));
         }
 
         var itemBaseName = EscapeLuaKeyword(fe.Identifier.ValueText);
@@ -1207,6 +1200,7 @@ public sealed class IRLowering
         return new IRDictionaryForEach(dictionaryItemName, keyName, valueName, collection, body, TryBuildDictionaryKeyComparer(collectionType, fe.GetLocation(), out _));
     }
 
+    // ref: docs/api/exceptions.md
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
     {
         if (ts.Catches.Count > 1)
@@ -1662,189 +1656,6 @@ public sealed class IRLowering
             return new IRListToArray(LowerExpr(toArrayAccess.Expression, model));
         }
 
-        if (symbol is { Name: "Enqueue", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax enqueueAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(enqueueAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionAddExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model);
-            }
-
-            return new IRListAdd(
-                LowerExpr(enqueueAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model));
-        }
-
-        if (symbol is { Name: "Dequeue", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dequeueAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(dequeueAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionTakeTableExpression(listLocal, new IRLiteral(0, IRLiteralKind.Integer), remove: true, emptyMessage: "queue is empty");
-            }
-
-            return new IRQueueDequeue(LowerExpr(dequeueAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Peek", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queuePeekAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(queuePeekAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionTakeTableExpression(listLocal, new IRLiteral(0, IRLiteralKind.Integer), remove: false, emptyMessage: "queue is empty");
-            }
-
-            return new IRQueuePeek(LowerExpr(queuePeekAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Clear", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queueClearAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(queueClearAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionClearExpression(listLocal);
-            }
-
-            return new IRListClear(LowerExpr(queueClearAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Contains", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queueContainsAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(queueContainsAccess.Expression, model, out var listLocal))
-            {
-                return new IRBinary(">=", BuildFlattenedStructCollectionIndexOfExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model), new IRLiteral(0, IRLiteralKind.Integer));
-            }
-
-            TryBuildStructEqualityComparer(GetCollectionElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
-            return new IRListContains(
-                LowerExpr(queueContainsAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
-                comparer);
-        }
-
-        if (symbol is { Name: "ToArray", IsStatic: false } && IsQueueType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax queueToArrayAccess && args.Count == 0)
-        {
-            return new IRListToArray(LowerExpr(queueToArrayAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Push", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax pushAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(pushAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionAddExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model);
-            }
-
-            return new IRListAdd(
-                LowerExpr(pushAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model));
-        }
-
-        if (symbol is { Name: "Pop", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax popAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(popAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionTakeTableExpression(listLocal, GetFlattenedStructCollectionLastIndex(listLocal), remove: true, emptyMessage: "stack is empty");
-            }
-
-            return new IRStackPop(LowerExpr(popAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Peek", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackPeekAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(stackPeekAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionTakeTableExpression(listLocal, GetFlattenedStructCollectionLastIndex(listLocal), remove: false, emptyMessage: "stack is empty");
-            }
-
-            return new IRStackPeek(LowerExpr(stackPeekAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Clear", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackClearAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(stackClearAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionClearExpression(listLocal);
-            }
-
-            return new IRListClear(LowerExpr(stackClearAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Contains", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackContainsAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(stackContainsAccess.Expression, model, out var listLocal))
-            {
-                return new IRBinary(">=", BuildFlattenedStructCollectionIndexOfExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model), new IRLiteral(0, IRLiteralKind.Integer));
-            }
-
-            TryBuildStructEqualityComparer(GetCollectionElementType(symbol.ContainingType), inv.GetLocation(), out var comparer);
-            return new IRListContains(
-                LowerExpr(stackContainsAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
-                comparer);
-        }
-
-        if (symbol is { Name: "ToArray", IsStatic: false } && IsStackType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax stackToArrayAccess && args.Count == 0)
-        {
-            return new IRStackToArray(LowerExpr(stackToArrayAccess.Expression, model));
-        }
-
-        if (symbol is { Name: "Add", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setAddAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(setAddAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructHashSetAddExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model);
-            }
-
-            var useLinearKeys = TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _);
-            return new IRHashSetAdd(
-                LowerExpr(setAddAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
-                useLinearKeys);
-        }
-
-        if (symbol is { Name: "Contains", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setContainsAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(setContainsAccess.Expression, model, out var listLocal))
-            {
-                return new IRBinary(">=", BuildFlattenedStructCollectionIndexOfExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model), new IRLiteral(0, IRLiteralKind.Integer));
-            }
-
-            var useLinearKeys = TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _);
-            return new IRHashSetContains(
-                LowerExpr(setContainsAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
-                useLinearKeys);
-        }
-
-        if (symbol is { Name: "Remove", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setRemoveAccess && inv.ArgumentList.Arguments.Count == 1)
-        {
-            if (TryGetFlattenedStructListLocal(setRemoveAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionRemoveExpression(listLocal, inv.ArgumentList.Arguments[0].Expression, model);
-            }
-
-            var useLinearKeys = TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _);
-            return new IRHashSetRemove(
-                LowerExpr(setRemoveAccess.Expression, model),
-                LowerCollectionElementValue(inv.ArgumentList.Arguments[0].Expression, symbol.ContainingType, model),
-                useLinearKeys);
-        }
-
-        if (symbol is { Name: "Clear", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setClearAccess && args.Count == 0)
-        {
-            if (TryGetFlattenedStructListLocal(setClearAccess.Expression, model, out var listLocal))
-            {
-                return BuildFlattenedStructCollectionClearExpression(listLocal);
-            }
-
-            return new IRHashSetClear(
-                LowerExpr(setClearAccess.Expression, model),
-                TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _));
-        }
-
-        if (symbol is { Name: "ToArray", IsStatic: false } && IsHashSetType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax setToArrayAccess && args.Count == 0)
-        {
-            return new IRHashSetToArray(
-                LowerExpr(setToArrayAccess.Expression, model),
-                TryBuildHashSetValueComparer(symbol.ContainingType, inv.GetLocation(), out _));
-        }
-
         if (symbol is { Name: "Add", IsStatic: false } && IsDictionaryType(symbol.ContainingType) && inv.Expression is MemberAccessExpressionSyntax dictAddAccess && inv.ArgumentList.Arguments.Count == 2)
         {
             var useLinearKeys = TryBuildDictionaryKeyComparer(symbol.ContainingType, inv.GetLocation(), out _);
@@ -1982,6 +1793,15 @@ public sealed class IRLowering
                 args);
         }
 
+        // Hard error for any call on a type defined outside the compilation (BCL / external API not explicitly handled above).
+        if (symbol is not null
+            && _compilationAssembly is not null
+            && !SymbolEqualityComparer.Default.Equals(symbol.ContainingAssembly, _compilationAssembly))
+        {
+            AddDiagnostic(inv.GetLocation(), $"unsupported external method '{symbol.ContainingType?.ToDisplayString()}.{symbol.Name}'; SharpForge has no lowering for this API");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
         return new IRInvocation(LowerExpr(inv.Expression, model), args);
     }
 
@@ -2024,6 +1844,7 @@ public sealed class IRLowering
         return new[] { LowerExpr(expression, model) };
     }
 
+    // ref: docs/api/regex.md
     private IRExpr? TryLowerRegexInvocation(InvocationExpressionSyntax invocation, IMethodSymbol symbol, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
         if (!IsRegexType(symbol.ContainingType))
@@ -2075,13 +1896,8 @@ public sealed class IRLowering
             return null;
         }
 
-        if (symbol.Name is "Add" or "Enqueue" or "Push" && invocation.ArgumentList.Arguments.Count == 1)
+        if (symbol.Name is "Add" && invocation.ArgumentList.Arguments.Count == 1)
         {
-            if (IsHashSetType(symbol.ContainingType))
-            {
-                return new IRExprStmt(BuildFlattenedStructHashSetAddExpression(listLocal, invocation.ArgumentList.Arguments[0].Expression, model));
-            }
-
             return BuildFlattenedStructCollectionAddStatement(listLocal, invocation.ArgumentList.Arguments[0].Expression, model);
         }
 
@@ -2093,16 +1909,6 @@ public sealed class IRLowering
         if (symbol.Name == "Clear" && invocation.ArgumentList.Arguments.Count == 0)
         {
             return BuildFlattenedStructCollectionClearStatement(listLocal);
-        }
-
-        if (symbol.Name == "Dequeue" && invocation.ArgumentList.Arguments.Count == 0)
-        {
-            return BuildFlattenedStructCollectionTakeStatement(listLocal, new IRLiteral(0, IRLiteralKind.Integer), emptyMessage: "queue is empty");
-        }
-
-        if (symbol.Name == "Pop" && invocation.ArgumentList.Arguments.Count == 0)
-        {
-            return BuildFlattenedStructCollectionTakeStatement(listLocal, GetFlattenedStructCollectionLastIndex(listLocal), emptyMessage: "stack is empty");
         }
 
         return null;
@@ -2186,35 +1992,6 @@ public sealed class IRLowering
         });
 
         body.Statements.Add(new IRReturn(new IRLiteral(false, IRLiteralKind.Boolean)));
-        return BuildImmediatelyInvokedExpression(body);
-    }
-
-    private IRExpr BuildFlattenedStructHashSetAddExpression(FlattenedStructListLocal listLocal, ExpressionSyntax item, SemanticModel model)
-    {
-        var fields = listLocal.Fields;
-        var values = LowerStructArgumentValues(item, listLocal.StructType, model);
-        var valueNames = fields.Select(field => AllocateLuaName($"value__{field.Name}")).ToArray();
-        var indexName = AllocateLuaName("i");
-        var index = new IRIdentifier(indexName);
-        var firstArray = new IRIdentifier(listLocal.FieldArrays[fields[0].Name]);
-        var body = new IRBlock();
-        body.Statements.Add(new IRMultiLocalDecl(valueNames, values));
-        body.Statements.Add(new IRLocalDecl(indexName, new IRLiteral(0, IRLiteralKind.Integer)));
-
-        var whileBody = new IRBlock();
-        var duplicateBody = new IRBlock();
-        duplicateBody.Statements.Add(new IRReturn(new IRLiteral(false, IRLiteralKind.Boolean)));
-        whileBody.Statements.Add(new IRIf(
-            BuildFlattenedStructCollectionEqualityCondition(listLocal, index, valueNames, item.GetLocation()),
-            duplicateBody,
-            null));
-        whileBody.Statements.Add(new IRAssign(index, new IRBinary("+", index, new IRLiteral(1, IRLiteralKind.Integer))));
-        body.Statements.Add(new IRWhile(new IRBinary("<", index, new IRLength(firstArray)), whileBody));
-        for (var i = 0; i < fields.Count; i++)
-        {
-            body.Statements.Add(BuildTableInsertStatement(listLocal.FieldArrays[fields[i].Name], new IRIdentifier(valueNames[i])));
-        }
-        body.Statements.Add(new IRReturn(new IRLiteral(true, IRLiteralKind.Boolean)));
         return BuildImmediatelyInvokedExpression(body);
     }
 
@@ -2436,20 +2213,8 @@ public sealed class IRLowering
             return false;
         }
 
-        values = symbol.Name switch
-        {
-            "Dequeue" when IsQueueType(symbol.ContainingType) => new[] { BuildFlattenedStructCollectionTakeValuesExpression(listLocal, new IRLiteral(0, IRLiteralKind.Integer), remove: true, emptyMessage: "queue is empty") },
-            "Peek" when IsQueueType(symbol.ContainingType) => listLocal.Fields
-                .Select(field => (IRExpr)new IRElementAccess(new IRIdentifier(listLocal.FieldArrays[field.Name]), new IRLiteral(0, IRLiteralKind.Integer)))
-                .ToArray(),
-            "Pop" when IsStackType(symbol.ContainingType) => new[] { BuildFlattenedStructCollectionTakeValuesExpression(listLocal, GetFlattenedStructCollectionLastIndex(listLocal), remove: true, emptyMessage: "stack is empty") },
-            "Peek" when IsStackType(symbol.ContainingType) => listLocal.Fields
-                .Select(field => (IRExpr)new IRElementAccess(new IRIdentifier(listLocal.FieldArrays[field.Name]), GetFlattenedStructCollectionLastIndex(listLocal)))
-                .ToArray(),
-            _ => Array.Empty<IRExpr>(),
-        };
-
-        return values.Count > 0;
+        values = Array.Empty<IRExpr>();
+        return false;
     }
 
     private IRStmt? TryLowerStructLocalDeclaration(
@@ -2558,9 +2323,6 @@ public sealed class IRLowering
             return model.GetSymbolInfo(memberAccess).Symbol switch
             {
                 IMethodSymbol { Name: "Add" or "Clear" or "Contains" or "IndexOf" or "Remove" or "RemoveAt" } when IsListType(collectionType) => true,
-                IMethodSymbol { Name: "Enqueue" or "Dequeue" or "Peek" or "Clear" or "Contains" } when IsQueueType(collectionType) => true,
-                IMethodSymbol { Name: "Push" or "Pop" or "Peek" or "Clear" or "Contains" } when IsStackType(collectionType) => true,
-                IMethodSymbol { Name: "Add" or "Contains" or "Remove" or "Clear" } when IsHashSetType(collectionType) => true,
                 IPropertySymbol { Name: "Count" } => true,
                 _ => false,
             };
@@ -2977,6 +2739,7 @@ public sealed class IRLowering
         return result;
     }
 
+    // ref: docs/api/delegates.md
     private IRExpr LowerAnonymousFunction(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
     {
         var parameters = GetAnonymousFunctionParameters(anonymousFunction)
@@ -3030,6 +2793,7 @@ public sealed class IRLowering
     private static bool AnonymousFunctionReturnsVoid(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
         => (model.GetTypeInfo(anonymousFunction).ConvertedType as INamedTypeSymbol)?.DelegateInvokeMethod?.ReturnsVoid == true;
 
+    // ref: docs/api/casting.md
     private IRExpr LowerTypeTest(ExpressionSyntax value, ExpressionSyntax typeSyntax, SemanticModel model, bool isAsExpression)
     {
         var type = model.GetTypeInfo(typeSyntax).Type as INamedTypeSymbol;
@@ -3197,20 +2961,9 @@ public sealed class IRLowering
             return new IRDictionaryNew(useLinearKeys, keyComparer);
         }
 
-        if (IsHashSetType(type))
-        {
-            var useLinearKeys = TryBuildHashSetValueComparer(type, obj.GetLocation(), out var valueComparer);
-            return new IRHashSetNew(useLinearKeys, valueComparer);
-        }
-
         if (IsListType(type))
         {
             return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerListElementValue(item, type, model)).ToArray() ?? Array.Empty<IRExpr>());
-        }
-
-        if (IsQueueType(type) || IsStackType(type))
-        {
-            return new IRListNew(obj.Initializer?.Expressions.Select(item => LowerCollectionElementValue(item, type, model)).ToArray() ?? Array.Empty<IRExpr>());
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
@@ -3307,33 +3060,11 @@ public sealed class IRLowering
             return new IRListCount(LowerExpr(access.Expression, model));
         }
 
-        if (IsQueueType(type) || IsStackType(type))
-        {
-            if (TryGetFlattenedStructListLocal(access.Expression, model, out var listLocal))
-            {
-                return new IRLength(new IRIdentifier(listLocal.FieldArrays[listLocal.Fields[0].Name]));
-            }
-
-            return new IRListCount(LowerExpr(access.Expression, model));
-        }
-
         if (IsDictionaryType(type))
         {
             return new IRDictionaryCount(
                 LowerExpr(access.Expression, model),
                 TryBuildDictionaryKeyComparer(type, access.GetLocation(), out _));
-        }
-
-        if (IsHashSetType(type))
-        {
-            if (TryGetFlattenedStructListLocal(access.Expression, model, out var listLocal))
-            {
-                return new IRLength(new IRIdentifier(listLocal.FieldArrays[listLocal.Fields[0].Name]));
-            }
-
-            return new IRHashSetCount(
-                LowerExpr(access.Expression, model),
-                TryBuildHashSetValueComparer(type, access.GetLocation(), out _));
         }
 
         return null;
@@ -3388,20 +3119,8 @@ public sealed class IRLowering
         => type is INamedTypeSymbol { Name: "Dictionary", ContainingNamespace: { } ns }
            && IsSFLibCollectionNamespace(ns);
 
-    private static bool IsQueueType(ITypeSymbol? type)
-        => type is INamedTypeSymbol { Name: "Queue", ContainingNamespace: { } ns }
-           && IsSFLibCollectionNamespace(ns);
-
-    private static bool IsStackType(ITypeSymbol? type)
-        => type is INamedTypeSymbol { Name: "Stack", ContainingNamespace: { } ns }
-           && IsSFLibCollectionNamespace(ns);
-
-    private static bool IsHashSetType(ITypeSymbol? type)
-        => type is INamedTypeSymbol { Name: "HashSet", ContainingNamespace: { } ns }
-           && IsSFLibCollectionNamespace(ns);
-
     private static bool IsFlattenableStructSequenceType(ITypeSymbol? type)
-        => IsListType(type) || IsQueueType(type) || IsStackType(type) || IsHashSetType(type);
+        => IsListType(type);
 
     private static ITypeSymbol? GetListElementType(ITypeSymbol? type)
         => type is INamedTypeSymbol { TypeArguments.Length: 1 } namedType && IsListType(namedType)
@@ -3409,8 +3128,7 @@ public sealed class IRLowering
             : null;
 
     private static ITypeSymbol? GetCollectionElementType(ITypeSymbol? type)
-        => type is INamedTypeSymbol { TypeArguments.Length: 1 } namedType
-           && (IsListType(namedType) || IsQueueType(namedType) || IsStackType(namedType) || IsHashSetType(namedType))
+        => type is INamedTypeSymbol { TypeArguments.Length: 1 } namedType && IsListType(namedType)
             ? namedType.TypeArguments[0]
             : null;
 
@@ -3418,17 +3136,6 @@ public sealed class IRLowering
     {
         comparer = null;
         if (dictionaryType is not INamedTypeSymbol { TypeArguments.Length: > 0 } namedType || !IsDictionaryType(namedType))
-        {
-            return false;
-        }
-
-        return TryBuildStructEqualityComparer(namedType.TypeArguments[0], location, out comparer);
-    }
-
-    private bool TryBuildHashSetValueComparer(ITypeSymbol? setType, Location location, out IRExpr? comparer)
-    {
-        comparer = null;
-        if (setType is not INamedTypeSymbol { TypeArguments.Length: > 0 } namedType || !IsHashSetType(namedType))
         {
             return false;
         }
@@ -3518,6 +3225,7 @@ public sealed class IRLowering
         };
     }
 
+    // ref: docs/api/lua-interop.md
     private static IRExpr? TryLowerLuaInteropInvocation(IMethodSymbol symbol, IReadOnlyList<IRExpr> args)
     {
         if (!IsLuaInteropMethod(symbol))
@@ -4380,14 +4088,6 @@ public sealed class IRLowering
                 CollectTypeReferences(dictionaryForEach.Dictionary, dependencies);
                 CollectTypeReferences(dictionaryForEach.Body, dependencies);
                 break;
-            case IRStackForEach stackForEach:
-                CollectTypeReferences(stackForEach.Stack, dependencies);
-                CollectTypeReferences(stackForEach.Body, dependencies);
-                break;
-            case IRHashSetForEach hashSetForEach:
-                CollectTypeReferences(hashSetForEach.Set, dependencies);
-                CollectTypeReferences(hashSetForEach.Body, dependencies);
-                break;
             case IRTry tryStmt:
                 CollectTypeReferences(tryStmt.Try, dependencies);
                 if (tryStmt.Catch is not null)
@@ -4555,45 +4255,6 @@ public sealed class IRLowering
                 break;
             case IRListToArray listToArray:
                 CollectTypeReferences(listToArray.List, dependencies);
-                break;
-            case IRQueueDequeue queueDequeue:
-                CollectTypeReferences(queueDequeue.Queue, dependencies);
-                break;
-            case IRQueuePeek queuePeek:
-                CollectTypeReferences(queuePeek.Queue, dependencies);
-                break;
-            case IRStackPop stackPop:
-                CollectTypeReferences(stackPop.Stack, dependencies);
-                break;
-            case IRStackPeek stackPeek:
-                CollectTypeReferences(stackPeek.Stack, dependencies);
-                break;
-            case IRStackToArray stackToArray:
-                CollectTypeReferences(stackToArray.Stack, dependencies);
-                break;
-            case IRHashSetNew hashSetNew when hashSetNew.KeyComparer is not null:
-                CollectTypeReferences(hashSetNew.KeyComparer, dependencies);
-                break;
-            case IRHashSetCount hashSetCount:
-                CollectTypeReferences(hashSetCount.Set, dependencies);
-                break;
-            case IRHashSetAdd hashSetAdd:
-                CollectTypeReferences(hashSetAdd.Set, dependencies);
-                CollectTypeReferences(hashSetAdd.Value, dependencies);
-                break;
-            case IRHashSetRemove hashSetRemove:
-                CollectTypeReferences(hashSetRemove.Set, dependencies);
-                CollectTypeReferences(hashSetRemove.Value, dependencies);
-                break;
-            case IRHashSetContains hashSetContains:
-                CollectTypeReferences(hashSetContains.Set, dependencies);
-                CollectTypeReferences(hashSetContains.Value, dependencies);
-                break;
-            case IRHashSetClear hashSetClear:
-                CollectTypeReferences(hashSetClear.Set, dependencies);
-                break;
-            case IRHashSetToArray hashSetToArray:
-                CollectTypeReferences(hashSetToArray.Set, dependencies);
                 break;
             case IRLuaRequire luaRequire:
                 CollectTypeReferences(luaRequire.ModuleName, dependencies);
