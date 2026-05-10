@@ -245,10 +245,26 @@ end
 dirs.RemoveAt(0);
 ```
 
-emits a helper that removes the same index from all parallel arrays:
+removes the same index from all parallel arrays:
 
 ```lua
-SF__.ListRemoveAt__(dirs__x, dirs__y, 1)
+table.remove(dirs__x, 1)
+table.remove(dirs__y, 1)
+```
+
+**Remove.**
+
+```csharp
+dirs.Remove(new Vector2 { x = 1, y = 2 });
+```
+
+scans the field arrays with the struct's typed `Equals(T)` method, then removes the matched index from every parallel array:
+
+```lua
+if SF__.Vector2.Equals(dirs__x[i], dirs__y[i], value__x, value__y) then
+    table.remove(dirs__x, i)
+    table.remove(dirs__y, i)
+end
 ```
 
 **Count.**
@@ -366,21 +382,25 @@ The unified wrapper is preferred: it avoids duplicate version fields, guarantees
 
 Whichever shape is chosen, the doc examples above use the flattened local-name convention (`dirs__x`, `dirs__y`) to describe the *logical* emitted Lua. The actual runtime helper calls (`SF__.ListGet__`, etc.) wrap these details; the emitter is free to route through `.items` or a parallel-array-aware helper as needed.
 
-#### Future List Methods
+#### Supported List Methods
 
-When implementing additional `List<T>` methods, each must account for the SoA case when `T` is a struct type. Methods that touch individual elements or iterate must be aware of parallel arrays:
+Supported local `List<struct>` operations account for the SoA case. Methods that touch individual elements apply the same logical index to every parallel array:
 
 | Method | SoA impact |
 |---|---|
-| `Insert(index, item)` | Must insert at the same index in all parallel arrays |
-| `Remove(item)` | Must scan one array to find the index, then remove from all |
-| `Clear()` | Must clear all parallel arrays |
-| `IndexOf(item)` | Struct equality is unsupported (no `Equals`); this method is likely a diagnostic for struct `T` |
-| `Contains(item)` | Same equality constraint as `IndexOf` |
-| `CopyTo(array, index)` | Must copy all parallel arrays into the corresponding flattened destination |
-| `ToArray()` | Must reconstruct a struct representation; may require boxing into a table per element |
-| `GetEnumerator()` / manual enumeration | Must yield indices usable across all parallel arrays |
-| `this[int].set` after `Add` | Must assign to the same logical index in all arrays |
+| `Add(item)` | Inserts every field into its matching field array |
+| `RemoveAt(index)` | Removes the same index from all parallel arrays |
+| `Remove(item)` | Scans with typed `Equals(T)`, then removes the matched index from all parallel arrays |
+| `Clear()` | Clears all parallel arrays |
+| `IndexOf(item)` | Scans with typed `Equals(T)` and returns the logical zero-based index |
+| `Contains(item)` | Uses the same typed `Equals(T)` scan as `IndexOf` |
+| index get/set | Reads or writes the same logical index across all field arrays |
+
+Local `Queue<struct>` and `Stack<struct>` use the same field-array representation for their list-like storage. `Enqueue`/`Push` insert every field, while `Dequeue`/`Pop` remove from every field array at the queue head or stack top. `Peek`, `Count`, `Clear`, and `Contains` also read or update the parallel arrays directly.
+
+Local `HashSet<struct>` can also use field arrays for `Add`, `Contains`, `Remove`, `Clear`, and `Count`. Membership checks scan the arrays with typed `Equals(T)` and `Remove` deletes the matched index from every field array.
+
+Unsupported methods such as `Insert`, `Reverse`, `Sort`, `ToArray`, manual enumerators, and broader copy APIs fall back to non-flattened collection lowering or remain unsupported depending on the surrounding use.
 
 The general rule: any operation that adds, removes, or moves elements must apply to all parallel arrays atomically. Operations that compare elements (`IndexOf`, `Contains`, `Remove(item)`) must respect the no-boxed-equality constraint on structs.
 

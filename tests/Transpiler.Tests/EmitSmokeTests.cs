@@ -1474,7 +1474,66 @@ public class EmitSmokeTests
     }
 
     [Fact]
-    public async Task Struct_list_equality_operations_use_typed_equals()
+    public async Task Struct_hash_set_local_remove_operations_use_parallel_field_arrays()
+    {
+        var src = """
+            namespace SFLib.Collections
+            {
+                public class HashSet<T>
+                {
+                    public int Count => 0;
+                    public bool Add(T item) { return false; }
+                    public bool Contains(T item) { return false; }
+                    public bool Remove(T item) { return false; }
+                    public void Clear() { }
+                }
+            }
+
+            public struct Cell
+            {
+                public int X;
+                public int Y;
+
+                public bool Equals(Cell other)
+                {
+                    return X == other.X && Y == other.Y;
+                }
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var cells = new SFLib.Collections.HashSet<Cell>();
+                    var a = new Cell { X = 1, Y = 2 };
+                    var b = new Cell { X = 1, Y = 2 };
+                    var added = cells.Add(a);
+                    var duplicate = cells.Add(b);
+                    var hasB = cells.Contains(b);
+                    var count = cells.Count;
+                    var removed = cells.Remove(b);
+                    cells.Clear();
+                    return added && !duplicate && hasB && removed ? count : 0;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructHashSetLocal.cs");
+
+        Assert.Contains("local cells__X, cells__Y = {}, {}", lua);
+        Assert.Contains("table.insert(cells__X", lua);
+        Assert.Contains("table.insert(cells__Y", lua);
+        Assert.Contains("table.remove(cells__X", lua);
+        Assert.Contains("table.remove(cells__Y", lua);
+        Assert.Contains("if SF__.Cell.Equals(", lua);
+        Assert.Contains("local count = #cells__X", lua);
+        Assert.DoesNotContain("SF__.HashSetLinearAdd__(cells", lua);
+        Assert.DoesNotContain("SF__.HashSetLinearRemove__(cells", lua);
+        Assert.DoesNotContain("SF__.HashSetLinearContains__(cells", lua);
+    }
+
+    [Fact]
+    public async Task Struct_list_equality_and_remove_operations_use_parallel_field_arrays()
     {
         var src = """
             namespace SFLib.Collections
@@ -1485,6 +1544,7 @@ public class EmitSmokeTests
                     public bool Contains(T item) { return false; }
                     public int IndexOf(T item) { return -1; }
                     public bool Remove(T item) { return false; }
+                    public void RemoveAt(int index) { }
                 }
             }
 
@@ -1507,6 +1567,8 @@ public class EmitSmokeTests
                     var a = new Cell { X = 1, Y = 2 };
                     var b = new Cell { X = 1, Y = 2 };
                     cells.Add(a);
+                    cells.Add(b);
+                    cells.RemoveAt(0);
                     var hasB = cells.Contains(b);
                     var index = cells.IndexOf(b);
                     var removed = cells.Remove(b);
@@ -1517,14 +1579,89 @@ public class EmitSmokeTests
 
         var lua = await TranspileSourceAsync(src, "StructListEquality.cs");
 
-        Assert.Contains("function SF__.ListIndexOf__(list, value, equals)", lua);
-        Assert.Contains("if equals ~= nil then", lua);
-        Assert.Contains("if equals(SF__.ListUnwrap__(item), value) then return i - 1 end", lua);
-        Assert.Contains("local hasB = SF__.ListContains__(cells", lua);
-        Assert.Contains("local index = SF__.ListIndexOf__(cells", lua);
-        Assert.Contains("local removed = SF__.ListRemove__(cells", lua);
-        Assert.Contains("function(left, right)", lua);
-        Assert.Contains("return SF__.Cell.Equals(left.X, left.Y, right.X, right.Y)", lua);
+        Assert.Contains("local cells__X, cells__Y = {}, {}", lua);
+        Assert.Contains("table.insert(cells__X", lua);
+        Assert.Contains("table.insert(cells__Y", lua);
+        Assert.Contains("table.remove(cells__X", lua);
+        Assert.Contains("table.remove(cells__Y", lua);
+        Assert.Contains("if SF__.Cell.Equals(", lua);
+        Assert.Contains("cells__X[(", lua);
+        Assert.Contains("cells__Y[(", lua);
+        Assert.Contains("value__X", lua);
+        Assert.Contains("value__Y", lua);
+        Assert.Contains("(function()", lua);
+        Assert.DoesNotContain("SF__.ListContains__(cells", lua);
+        Assert.DoesNotContain("SF__.ListIndexOf__(cells", lua);
+        Assert.DoesNotContain("SF__.ListRemove__(cells", lua);
+        Assert.DoesNotContain("SF__.ListRemoveAt__(cells", lua);
+    }
+
+    [Fact]
+    public async Task Struct_queue_and_stack_removals_use_parallel_field_arrays()
+    {
+        var src = """
+            namespace SFLib.Collections
+            {
+                public class Queue<T>
+                {
+                    public int Count => 0;
+                    public void Enqueue(T item) { }
+                    public T Dequeue() { return default!; }
+                    public T Peek() { return default!; }
+                    public void Clear() { }
+                }
+
+                public class Stack<T>
+                {
+                    public int Count => 0;
+                    public void Push(T item) { }
+                    public T Pop() { return default!; }
+                    public T Peek() { return default!; }
+                    public void Clear() { }
+                }
+            }
+
+            public struct Cell
+            {
+                public int X;
+                public int Y;
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var queue = new SFLib.Collections.Queue<Cell>();
+                    queue.Enqueue(new Cell { X = 1, Y = 2 });
+                    var front = queue.Peek();
+                    var dequeued = queue.Dequeue();
+
+                    var stack = new SFLib.Collections.Stack<Cell>();
+                    stack.Push(new Cell { X = 3, Y = 4 });
+                    var top = stack.Peek();
+                    var popped = stack.Pop();
+
+                    return front.X + dequeued.Y + top.X + popped.Y + queue.Count + stack.Count;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructQueueStack.cs");
+
+        Assert.Contains("local queue__X, queue__Y = {}, {}", lua);
+        Assert.Contains("local stack__X, stack__Y = {}, {}", lua);
+        Assert.Contains("table.insert(queue__X", lua);
+        Assert.Contains("table.insert(stack__X", lua);
+        Assert.Contains("table.remove(queue__X", lua);
+        Assert.Contains("table.remove(queue__Y", lua);
+        Assert.Contains("table.remove(stack__X", lua);
+        Assert.Contains("table.remove(stack__Y", lua);
+        Assert.Contains("local front__X, front__Y = queue__X[(0 + 1)], queue__Y[(0 + 1)]", lua);
+        Assert.Contains("local dequeued__X, dequeued__Y = (function()", lua);
+        Assert.Contains("local top__X, top__Y = stack__X[((#stack__X - 1) + 1)], stack__Y[((#stack__X - 1) + 1)]", lua);
+        Assert.Contains("local popped__X, popped__Y = (function()", lua);
+        Assert.DoesNotContain("SF__.QueueDequeue__(queue", lua);
+        Assert.DoesNotContain("SF__.StackPop__(stack", lua);
     }
 
     [Fact]

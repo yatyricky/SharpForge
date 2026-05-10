@@ -2064,7 +2064,16 @@ public sealed class LuaEmitter
                 }
                 else
                 {
-                    EmitExpr(inv.Callee);
+                    if (inv.Callee is IRFunctionExpression)
+                    {
+                        _sb.Append('(');
+                        EmitExpr(inv.Callee);
+                        _sb.Append(')');
+                    }
+                    else
+                    {
+                        EmitExpr(inv.Callee);
+                    }
                 }
                 _sb.Append('(');
                 for (int i = 0; i < inv.Arguments.Count; i++)

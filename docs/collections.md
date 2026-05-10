@@ -37,6 +37,8 @@ public bool Equals(MyStruct other)
 
 When that method exists, generated Lua calls it for `Contains`, `IndexOf`, and `Remove`. `Equals(object)` and `GetHashCode()` are not used for struct collection equality.
 
+Local `List<struct>` values can lower to parallel field arrays. In that shape, `RemoveAt`, `Remove`, `Clear`, `Contains`, and `IndexOf` operate across every field array instead of boxing each struct into a table.
+
 ## Queue<T>
 
 Supported `Queue<T>` members:
@@ -54,6 +56,8 @@ Queues use first-in, first-out ordering. `Dequeue()`, `Peek()`, `ToArray()`, and
 
 For flattened struct element types, `Contains` uses the same typed `Equals(T)` rule as `List<T>`.
 
+Local `Queue<struct>` values can lower to parallel field arrays. `Enqueue` appends every field, while `Dequeue`, `Clear`, and `Contains` update or scan every field array in lockstep.
+
 ## Stack<T>
 
 Supported `Stack<T>` members:
@@ -70,6 +74,8 @@ Supported `Stack<T>` members:
 Stacks use last-in, first-out ordering. `Pop()`, `Peek()`, `ToArray()`, and `foreach` return the most recently pushed value first. `Pop()` and `Peek()` throw if the stack is empty.
 
 For flattened struct element types, `Contains` uses the same typed `Equals(T)` rule as `List<T>`.
+
+Local `Stack<struct>` values can lower to parallel field arrays. `Push` appends every field, while `Pop`, `Clear`, and `Contains` update or scan every field array in lockstep.
 
 ## Dictionary<K, V>
 
@@ -129,6 +135,8 @@ public bool Equals(MyStruct other)
 ```
 
 If the method is missing, SharpForge emits a diagnostic. Struct hash set values do not use `GetHashCode()` or `Equals(object)`.
+
+Local `HashSet<struct>` values can lower to parallel field arrays when the surrounding uses stay within `Add`, `Contains`, `Remove`, `Clear`, and `Count`. In that shape, set membership scans spread struct fields into the typed `Equals(T)` method and removals delete the matched index from every field array.
 
 ## Limits
 
