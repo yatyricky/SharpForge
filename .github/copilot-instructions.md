@@ -7,7 +7,6 @@ For product context and user-facing behavior, start with [README.md](../README.m
 - `src/Builder/`: `sf-build.exe`, Lua dependency bundler plus `.w3x`/`war3map.lua` injector.
 - `src/JassGen/`: `sf-jassgen.exe`, parses `common.j`/`blizzard.j` into C# JASS stubs.
 - `tests/Transpiler.Tests/`: xUnit coverage for all three tools.
-- `samples/CSProject/` and `samples/LuaProject/`: runnable sample inputs and generated outputs.
 - `assets/jass/`: checked-in JASS source. `assets/libs/`: bundled C# library stubs copied into user projects.
 
 ## Commands

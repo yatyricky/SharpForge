@@ -47,9 +47,6 @@ DIR: assets
   DIR: templates
 FILE: global.json
 FILE: publish-all.ps1
-DIR: samples
-  DIR: CSProject
-  DIR: LuaProject
 DIR: src
   DIR: Builder
   DIR: Gui

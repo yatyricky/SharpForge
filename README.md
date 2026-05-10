@@ -44,7 +44,6 @@ SharpForge/
     Gui/          sf-gui.exe       - wrapper UI for the tools
   tests/
     Transpiler.Tests/
-  samples/
   assets/
     jass/         checked-in common.j/blizzard.j sources
     libs/         bundled C# stubs copied into user projects

@@ -6,7 +6,7 @@ applyTo: "**"
 
 # General Coding Behaviour
 
-These instructions apply across SharpForge source, tests, docs, samples, and project files.
+These instructions apply across SharpForge source, tests, docs, and project files.
 
 ## Document User-Facing Changes
 
