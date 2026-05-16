@@ -1960,6 +1960,47 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Pipeline_lowers_target_typed_new_for_bundled_SFLib_list()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            using SFLib.Collections;
+
+            public class Program
+            {
+                public static void Main(string[] args)
+                {
+                    List<unit> units = new();
+                    units.Add(null);
+
+                    if (units.Count > 0)
+                    {
+                        BJDebugMsg("ok");
+                    }
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        Assert.Contains("local units = SF__.ListNew__({})", lua);
+        Assert.Contains("SF__.ListAdd__(units, nil)", lua);
+        Assert.Contains("if (SF__.ListCount__(units) > 0) then", lua);
+        Assert.DoesNotContain("unsupported expr: ImplicitObjectCreationExpression", lua);
+    }
+
+    [Fact]
     public async Task Pipeline_emits_bundled_SFLib_interface_metadata_for_implementing_classes()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
@@ -2250,6 +2291,52 @@ public class EmitSmokeTests
         Assert.True(lua.IndexOf("require(\"Lib.class\")", StringComparison.Ordinal) < lua.IndexOf("require(\"Lib.maths\")", StringComparison.Ordinal));
         Assert.True(lua.IndexOf("require(\"Lib.maths\")", StringComparison.Ordinal) < lua.IndexOf("SF__.EntryClass = SF__.EntryClass or {}", StringComparison.Ordinal));
         Assert.Contains("function SF__.EntryClass.Main()", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_emits_type_methods_before_static_initialization_that_uses_current_type_constructor()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public class Singleton
+            {
+                public static Singleton Instance = new();
+                public static Singleton Backup;
+                public int Value = 3;
+
+                static Singleton()
+                {
+                    Backup = new();
+                }
+
+                public static void Main()
+                {
+                    BJDebugMsg(I2S(Instance.Value + Backup.Value));
+                }
+            }
+            """);
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var lua = await File.ReadAllTextAsync(output.FullName);
+        var newIndex = lua.IndexOf("function SF__.Singleton.New()", StringComparison.Ordinal);
+        var instanceIndex = lua.IndexOf("SF__.Singleton.Instance = SF__.Singleton.New()", StringComparison.Ordinal);
+        var backupIndex = lua.IndexOf("SF__.Singleton.Backup = SF__.Singleton.New()", StringComparison.Ordinal);
+
+        Assert.True(newIndex >= 0, "expected Singleton.New to be emitted");
+        Assert.True(instanceIndex > newIndex, "expected static field initialization to run after Singleton.New is defined");
+        Assert.True(backupIndex > newIndex, "expected static constructor body to run after Singleton.New is defined");
+        Assert.Contains("BJDebugMsg(I2S((SF__.Singleton.Instance.Value + SF__.Singleton.Backup.Value)))", lua);
     }
 
     [Fact]
@@ -2685,6 +2772,52 @@ public class EmitSmokeTests
         Assert.Contains("local fn = SF__.Signals.Double", lua);
         Assert.Contains("bag:set_Item(0, fn(3))", lua);
         Assert.Contains("return (bag:get_Total() + bag:get_Item(0))", lua);
+    }
+
+    [Fact]
+    public async Task Bound_instance_method_groups_passed_to_action_parameters_lower_through_receiver_capturing_lambdas()
+    {
+        var src = """
+            using System;
+            using SFLib.Collections;
+
+            public class unit { }
+
+            namespace SFLib.Collections
+            {
+                public class List<T>
+                {
+                    public void Add(T value) { }
+                    public void Clear() { }
+                }
+            }
+
+            public static partial class JASS
+            {
+                public static void ExTriggerRegisterNewUnit(Action<unit> callback) => throw null!;
+                public static void ExTriggerRegisterReady(Action callback) => throw null!;
+            }
+
+            public class Program
+            {
+                private readonly List<unit> _units = new();
+
+                public void Init()
+                {
+                    JASS.ExTriggerRegisterNewUnit(_units.Add);
+                    JASS.ExTriggerRegisterReady(_units.Clear);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "BoundMethodGroupAction.cs");
+
+        Assert.Contains("ExTriggerRegisterNewUnit(function", lua);
+        Assert.Matches(@"function\((\w+)\)\s+SF__\.ListAdd__\(self\._units, \1\)\s+end", lua);
+        Assert.Contains("ExTriggerRegisterReady(function()", lua);
+        Assert.Matches(@"function\(\)\s+SF__\.ListClear__\(self\._units\)\s+end", lua);
+        Assert.DoesNotContain("ExTriggerRegisterNewUnit(self._units.Add)", lua);
+        Assert.DoesNotContain("self._units:Add", lua);
     }
 
     [Fact]

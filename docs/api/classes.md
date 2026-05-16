@@ -76,7 +76,7 @@ h:TakeDamage(10)
 
 ## Fields
 
-Instance fields are `self.Field`. Static fields are `SF__.Type.Field`. Field initializers run at declaration.
+Instance fields are `self.Field`. Static fields are `SF__.Type.Field`. Static field initializers run after the type table and methods are registered, so they can safely call current-type helpers such as `.New()`.
 
 ## Auto-Properties
 
@@ -98,7 +98,7 @@ Overloaded methods get name suffixes based on their parameter count and types to
 
 ## Static Constructors
 
-Static constructors are emitted as a regular static function called immediately after type registration.
+Static constructors lower to top-level Lua statements that run after the type's methods are emitted. That keeps current-type helpers such as `.New()` available before static initialization executes.
 
 ## Unsupported
 

@@ -15,6 +15,8 @@ When designing a new lowering feature, evaluate options in this priority order. 
 
 Before coding, compare viable lowering strategies against all five priorities and state the chosen tradeoff. Add focused tests for the boundary cases most likely to violate the selected representation.
 
+When implementing syntax sugar or target-typed forms, first normalize into the existing semantic lowering path wherever practical. Avoid prompt-shaped helpers such as method-group-specific collection branches; shared lowering helpers should be keyed by Roslyn symbols, receiver shape, and supported API semantics.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

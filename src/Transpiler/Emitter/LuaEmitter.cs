@@ -1057,7 +1057,22 @@ public sealed class LuaEmitter
             _sb.Append("}\n");
         }
 
-        // Static field initializers.
+        for (int i = 0; i < methods.Length; i++)
+        {
+            EmitMethod(type, typePath, methods[i], type.Fields.Where(f => !f.IsStatic));
+            if (i < methods.Length - 1)
+            {
+                _sb.Append('\n');
+            }
+        }
+
+        if (methods.Length > 0 && (type.Fields.Any(f => f.IsStatic) || type.Methods.Any(m => m.IsStaticConstructor)))
+        {
+            _sb.Append('\n');
+        }
+
+        // Static initialization runs after methods are registered so type-local
+        // initializers and static constructors can safely call helpers like .New().
         foreach (var f in type.Fields.Where(f => f.IsStatic))
         {
             EmitComments(f.Comments);
@@ -1077,15 +1092,6 @@ public sealed class LuaEmitter
         foreach (var staticConstructor in type.Methods.Where(m => m.IsStaticConstructor))
         {
             EmitBlock(staticConstructor.Body);
-        }
-
-        for (int i = 0; i < methods.Length; i++)
-        {
-            EmitMethod(type, typePath, methods[i], type.Fields.Where(f => !f.IsStatic));
-            if (i < methods.Length - 1)
-            {
-                _sb.Append('\n');
-            }
         }
     }
 

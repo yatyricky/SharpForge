@@ -8,6 +8,7 @@ SharpForge supports `List<T>` and `Dictionary<K,V>` from `SFLib.Collections`. No
 using SFLib.Collections;
 
 var list = new List<string>();
+List<unit> units = new();
 list.Add("a");
 list.Add("b");
 int count = list.Count;
@@ -24,6 +25,8 @@ list.Sort((a, b) => a < b);
 string[] arr = list.ToArray();
 list.Clear();
 ```
+
+Target-typed `new()` lowers through the same list and dictionary helpers as the explicit constructor form, so `List<unit> units = new();` emits the same `SF__.ListNew__({})` runtime shape as `new List<unit>()`.
 
 All `List<T>` operations lower to `SF__.ListXxx__(list, ...)` helper calls. Indexing is 0-based in C#; the transpiler adds 1 for all list index expressions. The core helpers emitted at runtime:
 

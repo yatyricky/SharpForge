@@ -33,3 +33,7 @@ After implementing, debugging, or reviewing a feature, distill durable lessons i
 - Use `karpathy-guidelines.instructions.md` for general simplicity, scope control, and execution discipline.
 
 Keep instruction updates concise (one to two sentences per rule), actionable, and non-duplicative. Prefer a precise rule with examples over a long narrative.
+
+## Never hard-code to fulfill a prompt
+
+The prompt is expected to contain samples to describe the desired behavior. If the prompt is missing details, ask for clarification instead of guessing or hard-coding a specific behavior. The implementation should be driven by the prompt's requirements, not by assumptions about what the user might want.
