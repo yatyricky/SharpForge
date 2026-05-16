@@ -48,6 +48,16 @@ Point p = GetOrigin();
 local p__X, p__Y = SF__.MyClass.GetOrigin()
 ```
 
+The flattened local remains flattened when passed to another SharpForge method that accepts the same struct type:
+
+```csharp
+DrawPoint(p);
+```
+
+```lua
+SF__.MyClass.DrawPoint(p__X, p__Y)
+```
+
 ## Struct Parameters
 
 Struct parameters are flattened at the call site and unpacked at the function definition.

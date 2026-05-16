@@ -17,6 +17,8 @@ Before coding, compare viable lowering strategies against all five priorities an
 
 When implementing syntax sugar or target-typed forms, first normalize into the existing semantic lowering path wherever practical. Avoid prompt-shaped helpers such as method-group-specific collection branches; shared lowering helpers should be keyed by Roslyn symbols, receiver shape, and supported API semantics.
 
+When a representation guard decides whether a struct local can be flattened, keep it in sync with the expression lowerer paths that consume that representation; for example, if argument lowering expands struct parameters, the local-use scan must treat calls to struct-typed parameters as supported uses.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

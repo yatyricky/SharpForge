@@ -1826,15 +1826,18 @@ public sealed class IRLowering
 
         if (IsDictionaryType(method.ContainingType))
         {
+            var dictionaryArgs = argumentExpressions is null
+                ? args
+                : argumentExpressions.Select(argument => LowerExpr(argument, model)).ToArray();
             var useLinearKeys = TryBuildDictionaryKeyComparer(method.ContainingType, location, out _);
             return method.Name switch
             {
-                "Add" when args.Count == 2 => new IRDictionaryAdd(receiver, args[0], args[1], useLinearKeys),
-                "Set" when args.Count == 2 => new IRDictionarySet(receiver, args[0], args[1], useLinearKeys),
-                "Clear" when args.Count == 0 => new IRDictionaryClear(receiver, useLinearKeys),
-                "ContainsKey" when args.Count == 1 => new IRDictionaryContainsKey(receiver, args[0], useLinearKeys),
-                "Remove" when args.Count == 1 => new IRDictionaryRemove(receiver, args[0], useLinearKeys),
-                "Get" when args.Count == 1 => new IRDictionaryGet(receiver, args[0], useLinearKeys),
+                "Add" when dictionaryArgs.Count == 2 => new IRDictionaryAdd(receiver, dictionaryArgs[0], dictionaryArgs[1], useLinearKeys),
+                "Set" when dictionaryArgs.Count == 2 => new IRDictionarySet(receiver, dictionaryArgs[0], dictionaryArgs[1], useLinearKeys),
+                "Clear" when dictionaryArgs.Count == 0 => new IRDictionaryClear(receiver, useLinearKeys),
+                "ContainsKey" when dictionaryArgs.Count == 1 => new IRDictionaryContainsKey(receiver, dictionaryArgs[0], useLinearKeys),
+                "Remove" when dictionaryArgs.Count == 1 => new IRDictionaryRemove(receiver, dictionaryArgs[0], useLinearKeys),
+                "Get" when dictionaryArgs.Count == 1 => new IRDictionaryGet(receiver, dictionaryArgs[0], useLinearKeys),
                 _ => null,
             };
         }
@@ -2559,11 +2562,53 @@ public sealed class IRLowering
                     continue;
                 }
 
+                if (IsSupportedStructArgumentUse(id, model))
+                {
+                    continue;
+                }
+
                 return false;
             }
         }
 
         return true;
+    }
+
+    private bool IsSupportedStructArgumentUse(IdentifierNameSyntax id, SemanticModel model)
+    {
+        if (id.Parent is not ArgumentSyntax argument
+            || argument.Expression != id
+            || argument.Parent is not BaseArgumentListSyntax argumentList)
+        {
+            return false;
+        }
+
+        var parameter = argumentList.Parent switch
+        {
+            InvocationExpressionSyntax invocation when model.GetSymbolInfo(invocation).Symbol is IMethodSymbol method
+                => GetArgumentParameter(argumentList.Arguments, argument, method.Parameters),
+            BaseObjectCreationExpressionSyntax creation when model.GetSymbolInfo(creation).Symbol is IMethodSymbol ctor
+                => GetArgumentParameter(argumentList.Arguments, argument, ctor.Parameters),
+            _ => null,
+        };
+
+        return parameter?.Type is INamedTypeSymbol structType
+               && CanFlattenStructType(structType)
+               && GetFlattenableStructFields(structType).Any();
+    }
+
+    private static IParameterSymbol? GetArgumentParameter(
+        SeparatedSyntaxList<ArgumentSyntax> arguments,
+        ArgumentSyntax argument,
+        IReadOnlyList<IParameterSymbol> parameters)
+    {
+        if (argument.NameColon is { } nameColon)
+        {
+            return parameters.FirstOrDefault(parameter => parameter.Name == nameColon.Name.Identifier.ValueText);
+        }
+
+        var index = arguments.IndexOf(argument);
+        return index >= 0 && index < parameters.Count ? parameters[index] : null;
     }
 
     private IRStmt? TryLowerStructReturn(ExpressionSyntax expression, SemanticModel model)

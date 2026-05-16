@@ -2587,13 +2587,18 @@ public class EmitSmokeTests
                     };
                 }
 
+                public static float Use(Vector2 value)
+                {
+                    return value.x + value.y;
+                }
+
                 public static string Run()
                 {
                     var v = new Vector2(10, 5);
                     v.x = 11;
                     v = new Vector2(12, 6);
                     var data = Make(2);
-                    return $"x:{v.x} y:{v.y} data:{data.x}:{data.y}";
+                    return $"x:{v.x} y:{v.y} data:{data.x}:{data.y}:{Use(data)}";
                 }
             }
             """;
@@ -2604,8 +2609,10 @@ public class EmitSmokeTests
         Assert.Contains("v__x = 11", lua);
         Assert.Contains("v__x, v__y = 12, 6", lua);
         Assert.Contains("return (scale + 1), (scale + 2)", lua);
+        Assert.Contains("function SF__.MathDemo.Use(value__x, value__y)", lua);
+        Assert.Contains("return (value__x + value__y)", lua);
         Assert.Contains("local data__x, data__y = SF__.MathDemo.Make(2)", lua);
-        Assert.Contains("return SF__.StrConcat__(\"x:\", v__x, \" y:\", v__y, \" data:\", data__x, \":\", data__y)", lua);
+        Assert.Contains("return SF__.StrConcat__(\"x:\", v__x, \" y:\", v__y, \" data:\", data__x, \":\", data__y, \":\", SF__.MathDemo.Use(data__x, data__y))", lua);
         Assert.DoesNotContain("local v = SF__.Vector2.New", lua);
         Assert.DoesNotContain("-- Vector2", lua);
         Assert.DoesNotContain("SF__.Vector2 = SF__.Vector2 or {}", lua);
