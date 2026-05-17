@@ -2733,6 +2733,46 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Struct_properties_use_flattened_self_and_receiver_values()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public static Vector2 operator -(Vector2 left, Vector2 right)
+                {
+                    return new Vector2 { x = left.x - right.x, y = left.y - right.y };
+                }
+
+                public float Magnitude => SqrMagnitude + 1;
+                public float SqrMagnitude => x * x + y * y;
+            }
+
+            public static class Sample
+            {
+                public static float Run()
+                {
+                    var left = new Vector2 { x = 6, y = 8 };
+                    var right = new Vector2 { x = 1, y = 2 };
+                    return (left - right).Magnitude;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructProperties.cs");
+
+        Assert.Matches(@"function SF__\.Vector2\.get_Magnitude\(self__x\d*, self__y\d*\)", lua);
+        Assert.Matches(@"function SF__\.Vector2\.get_SqrMagnitude\(self__x\d*, self__y\d*\)", lua);
+        Assert.Matches(@"return \(SF__\.Vector2\.get_SqrMagnitude\(self__x\d*, self__y\d*\) \+ 1\)", lua);
+        Assert.Matches(@"return SF__\.Vector2\.get_Magnitude\(SF__\.Vector2\.op_Subtraction\(left__x\d*, left__y\d*, right__x\d*, right__y\d*\)\)", lua);
+        Assert.DoesNotContain("function SF__.Vector2:get_Magnitude", lua);
+        Assert.DoesNotContain(":get_Magnitude()", lua);
+        Assert.DoesNotContain(":get_SqrMagnitude()", lua);
+    }
+
+    [Fact]
     public async Task Computed_properties_indexers_delegates_and_events_emit_mvp_shapes()
     {
         var src = """

@@ -83,6 +83,8 @@ end
 
 Instance methods on a struct receive the flattened fields as individual parameters and return the modified fields as multiple values if the struct is mutated.
 
+Computed instance properties on a struct use the same flattened receiver shape as instance methods. A property read such as `(left - right).Magnitude` calls the generated getter with the struct field values instead of using Lua `:` syntax on a table receiver.
+
 ## SoA List\<Struct\>
 
 `List<T>` where `T` is a struct uses a Structure-of-Arrays (SoA) layout: one parallel array per field. Element access and iteration unpack the per-field arrays.

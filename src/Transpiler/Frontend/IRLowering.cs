@@ -354,7 +354,7 @@ public sealed class IRLowering
                     }
                     else
                     {
-                        irType.Methods.AddRange(LowerProperty(p, model, ct));
+                        irType.Methods.AddRange(LowerProperty(p, symbol, model, ct));
                     }
                     break;
                 case IndexerDeclarationSyntax indexer:
@@ -706,20 +706,23 @@ public sealed class IRLowering
             && parameters[0].Type is IArrayTypeSymbol { Rank: 1, ElementType.SpecialType: SpecialType.System_String };
     }
 
-    private IEnumerable<IRFunction> LowerProperty(PropertyDeclarationSyntax p, SemanticModel model, CancellationToken ct)
+    // ref: docs/api/structs.md
+    private IEnumerable<IRFunction> LowerProperty(PropertyDeclarationSyntax p, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
         var isStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword);
+        var isStructInstanceProperty = owner.TypeKind == TypeKind.Struct && !isStatic;
         var propertySymbol = model.GetDeclaredSymbol(p, ct);
         if (p.ExpressionBody is { } expressionBody)
         {
-            yield return new IRFunction
+            var fn = new IRFunction
             {
                 Name = "get_" + p.Identifier.ValueText,
                 LuaName = "get_" + p.Identifier.ValueText,
                 IsStatic = isStatic,
-                IsInstance = !isStatic,
-                Body = new IRBlock { Statements = { new IRReturn(LowerExpr(expressionBody.Expression, model)) } },
+                IsInstance = !isStatic && !isStructInstanceProperty,
             };
+            LowerPropertyBody(fn, owner, isStructInstanceProperty, () => fn.Body.Statements.Add(new IRReturn(LowerExpr(expressionBody.Expression, model))));
+            yield return fn;
             yield break;
         }
 
@@ -732,9 +735,9 @@ public sealed class IRLowering
                     Name = "get_" + p.Identifier.ValueText,
                     LuaName = "get_" + p.Identifier.ValueText,
                     IsStatic = isStatic,
-                    IsInstance = !isStatic,
+                    IsInstance = !isStatic && !isStructInstanceProperty,
                 };
-                LowerAccessorBody(accessor, fn.Body, model, ct);
+                LowerPropertyBody(fn, owner, isStructInstanceProperty, () => LowerAccessorBody(accessor, fn.Body, model, ct));
                 yield return fn;
             }
             else if (accessor.IsKind(SyntaxKind.SetAccessorDeclaration))
@@ -744,12 +747,39 @@ public sealed class IRLowering
                     Name = "set_" + p.Identifier.ValueText,
                     LuaName = "set_" + p.Identifier.ValueText,
                     IsStatic = isStatic,
-                    IsInstance = !isStatic,
+                    IsInstance = !isStatic && !isStructInstanceProperty,
                 };
-                fn.Parameters.Add(DeclareLuaName(propertySymbol?.SetMethod?.Parameters.FirstOrDefault(), "value"));
-                LowerAccessorBody(accessor, fn.Body, model, ct);
+                LowerPropertyBody(fn, owner, isStructInstanceProperty, () =>
+                {
+                    fn.Parameters.Add(DeclareLuaName(propertySymbol?.SetMethod?.Parameters.FirstOrDefault(), "value"));
+                    LowerAccessorBody(accessor, fn.Body, model, ct);
+                });
                 yield return fn;
             }
+        }
+    }
+
+    private void LowerPropertyBody(IRFunction fn, INamedTypeSymbol owner, bool isStructInstanceProperty, Action lowerBody)
+    {
+        if (!isStructInstanceProperty)
+        {
+            lowerBody();
+            return;
+        }
+
+        var previousStructSelfType = _currentStructSelfType;
+        var previousStructSelfFields = _currentStructSelfFields;
+        _currentStructSelfType = owner;
+        _currentStructSelfFields = AddFlattenedStructSelfParameters(fn, owner);
+
+        try
+        {
+            lowerBody();
+        }
+        finally
+        {
+            _currentStructSelfType = previousStructSelfType;
+            _currentStructSelfFields = previousStructSelfFields;
         }
     }
 
@@ -3577,6 +3607,14 @@ public sealed class IRLowering
             return null;
         }
 
+        if (property is { IsStatic: false, ContainingType.TypeKind: TypeKind.Struct }
+            && CanFlattenStructType(property.ContainingType))
+        {
+            return new IRInvocation(
+                new IRMemberAccess(LowerTypeReference(property.ContainingType), "get_" + property.Name),
+                LowerStructArgumentValues(access.Expression, property.ContainingType, model));
+        }
+
         return new IRInvocation(
             new IRMemberAccess(LowerExpr(access.Expression, model), "get_" + property.Name),
             Array.Empty<IRExpr>(),
@@ -3612,6 +3650,15 @@ public sealed class IRLowering
         var symbol = model.GetSymbolInfo(id).Symbol;
         if (symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
         {
+            if (property is { IsStatic: false, ContainingType.TypeKind: TypeKind.Struct }
+                && SymbolEqualityComparer.Default.Equals(property.ContainingType, _currentStructSelfType)
+                && CanFlattenStructType(property.ContainingType))
+            {
+                return new IRInvocation(
+                    new IRMemberAccess(LowerTypeReference(property.ContainingType), "get_" + property.Name),
+                    GetCurrentStructSelfArguments(property.ContainingType));
+            }
+
             IRExpr target = property.IsStatic ? LowerTypeReferenceForAccess(property.ContainingType) : new IRIdentifier("self");
             return new IRInvocation(
                 new IRMemberAccess(target, "get_" + property.Name),
