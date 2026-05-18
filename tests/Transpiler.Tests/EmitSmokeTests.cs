@@ -696,6 +696,66 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Optional_parameters_emit_nil_guards()
+    {
+        var src = """
+            public static class Demo
+            {
+                public static int Pick(int first = 1, int second = 2, int third = 3)
+                {
+                    return first + second + third;
+                }
+
+                public static int Run()
+                {
+                    return Pick(third: 9);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "OptionalParameters.cs");
+
+        Assert.Contains("function SF__.Demo.Pick(first, second, third)", lua);
+        Assert.Contains("if first == nil then first = 1 end", lua);
+        Assert.Contains("if second == nil then second = 2 end", lua);
+        Assert.Contains("if third == nil then third = 3 end", lua);
+        Assert.Contains("SF__.Demo.Pick(nil, nil, 9)", lua);
+    }
+
+    [Fact]
+    public async Task Optional_enum_parameter_on_struct_method_emits_nil_guard()
+    {
+        var src = """
+            public enum UnitVec3Mode
+            {
+                ForceFlying,
+                ForceGround,
+                Auto,
+            }
+
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public void UnitMoveTo(int unit, UnitVec3Mode mode = UnitVec3Mode.Auto)
+                {
+                    if (mode == UnitVec3Mode.ForceFlying)
+                    {
+                        x = y + z;
+                    }
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "OptionalEnumStructMethod.cs");
+
+        Assert.Contains("function SF__.Vector3.UnitMoveTo(self__x, self__y, self__z, unit, mode)", lua);
+        Assert.Contains("if mode == nil then mode = SF__.UnitVec3Mode.Auto end", lua);
+    }
+
+    [Fact]
     public async Task Types_emit_in_stable_name_order()
     {
         var src = """

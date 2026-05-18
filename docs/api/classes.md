@@ -96,6 +96,29 @@ Field-like events lower to a delegate field. Raise and subscribe use the field d
 
 Overloaded methods get name suffixes based on their parameter count and types to avoid Lua name collisions. The exact suffix is determined by the transpiler.
 
+## Optional Parameters
+
+Optional parameter defaults lower to a nil guard at the start of the Lua function. This preserves explicit false and zero defaults, and lets omitted Lua arguments use the C# default value.
+
+```csharp
+public static int Pick(int first = 1, int second = 2)
+{
+    return first + second;
+}
+
+var value = Pick(second: 5);
+```
+
+```lua
+function SF__.Demo.Pick(first, second)
+    if first == nil then first = 1 end
+    if second == nil then second = 2 end
+    return (first + second)
+end
+
+local value = SF__.Demo.Pick(nil, 5)
+```
+
 ## Static Constructors
 
 Static constructors lower to top-level Lua statements that run after the type's methods are emitted. That keeps current-type helpers such as `.New()` available before static initialization executes.

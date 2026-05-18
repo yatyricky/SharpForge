@@ -1127,6 +1127,7 @@ public sealed class LuaEmitter
         var paramList = string.Join(", ", m.Parameters);
         WriteLine($"function {typePath}{sep}{m.LuaName}({paramList})");
         _indent++;
+        EmitParameterDefaults(m);
 
         if (m.IsCoroutine)
         {
@@ -1167,6 +1168,7 @@ public sealed class LuaEmitter
 
         WriteLine($"function {typePath}.{initName}(self{(paramList.Length == 0 ? string.Empty : ", " + paramList)})");
         _indent++;
+        EmitParameterDefaults(m);
         if (m.BaseConstructorCall is not null)
         {
             EmitStmt(m.BaseConstructorCall);
@@ -1212,6 +1214,18 @@ public sealed class LuaEmitter
         WriteLine("return self");
         _indent--;
         WriteLine("end");
+    }
+
+    private void EmitParameterDefaults(IRFunction function)
+    {
+        foreach (var parameterDefault in function.ParameterDefaults)
+        {
+            WriteIndent();
+            _sb.Append("if ").Append(parameterDefault.ParameterName).Append(" == nil then ")
+                .Append(parameterDefault.ParameterName).Append(" = ");
+            EmitExpr(parameterDefault.Value);
+            _sb.Append(" end\n");
+        }
     }
 
     private void EmitBlock(IRBlock block)

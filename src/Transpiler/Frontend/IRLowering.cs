@@ -860,11 +860,13 @@ public sealed class IRLowering
         foreach (var parameter in parameters)
         {
             var symbol = model.GetDeclaredSymbol(parameter, ct);
-            AddLoweredParameter(fn, symbol, parameter.Identifier.ValueText, symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type));
+            var type = symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type);
+            var names = AddLoweredParameter(fn, symbol, parameter.Identifier.ValueText, type);
+            AddParameterDefaultInitializers(fn, names, parameter, symbol, type, model);
         }
     }
 
-    private void AddLoweredParameter(IRFunction fn, ISymbol? symbol, string baseName, ITypeSymbol? type)
+    private IReadOnlyList<string> AddLoweredParameter(IRFunction fn, ISymbol? symbol, string baseName, ITypeSymbol? type)
     {
         if (symbol is not null
             && type is INamedTypeSymbol structType
@@ -873,11 +875,68 @@ public sealed class IRLowering
         {
             var fieldLocals = AddFlattenedStructParameters(fn, baseName, structType);
             _flattenedStructLocals[symbol] = new FlattenedStructLocal(fieldLocals);
+            return fieldLocals.Values.ToArray();
+        }
+
+        var name = DeclareLuaName(symbol, baseName);
+        fn.Parameters.Add(name);
+        return [name];
+    }
+
+    private void AddParameterDefaultInitializers(
+        IRFunction fn,
+        IReadOnlyList<string> parameterNames,
+        ParameterSyntax parameter,
+        IParameterSymbol? symbol,
+        ITypeSymbol? type,
+        SemanticModel model)
+    {
+        if (parameter.Default?.Value is not { } defaultValue)
+        {
             return;
         }
 
-        fn.Parameters.Add(DeclareLuaName(symbol, baseName));
+        if (parameterNames.Count > 1 && type is INamedTypeSymbol structType)
+        {
+            foreach (var (name, field) in parameterNames.Zip(GetFlattenableStructFields(structType)))
+            {
+                fn.ParameterDefaults.Add(new IRParameterDefault(name, LowerDefaultValue(field.Type)));
+            }
+            return;
+        }
+
+        var loweredDefault = LowerParameterDefaultValue(defaultValue, symbol, type, model);
+        if (IsNilLiteral(loweredDefault))
+        {
+            return;
+        }
+
+        fn.ParameterDefaults.Add(new IRParameterDefault(parameterNames[0], loweredDefault));
     }
+
+    private IRExpr LowerParameterDefaultValue(ExpressionSyntax defaultValue, IParameterSymbol? symbol, ITypeSymbol? type, SemanticModel model)
+    {
+        if (defaultValue.IsKind(SyntaxKind.DefaultLiteralExpression))
+        {
+            return type is null ? new IRLiteral(null, IRLiteralKind.Nil) : LowerDefaultValue(type);
+        }
+
+        if (defaultValue is DefaultExpressionSyntax defaultExpression)
+        {
+            var defaultType = model.GetTypeInfo(defaultExpression.Type).Type ?? type;
+            return defaultType is null ? new IRLiteral(null, IRLiteralKind.Nil) : LowerDefaultValue(defaultType);
+        }
+
+        if (symbol?.HasExplicitDefaultValue == true && symbol.ExplicitDefaultValue is null)
+        {
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        return LowerExpr(defaultValue, model);
+    }
+
+    private static bool IsNilLiteral(IRExpr expr)
+        => expr is IRLiteral { Kind: IRLiteralKind.Nil };
 
     private IReadOnlyDictionary<string, string> AddFlattenedStructSelfParameters(IRFunction fn, INamedTypeSymbol structType)
         => AddFlattenedStructParameters(fn, "self", structType);
@@ -1566,7 +1625,7 @@ public sealed class IRLowering
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
         var args = symbol is null
             ? inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray()
-            : LowerArguments(inv.ArgumentList.Arguments.Select(a => a.Expression), symbol.Parameters, model);
+            : LowerArguments(inv.ArgumentList.Arguments, symbol.Parameters, model);
         if (symbol is { MethodKind: MethodKind.DelegateInvoke })
         {
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
@@ -1723,6 +1782,100 @@ public sealed class IRLowering
         }
 
         return lowered;
+    }
+
+    private IReadOnlyList<IRExpr> LowerArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IReadOnlyList<IParameterSymbol> parameters, SemanticModel model)
+    {
+        if (!arguments.Any(argument => argument.NameColon is not null))
+        {
+            return LowerArguments(arguments.Select(argument => argument.Expression), parameters, model);
+        }
+
+        var loweredByIndex = new Dictionary<int, IReadOnlyList<IRExpr>>();
+        var maxIndex = -1;
+        foreach (var argument in arguments)
+        {
+            var parameter = GetArgumentParameter(arguments, argument, parameters);
+            if (parameter is null)
+            {
+                continue;
+            }
+
+            var index = GetParameterIndex(parameters, parameter);
+            if (index < 0)
+            {
+                continue;
+            }
+
+            loweredByIndex[index] = LowerArgumentValues(argument.Expression, parameter, model);
+            maxIndex = Math.Max(maxIndex, index);
+        }
+
+        var lowered = new List<IRExpr>();
+        for (var i = 0; i <= maxIndex; i++)
+        {
+            if (loweredByIndex.TryGetValue(i, out var values))
+            {
+                lowered.AddRange(values);
+                continue;
+            }
+
+            lowered.AddRange(CreateNilArgumentPlaceholders(parameters[i]));
+        }
+
+        return lowered;
+    }
+
+    private IReadOnlyList<IRExpr> LowerArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
+        => LowerArguments(arguments, parameters.ToArray(), model);
+
+    private IRExpr LowerArgument(ExpressionSyntax argument, IParameterSymbol? parameter, SemanticModel model)
+    {
+        if (TryLowerDelegateMethodGroupArgument(argument, parameter, model) is { } delegateMethodGroup)
+        {
+            return delegateMethodGroup;
+        }
+
+        return LowerExpr(argument, model);
+    }
+
+    private IReadOnlyList<IRExpr> LowerArgumentValues(ExpressionSyntax argument, IParameterSymbol parameter, SemanticModel model)
+    {
+        if (parameter.Type is INamedTypeSymbol structType
+            && CanFlattenStructType(structType)
+            && GetFlattenableStructFields(structType).Any())
+        {
+            return LowerStructArgumentValues(argument, structType, model);
+        }
+
+        return [LowerArgument(argument, parameter, model)];
+    }
+
+    private IReadOnlyList<IRExpr> CreateNilArgumentPlaceholders(IParameterSymbol parameter)
+    {
+        if (parameter.Type is INamedTypeSymbol structType
+            && CanFlattenStructType(structType)
+            && GetFlattenableStructFields(structType).Any())
+        {
+            return GetFlattenableStructFields(structType)
+                .Select(_ => (IRExpr)new IRLiteral(null, IRLiteralKind.Nil))
+                .ToArray();
+        }
+
+        return [new IRLiteral(null, IRLiteralKind.Nil)];
+    }
+
+    private static int GetParameterIndex(IReadOnlyList<IParameterSymbol> parameters, IParameterSymbol parameter)
+    {
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            if (SymbolEqualityComparer.Default.Equals(parameters[i], parameter))
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private IRExpr? TryLowerDelegateMethodGroupArgument(ExpressionSyntax argument, IParameterSymbol? parameter, SemanticModel model)
@@ -3069,7 +3222,7 @@ public sealed class IRLowering
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
         var args = ctor is null
             ? obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray() ?? Array.Empty<IRExpr>()
-            : LowerArguments(obj.ArgumentList?.Arguments.Select(a => a.Expression) ?? Enumerable.Empty<ExpressionSyntax>(), ctor.Parameters, model);
+            : obj.ArgumentList is null ? Array.Empty<IRExpr>() : LowerArguments(obj.ArgumentList.Arguments, ctor.Parameters, model);
 
         if (CanFlattenStructType(type) && TryGetStructFieldValues(obj, model, out var structFields, out var structValues))
         {

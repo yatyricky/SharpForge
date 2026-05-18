@@ -21,6 +21,8 @@ When a representation guard decides whether a struct local can be flattened, kee
 
 When struct instance receivers are flattened, apply the same receiver expansion to accessor methods such as computed property getters; otherwise chained property reads can accidentally emit Lua colon calls on multi-return struct values.
 
+When lowering optional parameters, prefer callee-side nil guards (`if arg == nil then arg = default end`) over call-site default substitution so omitted Lua arguments, named-argument gaps, and explicit false/zero defaults share one representation.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

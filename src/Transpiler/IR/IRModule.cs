@@ -67,6 +67,8 @@ public sealed record IRLuaClass(string ClassName, IRExpr? BaseType, IReadOnlyLis
 
 public sealed record IRLuaModuleBinding(string LocalName, string ModuleName);
 
+public sealed record IRParameterDefault(string ParameterName, IRExpr Value);
+
 public sealed class IRField
 {
     public List<string> Comments { get; } = new();
@@ -83,6 +85,7 @@ public sealed class IRFunction
     public required string Name { get; init; }
     public required string LuaName { get; init; }
     public List<string> Parameters { get; } = new();
+    public List<IRParameterDefault> ParameterDefaults { get; } = new();
     public IRBlock Body { get; init; } = new();
 
     public string? InitLuaName { get; init; }
