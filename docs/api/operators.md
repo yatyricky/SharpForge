@@ -20,6 +20,23 @@ Supported: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, `||`
 
 `!=` lowers to `~=` in Lua. `&&` lowers to `and`, `||` lowers to `or`.
 
+User-defined operator overloads lower to static Lua functions. When multiple overloads share the same operator name, SharpForge appends the same simplified parameter-signature suffix used for overloaded methods.
+
+```csharp
+public static Vector3 operator *(Vector3 v, float f) => new(v.x * f, v.y * f, v.z * f);
+public static Vector3 operator *(float f, Vector3 v) => new(v.x * f, v.y * f, v.z * f);
+```
+
+```lua
+function SF__.Vector3.op_Multiply__vector3f(v__x, v__y, v__z, f)
+	return (v__x * f), (v__y * f), (v__z * f)
+end
+
+function SF__.Vector3.op_Multiply__fvector3(f, v__x, v__y, v__z)
+	return (v__x * f), (v__y * f), (v__z * f)
+end
+```
+
 ## Unary Operators
 
 ```csharp

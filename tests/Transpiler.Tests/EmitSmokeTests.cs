@@ -687,12 +687,62 @@ public class EmitSmokeTests
 
         var lua = await TranspileSourceAsync(src, "Overloaded.cs");
 
-        Assert.Contains("function SF__.Overloaded.New_0()", lua);
-        Assert.Contains("function SF__.Overloaded.New_1(value)", lua);
-        Assert.Contains("function SF__.Overloaded:Pick_0()", lua);
-        Assert.Contains("function SF__.Overloaded:Pick_1(fallback)", lua);
-        Assert.Contains("SF__.Overloaded.New_1(7)", lua);
-        Assert.Contains("item:Pick_1(3)", lua);
+        Assert.Contains("function SF__.Overloaded.New__0()", lua);
+        Assert.Contains("function SF__.Overloaded.New__i(value)", lua);
+        Assert.Contains("function SF__.Overloaded:Pick__0()", lua);
+        Assert.Contains("function SF__.Overloaded:Pick__i(fallback)", lua);
+        Assert.Contains("SF__.Overloaded.New__i(7)", lua);
+        Assert.Contains("item:Pick__i(3)", lua);
+    }
+
+    [Fact]
+    public async Task Operator_overloads_get_signature_lua_names()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public Vector3(float x, float y, float z)
+                {
+                    this.x = x;
+                    this.y = y;
+                    this.z = z;
+                }
+
+                public static Vector3 operator +(Vector3 left, Vector3 right)
+                {
+                    return new Vector3(left.x + right.x, left.y + right.y, left.z + right.z);
+                }
+
+                public static Vector3 operator *(Vector3 v, float f)
+                {
+                    return new Vector3(v.x * f, v.y * f, v.z * f);
+                }
+
+                public static Vector3 operator *(float f, Vector3 v)
+                {
+                    return new Vector3(v.x * f, v.y * f, v.z * f);
+                }
+            }
+
+            public static class Demo
+            {
+                public static Vector3 Run(Vector3 value)
+                {
+                    return 2f * value + value * 3f;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "OperatorOverloads.cs");
+
+        Assert.Contains("function SF__.Vector3.op_Multiply__vector3f(v__x, v__y, v__z, f)", lua);
+        Assert.Contains("function SF__.Vector3.op_Multiply__fvector3(", lua);
+        Assert.Contains("SF__.Vector3.op_Multiply__fvector3(2,", lua);
+        Assert.Contains("SF__.Vector3.op_Multiply__vector3f(value__x", lua);
     }
 
     [Fact]
@@ -1196,7 +1246,7 @@ public class EmitSmokeTests
         var lua = await TranspileSourceAsync(src, "Exceptions.cs");
 
         Assert.Contains("local __sf_ok, __sf_err = pcall(function()", lua);
-        Assert.Contains("error(SF__.System.Exception.New_1(\"boom\"))", lua);
+        Assert.Contains("error(SF__.System.Exception.New__s(\"boom\"))", lua);
         Assert.Contains("if not __sf_ok then", lua);
         Assert.Contains("local ex = __sf_err", lua);
         Assert.Contains("value = 1", lua);
@@ -2621,6 +2671,48 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Struct_constructor_field_mapping_uses_constructor_syntax_tree_model()
+    {
+        var lua = await TranspileSourcesAsync(new Dictionary<string, string>
+        {
+            ["Vector2.cs"] = """
+                public struct Vector2
+                {
+                    public int X;
+                    public int Y;
+
+                    public Vector2(int x, int y)
+                    {
+                        X = x;
+                        Y = y;
+                    }
+                }
+                """,
+            ["Scale.cs"] = """
+                public struct Scale
+                {
+                    public int Value;
+
+                    public Scale(int value)
+                    {
+                        Value = value;
+                    }
+
+                    public static Scale operator +(Scale left, Scale right)
+                    {
+                        var pair = new Vector2(left.Value, right.Value);
+                        return new Scale(pair.X + pair.Y);
+                    }
+                }
+                """,
+        });
+
+        Assert.Contains("function SF__.Scale.op_Addition(left__Value, right__Value)", lua);
+        Assert.Matches(@"local pair__X\d*, pair__Y\d* = left__Value, right__Value", lua);
+        Assert.Contains("return (pair__X + pair__Y)", lua);
+    }
+
+    [Fact]
     public async Task Struct_locals_used_only_by_fields_are_flattened()
     {
         var src = """
@@ -3079,13 +3171,21 @@ public class EmitSmokeTests
     }
 
     private static async Task<string> TranspileSourceAsync(string source, string fileName)
+        => await TranspileSourcesAsync(new Dictionary<string, string> { [fileName] = source });
+
+    private static async Task<string> TranspileSourcesAsync(IReadOnlyDictionary<string, string> sources)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
-        var file = Path.Combine(dir.FullName, fileName);
-        await File.WriteAllTextAsync(file, source);
+        var files = new List<FileInfo>(sources.Count);
+        foreach (var (fileName, source) in sources)
+        {
+            var file = Path.Combine(dir.FullName, fileName);
+            await File.WriteAllTextAsync(file, source);
+            files.Add(new FileInfo(file));
+        }
 
         var compilation = await new RoslynFrontend(Array.Empty<string>())
-            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
+            .CompileAsync(files, CancellationToken.None);
         var errors = compilation.GetDiagnostics()
             .Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)
             .ToArray();

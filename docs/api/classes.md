@@ -94,7 +94,28 @@ Field-like events lower to a delegate field. Raise and subscribe use the field d
 
 ## Method Overloads
 
-Overloaded methods get name suffixes based on their parameter count and types to avoid Lua name collisions. The exact suffix is determined by the transpiler.
+Overloaded methods and constructors get simplified parameter-signature suffixes to avoid Lua name collisions. Primitive signatures use short codes such as `i` for integer, `f` for float, `d` for double, `b` for bool, and `s` for string; named types use a lowercase sanitized type name.
+
+```csharp
+public string Add(int a, int b) => "ints";
+public string Add(string a, string b) => "strings";
+
+var ints = Add(1, 2);
+var strings = Add("a", "b");
+```
+
+```lua
+function SF__.Demo.Add__ii(a, b)
+    return "ints"
+end
+
+function SF__.Demo.Add__ss(a, b)
+    return "strings"
+end
+
+local ints = SF__.Demo.Add__ii(1, 2)
+local strings = SF__.Demo.Add__ss("a", "b")
+```
 
 ## Optional Parameters
 

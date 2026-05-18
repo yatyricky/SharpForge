@@ -2959,10 +2959,14 @@ public sealed class IRLowering
             return result;
         }
 
+        var ctorModel = model.SyntaxTree == syntax.SyntaxTree
+            ? model
+            : model.Compilation.GetSemanticModel(syntax.SyntaxTree);
+
         foreach (var assignment in syntax.Body.DescendantNodes().OfType<AssignmentExpressionSyntax>())
         {
             if (!assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-                || model.GetSymbolInfo(assignment.Left).Symbol is not IFieldSymbol and not IPropertySymbol)
+                || ctorModel.GetSymbolInfo(assignment.Left).Symbol is not IFieldSymbol and not IPropertySymbol)
             {
                 continue;
             }
@@ -2980,7 +2984,7 @@ public sealed class IRLowering
 
             var parameterName = assignment.Right switch
             {
-                IdentifierNameSyntax identifier when model.GetSymbolInfo(identifier).Symbol is IParameterSymbol parameter => parameter.Name,
+                IdentifierNameSyntax identifier when ctorModel.GetSymbolInfo(identifier).Symbol is IParameterSymbol parameter => parameter.Name,
                 _ => null,
             };
             if (parameterName is not null)
@@ -3944,22 +3948,86 @@ public sealed class IRLowering
 
         if (method.MethodKind == MethodKind.UserDefinedOperator)
         {
-            return method.Name;
+            return HasOverloadSiblings(method, MethodKind.UserDefinedOperator)
+                ? AppendLuaParameterSignature(method.Name, method.Parameters)
+                : method.Name;
         }
 
         if (method.MethodKind == MethodKind.Constructor)
         {
-            var explicitConstructors = method.ContainingType.InstanceConstructors
-                .Where(c => !c.IsImplicitlyDeclared)
-                .ToArray();
-            return explicitConstructors.Length > 1 ? $"New_{method.Parameters.Length}" : "New";
+            return HasConstructorOverloads(method)
+                ? AppendLuaParameterSignature("New", method.Parameters)
+                : "New";
         }
 
+        return HasOverloadSiblings(method, MethodKind.Ordinary)
+            ? AppendLuaParameterSignature(method.Name, method.Parameters)
+            : method.Name;
+    }
+
+    private static bool HasConstructorOverloads(IMethodSymbol method)
+        => method.ContainingType.InstanceConstructors.Count(c => !c.IsImplicitlyDeclared) > 1;
+
+    private static bool HasOverloadSiblings(IMethodSymbol method, MethodKind methodKind)
+    {
         var overloads = method.ContainingType.GetMembers(method.Name)
             .OfType<IMethodSymbol>()
-            .Where(m => !m.IsImplicitlyDeclared && m.MethodKind == MethodKind.Ordinary)
+            .Where(m => !m.IsImplicitlyDeclared && m.MethodKind == methodKind)
             .ToArray();
-        return overloads.Length > 1 ? $"{method.Name}_{method.Parameters.Length}" : method.Name;
+
+        return overloads.Length > 1;
+    }
+
+    private static string AppendLuaParameterSignature(string name, IReadOnlyList<IParameterSymbol> parameters)
+        => $"{name}__{GetLuaParameterSignature(parameters)}";
+
+    private static string GetLuaParameterSignature(IReadOnlyList<IParameterSymbol> parameters)
+        => parameters.Count == 0
+            ? "0"
+            : string.Concat(parameters.Select(parameter => GetLuaTypeSignature(parameter.Type)));
+
+    private static string GetLuaTypeSignature(ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol arrayType)
+        {
+            return "a" + GetLuaTypeSignature(arrayType.ElementType);
+        }
+
+        if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullableType
+            && nullableType.TypeArguments.Length == 1)
+        {
+            return GetLuaTypeSignature(nullableType.TypeArguments[0]);
+        }
+
+        if (type.TypeKind == TypeKind.Enum)
+        {
+            return SimplifyLuaSignatureTypeName(type.Name);
+        }
+
+        return type.SpecialType switch
+        {
+            SpecialType.System_Boolean => "b",
+            SpecialType.System_Byte or SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_UInt16
+                or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64
+                => "i",
+            SpecialType.System_Single => "f",
+            SpecialType.System_Double or SpecialType.System_Decimal => "d",
+            SpecialType.System_String => "s",
+            SpecialType.System_Object => "o",
+            _ => type is INamedTypeSymbol { TypeArguments.Length: > 0 } namedType
+                ? SimplifyLuaSignatureTypeName(namedType.Name) + string.Concat(namedType.TypeArguments.Select(GetLuaTypeSignature))
+                : SimplifyLuaSignatureTypeName(type.Name),
+        };
+    }
+
+    private static string SimplifyLuaSignatureTypeName(string name)
+    {
+        var simplified = new string(name
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+
+        return simplified.Length == 0 ? "p" : simplified;
     }
 
     private static string GetLuaOperatorName(string op)
