@@ -618,6 +618,7 @@ public sealed class IRLowering
                 _debuggerContext = new DebuggerLoweringContext($"{owner.Name}.{m.Identifier.ValueText}");
             }
 
+            AddLoweredTypeParameters(fn, m.TypeParameterList?.Parameters ?? default, model, ct);
             AddLoweredParameters(fn, m.ParameterList.Parameters, model, ct);
             AddDebuggerParameterValues(m.ParameterList.Parameters, model, ct);
 
@@ -863,6 +864,18 @@ public sealed class IRLowering
             var type = symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type);
             var names = AddLoweredParameter(fn, symbol, parameter.Identifier.ValueText, type);
             AddParameterDefaultInitializers(fn, names, parameter, symbol, type, model);
+        }
+    }
+
+    private void AddLoweredTypeParameters(
+        IRFunction fn,
+        SeparatedSyntaxList<TypeParameterSyntax> typeParameters,
+        SemanticModel model,
+        CancellationToken ct)
+    {
+        foreach (var typeParameter in typeParameters)
+        {
+            fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(typeParameter, ct), typeParameter.Identifier.ValueText));
         }
     }
 
@@ -1146,6 +1159,9 @@ public sealed class IRLowering
 
             case ReturnStatementSyntax rs:
                 return rs.Expression is null ? new IRReturn(null) : LowerReturnExpression(rs.Expression, model);
+
+            case IfStatementSyntax ifs when TryLowerDeclarationPatternIf(ifs, model, ct) is { } patternIf:
+                return patternIf;
 
             case IfStatementSyntax ifs:
                 var thenBlk = new IRBlock();
@@ -1598,6 +1614,9 @@ public sealed class IRLowering
             case PrefixUnaryExpressionSyntax pre:
                 return new IRUnary(pre.OperatorToken.ValueText, LowerExpr(pre.Operand, model));
 
+            case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.SuppressNullableWarningExpression):
+                return LowerExpr(post.Operand, model);
+
             case ParenthesizedExpressionSyntax par:
                 return LowerExpr(par.Expression, model);
 
@@ -1609,6 +1628,9 @@ public sealed class IRLowering
 
             case AwaitExpressionSyntax awaitExpression:
                 return LowerExpr(awaitExpression.Expression, model);
+
+            case IsPatternExpressionSyntax isPattern:
+                return LowerIsPatternExpression(isPattern, model);
 
             default:
                 return UnsupportedExpression(e);
@@ -1654,11 +1676,13 @@ public sealed class IRLowering
             return collectionInvocation;
         }
 
+        var callArgs = PrependGenericMethodTypeArguments(symbol, args);
+
         if (inv.Expression is MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax } && symbol is { IsStatic: false })
         {
             return new IRInvocation(
                 new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
-                new[] { new IRIdentifier("self") }.Concat(args).ToArray());
+                new[] { new IRIdentifier("self") }.Concat(callArgs).ToArray());
         }
 
         if (symbol is { IsStatic: false, ContainingType.TypeKind: TypeKind.Struct }
@@ -1669,35 +1693,35 @@ public sealed class IRLowering
                 var selfArgs = LowerStructArgumentValues(structMemberAccess.Expression, symbol.ContainingType, model);
                 return new IRInvocation(
                     new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
-                    selfArgs.Concat(args).ToArray());
+                    selfArgs.Concat(callArgs).ToArray());
             }
 
             if (inv.Expression is IdentifierNameSyntax && SymbolEqualityComparer.Default.Equals(symbol.ContainingType, _currentStructSelfType))
             {
                 return new IRInvocation(
                     new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
-                    GetCurrentStructSelfArguments(symbol.ContainingType).Concat(args).ToArray());
+                    GetCurrentStructSelfArguments(symbol.ContainingType).Concat(callArgs).ToArray());
             }
         }
 
-        if (inv.Expression is IdentifierNameSyntax && symbol is { IsStatic: false })
+        if (inv.Expression is SimpleNameSyntax && symbol is { IsStatic: false })
         {
             return new IRInvocation(
                 new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(symbol)),
-                args,
+                callArgs,
                 UseColon: true);
         }
 
-        if (inv.Expression is IdentifierNameSyntax && symbol is { IsStatic: true })
+        if (inv.Expression is SimpleNameSyntax && symbol is { IsStatic: true })
         {
             if (IsIgnoredClass(symbol.ContainingType))
             {
-                return new IRInvocation(new IRIdentifier(symbol.Name), args);
+                return new IRInvocation(new IRIdentifier(symbol.Name), callArgs);
             }
 
             return new IRInvocation(
                 new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
-                args);
+                callArgs);
         }
 
         if (inv.Expression is MemberAccessExpressionSyntax memberAccess && symbol is { IsStatic: false })
@@ -1707,13 +1731,13 @@ public sealed class IRLowering
                 var member = GetLuaObjectMember(symbol);
                 return new IRInvocation(
                     new IRMemberAccess(LowerExpr(memberAccess.Expression, model), member.Name),
-                    args,
+                    callArgs,
                     UseColon: member.UseColon);
             }
 
             return new IRInvocation(
                 new IRMemberAccess(LowerExpr(memberAccess.Expression, model), GetLuaMethodName(symbol)),
-                args,
+                callArgs,
                 UseColon: true);
         }
 
@@ -1721,7 +1745,7 @@ public sealed class IRLowering
         {
             if (IsIgnoredClass(symbol.ContainingType))
             {
-                return new IRInvocation(new IRIdentifier(symbol.Name), args);
+                return new IRInvocation(new IRIdentifier(symbol.Name), callArgs);
             }
 
             if (IsExternalLuaObjectType(symbol.ContainingType))
@@ -1729,13 +1753,13 @@ public sealed class IRLowering
                 var member = GetLuaObjectMember(symbol);
                 return new IRInvocation(
                     new IRMemberAccess(GetLuaObjectTypeTarget(symbol.ContainingType), member.Name),
-                    args,
+                    callArgs,
                     UseColon: member.UseColon);
             }
 
             return new IRInvocation(
                 new IRMemberAccess(LowerExpr(staticAccess.Expression, model), GetLuaMethodName(symbol)),
-                args);
+                callArgs);
         }
 
         // Hard error for any call on a type defined outside the compilation (BCL / external API not explicitly handled above).
@@ -1747,7 +1771,25 @@ public sealed class IRLowering
             return new IRLiteral(null, IRLiteralKind.Nil);
         }
 
-        return new IRInvocation(LowerExpr(inv.Expression, model), args);
+        return new IRInvocation(LowerExpr(inv.Expression, model), callArgs);
+    }
+
+    private IReadOnlyList<IRExpr> PrependGenericMethodTypeArguments(IMethodSymbol? symbol, IReadOnlyList<IRExpr> args)
+    {
+        if (symbol is not { IsGenericMethod: true } || symbol.TypeArguments.Length == 0)
+        {
+            return args;
+        }
+
+        return LowerRuntimeTypeArguments(symbol.TypeArguments).Concat(args).ToArray();
+    }
+
+    private IEnumerable<IRExpr> LowerRuntimeTypeArguments(IEnumerable<ITypeSymbol> typeArguments)
+    {
+        foreach (var typeArgument in typeArguments)
+        {
+            yield return LowerRuntimeTypeTarget(typeArgument);
+        }
     }
 
     private IReadOnlyList<IRExpr> LowerArguments(IEnumerable<ExpressionSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
@@ -3060,20 +3102,113 @@ public sealed class IRLowering
     // ref: docs/api/casting.md
     private IRExpr LowerTypeTest(ExpressionSyntax value, ExpressionSyntax typeSyntax, SemanticModel model, bool isAsExpression)
     {
-        var type = model.GetTypeInfo(typeSyntax).Type as INamedTypeSymbol;
+        var type = model.GetTypeInfo(typeSyntax).Type;
         if (type is null)
         {
-            return UnsupportedExpression(typeSyntax);
+            AddDiagnostic(typeSyntax.GetLocation(), $"unsupported type: {typeSyntax.Kind()}");
+            return new IRLiteral(false, IRLiteralKind.Boolean);
         }
 
-        if (CanFlattenStructType(type))
+        if (type is INamedTypeSymbol namedType && CanFlattenStructType(namedType))
         {
             AddDiagnostic(typeSyntax.GetLocation(), "struct runtime type checks are not supported; SharpForge structs are compile-time value shapes and do not carry runtime type metadata");
         }
 
         return isAsExpression
-            ? new IRAs(LowerExpr(value, model), LowerTypeReference(type))
-            : new IRIs(LowerExpr(value, model), LowerTypeReference(type));
+            ? new IRAs(LowerExpr(value, model), LowerRuntimeTypeTarget(type))
+            : new IRIs(LowerExpr(value, model), LowerRuntimeTypeTarget(type));
+    }
+
+    private IRExpr LowerIsPatternExpression(IsPatternExpressionSyntax expression, SemanticModel model)
+    {
+        var value = LowerExpr(expression.Expression, model);
+        return LowerPatternTest(value, expression.Pattern, model);
+    }
+
+    private IRExpr LowerPatternTest(IRExpr value, PatternSyntax pattern, SemanticModel model)
+    {
+        switch (pattern)
+        {
+            case ParenthesizedPatternSyntax parenthesized:
+                return LowerPatternTest(value, parenthesized.Pattern, model);
+
+            case UnaryPatternSyntax unary when unary.IsKind(SyntaxKind.NotPattern):
+                return new IRUnary("!", LowerPatternTest(value, unary.Pattern, model));
+
+            case ConstantPatternSyntax constant:
+                return new IRBinary("==", value, LowerExpr(constant.Expression, model));
+
+            case TypePatternSyntax typePattern:
+                return LowerTypePatternTest(value, typePattern.Type, model);
+
+            case DeclarationPatternSyntax { Designation: DiscardDesignationSyntax } declarationPattern:
+                return LowerTypePatternTest(value, declarationPattern.Type, model);
+
+            case DeclarationPatternSyntax declarationPattern:
+                AddDiagnostic(declarationPattern.GetLocation(), "declaration patterns are not supported; use an explicit cast or 'as' assignment after a separate type check");
+                return new IRLiteral(false, IRLiteralKind.Boolean);
+
+            default:
+                AddDiagnostic(pattern.GetLocation(), $"unsupported pattern: {pattern.Kind()}");
+                return new IRLiteral(false, IRLiteralKind.Boolean);
+        }
+    }
+
+    private IRExpr LowerTypePatternTest(IRExpr value, TypeSyntax typeSyntax, SemanticModel model)
+    {
+        var type = model.GetTypeInfo(typeSyntax).Type;
+        if (type is null)
+        {
+            AddDiagnostic(typeSyntax.GetLocation(), $"unsupported type: {typeSyntax.Kind()}");
+            return new IRLiteral(false, IRLiteralKind.Boolean);
+        }
+
+        if (type is INamedTypeSymbol namedType && CanFlattenStructType(namedType))
+        {
+            AddDiagnostic(typeSyntax.GetLocation(), "struct runtime type checks are not supported; SharpForge structs are compile-time value shapes and do not carry runtime type metadata");
+        }
+
+        return new IRIs(value, LowerRuntimeTypeTarget(type));
+    }
+
+    private IRExpr LowerRuntimeTypeTarget(ITypeSymbol type)
+        => type switch
+        {
+            INamedTypeSymbol namedType => LowerTypeReference(namedType),
+            ITypeParameterSymbol typeParameter => new IRIdentifier(GetLuaName(typeParameter, typeParameter.Name)),
+            _ => new IRLiteral(null, IRLiteralKind.Nil),
+        };
+
+    private IRStmt? TryLowerDeclarationPatternIf(IfStatementSyntax ifStatement, SemanticModel model, CancellationToken ct)
+    {
+        if (ifStatement.Condition is not IsPatternExpressionSyntax
+            {
+                Pattern: DeclarationPatternSyntax
+                {
+                    Designation: SingleVariableDesignationSyntax designation,
+                    Type: { } patternType
+                }
+            } isPattern)
+        {
+            return null;
+        }
+
+        var declaredSymbol = model.GetDeclaredSymbol(designation, ct);
+        var localName = DeclareLuaName(declaredSymbol, designation.Identifier.ValueText);
+        var block = new IRBlock();
+        block.Statements.Add(new IRLocalDecl(localName, LowerExpr(isPattern.Expression, model)));
+
+        var thenBlock = new IRBlock();
+        LowerBlock(ifStatement.Statement, thenBlock, model, ct);
+        IRBlock? elseBlock = null;
+        if (ifStatement.Else is { } elseClause)
+        {
+            elseBlock = new IRBlock();
+            LowerBlock(elseClause.Statement, elseBlock, model, ct);
+        }
+
+        block.Statements.Add(new IRIf(LowerTypePatternTest(new IRIdentifier(localName), patternType, model), thenBlock, elseBlock));
+        return block;
     }
 
     private bool IsStructRuntimeCast(CastExpressionSyntax cast, SemanticModel model)
@@ -3205,12 +3340,23 @@ public sealed class IRLowering
 
     private IRExpr LowerObjectCreation(BaseObjectCreationExpressionSyntax obj, SemanticModel model)
     {
-        var type = (model.GetSymbolInfo(obj).Symbol as IMethodSymbol)?.ContainingType
-            ?? model.GetTypeInfo(obj).Type as INamedTypeSymbol;
+        var typeSymbol = (model.GetSymbolInfo(obj).Symbol as IMethodSymbol)?.ContainingType
+            ?? model.GetTypeInfo(obj).Type;
 
-        if (type is null)
+        if (typeSymbol is null)
         {
             return new IRIdentifier($"--[[unsupported expr: {obj.Kind()}]]nil");
+        }
+
+        if (typeSymbol is ITypeParameterSymbol typeParameter)
+        {
+            return new IRInvocation(new IRMemberAccess(LowerRuntimeTypeTarget(typeParameter), "New"), Array.Empty<IRExpr>());
+        }
+
+        if (typeSymbol is not INamedTypeSymbol type)
+        {
+            AddDiagnostic(obj.GetLocation(), $"unsupported object creation type: {typeSymbol.Kind}");
+            return new IRLiteral(null, IRLiteralKind.Nil);
         }
 
         if (IsRegexType(type))
@@ -4639,11 +4785,11 @@ public sealed class IRLowering
                 break;
             case IRIs isExpr:
                 CollectTypeReferences(isExpr.Value, dependencies);
-                dependencies.Add(GetTypeReferenceFullName(isExpr.Type));
+                CollectTypeReferences(isExpr.Type, dependencies);
                 break;
             case IRAs asExpr:
                 CollectTypeReferences(asExpr.Value, dependencies);
-                dependencies.Add(GetTypeReferenceFullName(asExpr.Type));
+                CollectTypeReferences(asExpr.Type, dependencies);
                 break;
             case IRTableLiteralNew tableLiteralNew:
                 foreach (var (_, value) in tableLiteralNew.Fields)

@@ -117,6 +117,29 @@ local ints = SF__.Demo.Add__ii(1, 2)
 local strings = SF__.Demo.Add__ss("a", "b")
 ```
 
+## Generic Methods
+
+Generic method type arguments lower to hidden leading Lua parameters that carry the runtime type table. This supports type checks against the type parameter and `new T()` for class types with a `new()` constraint.
+
+```csharp
+public T AddComponent<T>() where T : Component, new()
+{
+    var component = new T();
+    return component;
+}
+
+var transform = AddComponent<Transform>();
+```
+
+```lua
+function SF__.GameObject:AddComponent(T)
+    local component = T.New()
+    return component
+end
+
+local transform = self:AddComponent(SF__.Transform)
+```
+
 ## Optional Parameters
 
 Optional parameter defaults lower to a nil guard at the start of the Lua function. This preserves explicit false and zero defaults, and lets omitted Lua arguments use the C# default value.

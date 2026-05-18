@@ -1357,6 +1357,124 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Nullable_suppression_and_supported_is_patterns_emit_lua()
+    {
+        var src = """
+            namespace Game
+            {
+                public class Unit
+                {
+                }
+
+                public class Hero : Unit
+                {
+                }
+
+                public static class Checks
+                {
+                    public static bool HasValue(Unit? value)
+                    {
+                        return value! is not null;
+                    }
+
+                    public static bool IsHero(object value)
+                    {
+                        return value is Hero;
+                    }
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "PatternChecks.cs");
+
+        Assert.Contains("return (not (value == nil))", lua);
+        Assert.Matches(@"return SF__\.TypeIs__\(value\d*, SF__\.Game\.Hero\)", lua);
+        Assert.DoesNotContain("unsupported expression: SuppressNullableWarningExpression", lua);
+        Assert.DoesNotContain("unsupported expression: IsPatternExpression", lua);
+    }
+
+    [Fact]
+    public async Task Generic_method_type_parameters_emit_runtime_type_arguments()
+    {
+        var src = """
+            public class Component
+            {
+            }
+
+            public class Transform : Component
+            {
+            }
+
+            public class GameObject
+            {
+                private Component _component = new Transform();
+
+                public Transform Transform => GetComponent<Transform>()!;
+
+                public T? GetComponent<T>() where T : Component
+                {
+                    var comp = _component;
+                    if (comp is T tComp)
+                    {
+                        return tComp;
+                    }
+
+                    return null;
+                }
+
+                public T AddComponent<T>() where T : Component, new()
+                {
+                    var comp = new T();
+                    _component = comp;
+                    return comp;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "GenericComponents.cs");
+
+        Assert.Contains("function SF__.GameObject:GetComponent(T)", lua);
+        Assert.Contains("return self:GetComponent(SF__.Transform)", lua);
+        Assert.Contains("local tComp = comp", lua);
+        Assert.Contains("if SF__.TypeIs__(tComp, T) then", lua);
+        Assert.Matches(@"local comp\d* = T\d*\.New\(\)", lua);
+        Assert.DoesNotContain("unsupported expression: GenericName", lua);
+        Assert.DoesNotContain("unsupported expression: IsPatternExpression", lua);
+    }
+
+    [Fact]
+    public async Task Declaration_is_patterns_remain_diagnostics()
+    {
+        var src = """
+            namespace Game
+            {
+                public class Hero
+                {
+                }
+
+                public static class Checks
+                {
+                    public static bool IsHero(object value)
+                    {
+                        return value is Hero hero;
+                    }
+                }
+            }
+            """;
+
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var file = Path.Combine(dir.FullName, "PatternDiagnostics.cs");
+        await File.WriteAllTextAsync(file, src);
+
+        var compilation = await new RoslynFrontend(Array.Empty<string>())
+            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
+        var module = new IRLowering().Lower(compilation, CancellationToken.None);
+
+        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("declaration patterns are not supported", StringComparison.Ordinal));
+        Assert.DoesNotContain(module.Diagnostics, diagnostic => diagnostic.Contains("unsupported expression: IsPatternExpression", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Struct_runtime_casting_and_boxed_equality_are_diagnostics()
     {
         var src = """

@@ -2014,12 +2014,16 @@ public sealed class LuaEmitter
             case IRIs isExpr:
                 _sb.Append(_rootTable).Append(".TypeIs__(");
                 EmitExpr(isExpr.Value);
-                _sb.Append(", ").Append(FormatTypeReference(isExpr.Type)).Append(')');
+                _sb.Append(", ");
+                EmitExpr(isExpr.Type);
+                _sb.Append(')');
                 break;
             case IRAs asExpr:
                 _sb.Append(_rootTable).Append(".TypeAs__(");
                 EmitExpr(asExpr.Value);
-                _sb.Append(", ").Append(FormatTypeReference(asExpr.Type)).Append(')');
+                _sb.Append(", ");
+                EmitExpr(asExpr.Type);
+                _sb.Append(')');
                 break;
         }
     }
@@ -2535,9 +2539,11 @@ public sealed class LuaEmitter
                 break;
             case IRIs isExpr:
                 CollectCollectionHelpers(isExpr.Value);
+                CollectCollectionHelpers(isExpr.Type);
                 break;
             case IRAs asExpr:
                 CollectCollectionHelpers(asExpr.Value);
+                CollectCollectionHelpers(asExpr.Type);
                 break;
         }
     }
@@ -2618,8 +2624,8 @@ public sealed class LuaEmitter
             IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesTernaryHelper(f.Value)),
             IRBinary binary => ExprUsesTernaryHelper(binary.Left) || ExprUsesTernaryHelper(binary.Right),
             IRUnary unary => ExprUsesTernaryHelper(unary.Operand),
-            IRIs isExpr => ExprUsesTernaryHelper(isExpr.Value),
-            IRAs asExpr => ExprUsesTernaryHelper(asExpr.Value),
+            IRIs isExpr => ExprUsesTernaryHelper(isExpr.Value) || ExprUsesTernaryHelper(isExpr.Type),
+            IRAs asExpr => ExprUsesTernaryHelper(asExpr.Value) || ExprUsesTernaryHelper(asExpr.Type),
             _ => false,
         };
 
@@ -2810,8 +2816,8 @@ public sealed class LuaEmitter
             IRStructValueTable structValueTable => ExprUsesStringConcat(structValueTable.Value),
             IRBinary binary => ExprUsesStringConcat(binary.Left) || ExprUsesStringConcat(binary.Right),
             IRUnary unary => ExprUsesStringConcat(unary.Operand),
-            IRIs isExpr => ExprUsesStringConcat(isExpr.Value),
-            IRAs asExpr => ExprUsesStringConcat(asExpr.Value),
+            IRIs isExpr => ExprUsesStringConcat(isExpr.Value) || ExprUsesStringConcat(isExpr.Type),
+            IRAs asExpr => ExprUsesStringConcat(asExpr.Value) || ExprUsesStringConcat(asExpr.Type),
             _ => false,
         };
 
@@ -2860,8 +2866,8 @@ public sealed class LuaEmitter
             IRStructValueTable structValueTable => ExprUsesCoroutineHelpers(structValueTable.Value),
             IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
             IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
-            IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value),
-            IRAs asExpr => ExprUsesCoroutineHelpers(asExpr.Value),
+            IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value) || ExprUsesCoroutineHelpers(isExpr.Type),
+            IRAs asExpr => ExprUsesCoroutineHelpers(asExpr.Value) || ExprUsesCoroutineHelpers(asExpr.Type),
             _ => false,
         };
 
@@ -3131,9 +3137,11 @@ public sealed class LuaEmitter
                 break;
             case IRIs isExpr:
                 CollectIdentifiers(isExpr.Value);
+                CollectIdentifiers(isExpr.Type);
                 break;
             case IRAs asExpr:
                 CollectIdentifiers(asExpr.Value);
+                CollectIdentifiers(asExpr.Type);
                 break;
         }
     }

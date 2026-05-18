@@ -29,6 +29,8 @@ When lowering optional parameters, prefer callee-side nil guards (`if arg == nil
 
 When lowering overloaded methods, constructors, or operators, normalize them to unique Lua names at the semantic boundary using the same signature function for declarations and call sites; count-only suffixes are insufficient for same-arity overloads.
 
+When generic lowering needs hidden runtime type arguments, add them only on ordinary SharpForge method call emission after special API lowerings have consumed source-shaped arguments; do not leak hidden arguments into Lua interop, Regex, collection, or other purpose-built API lowerings.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

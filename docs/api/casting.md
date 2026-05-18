@@ -49,6 +49,34 @@ if SF__.TypeIs__(unit, SF__.Hero) then
 end
 ```
 
+`is null` and `is not null` lower to direct `nil` checks. The nullable suppression operator is erased before lowering, so `value! is not null` has the same runtime shape as `value is not null`.
+
+```csharp
+return value! is not null;
+```
+
+```lua
+return (not (value == nil))
+```
+
+Inside generic methods, `is T name` in an `if` condition lowers to a `TypeIs__` check against the hidden runtime type-argument parameter and binds `name` to the tested value for the `if` body.
+
+```csharp
+if (component is T typed)
+{
+    return typed;
+}
+```
+
+```lua
+do
+    local typed = component
+    if SF__.TypeIs__(typed, T) then
+        return typed
+    end
+end
+```
+
 ## as
 
 `as` lowers to a conditional return of the value or `nil`.
@@ -63,4 +91,4 @@ local h = SF__.TypeAs__(unit, SF__.Hero)
 
 ## Unsupported
 
-`checked` casts, `unchecked` casts, pattern matching with `is` (e.g., `unit is Hero h`), and `switch` pattern matching produce a transpiler error.
+`checked` casts, `unchecked` casts, declaration patterns with binding outside an `if` condition (e.g., `return unit is Hero h`), and `switch` pattern matching produce a transpiler error.
