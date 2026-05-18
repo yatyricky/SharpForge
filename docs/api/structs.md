@@ -24,6 +24,7 @@ local x = p__X
 ## Multi-Return
 
 Functions that return a struct return the fields as multiple Lua values in declaration order.
+Expression-bodied methods and property getters use the same shape, including target-typed creation such as `public static Point Origin => new(0, 0);`.
 
 ```csharp
 public static Point GetOrigin()
@@ -56,6 +57,19 @@ DrawPoint(p);
 
 ```lua
 SF__.MyClass.DrawPoint(p__X, p__Y)
+```
+
+Struct-returning SharpForge calls are already multi-return values. When passed to another SharpForge method or operator that accepts that struct, the call itself is forwarded instead of treating the result like a Lua table.
+
+```csharp
+public Point Clamp(float scale)
+{
+    return Normalized * scale;
+}
+```
+
+```lua
+return SF__.Point.op_Multiply__pointf(SF__.Point.get_Normalized(self__X, self__Y), scale)
 ```
 
 ## Struct Parameters

@@ -2925,6 +2925,82 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Struct_returning_property_argument_is_not_treated_as_table_fields()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public Vector2(float x, float y)
+                {
+                    this.x = x;
+                    this.y = y;
+                }
+
+                public static Vector2 operator *(Vector2 value, float scale)
+                {
+                    return new Vector2(value.x * scale, value.y * scale);
+                }
+
+                public static Vector2 operator *(float scale, Vector2 value)
+                {
+                    return new Vector2(value.x * scale, value.y * scale);
+                }
+
+                public Vector2 Normalized => new(0, 0);
+
+                public Vector2 ClampMagnitude(float mag)
+                {
+                    return Normalized * mag;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructPropertyArgument.cs");
+
+        Assert.Matches(@"function SF__\.Vector2\.ClampMagnitude\(self__x\d*, self__y\d*, mag\)", lua);
+        Assert.Matches(@"return SF__\.Vector2\.op_Multiply__vector2f\(SF__\.Vector2\.get_Normalized\(self__x\d*, self__y\d*\), mag\)", lua);
+        Assert.DoesNotMatch(@"get_Normalized\(self__x\d*, self__y\d*\)\.x", lua);
+        Assert.DoesNotMatch(@"get_Normalized\(self__x\d*, self__y\d*\)\.y", lua);
+    }
+
+    [Fact]
+    public async Task Target_typed_struct_creation_in_expression_bodied_returns_uses_multi_return()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public Vector2(float x, float y)
+                {
+                    this.x = x;
+                    this.y = y;
+                }
+
+                public static Vector2 Zero => new(0, 0);
+                public static Vector2 One { get => new(1, 1); }
+                public static Vector2 Make() => new(2, 3);
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructExpressionBodiedReturns.cs");
+
+        Assert.Contains("function SF__.Vector2.get_Zero()", lua);
+        Assert.Contains("function SF__.Vector2.get_One()", lua);
+        Assert.Contains("function SF__.Vector2.Make()", lua);
+        Assert.Contains("return 0, 0", lua);
+        Assert.Contains("return 1, 1", lua);
+        Assert.Contains("return 2, 3", lua);
+        Assert.DoesNotContain("return {x = 0, y = 0}", lua);
+        Assert.DoesNotContain("return {x = 1, y = 1}", lua);
+        Assert.DoesNotContain("return {x = 2, y = 3}", lua);
+    }
+
+    [Fact]
     public async Task Computed_properties_indexers_delegates_and_events_emit_mvp_shapes()
     {
         var src = """

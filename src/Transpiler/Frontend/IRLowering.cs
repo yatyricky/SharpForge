@@ -638,7 +638,7 @@ public sealed class IRLowering
             }
             else if (m.ExpressionBody is { } arrow)
             {
-                fn.Body.Statements.Add(new IRReturn(LowerExpr(arrow.Expression, model)));
+                fn.Body.Statements.Add(LowerReturnExpression(arrow.Expression, model));
             }
         }
         finally
@@ -721,7 +721,7 @@ public sealed class IRLowering
                 IsStatic = isStatic,
                 IsInstance = !isStatic && !isStructInstanceProperty,
             };
-            LowerPropertyBody(fn, owner, isStructInstanceProperty, () => fn.Body.Statements.Add(new IRReturn(LowerExpr(expressionBody.Expression, model))));
+            LowerPropertyBody(fn, owner, isStructInstanceProperty, () => fn.Body.Statements.Add(LowerReturnExpression(expressionBody.Expression, model)));
             yield return fn;
             yield break;
         }
@@ -821,7 +821,7 @@ public sealed class IRLowering
         else if (accessor.ExpressionBody is { } expressionBody)
         {
             body.Statements.Add(accessor.IsKind(SyntaxKind.GetAccessorDeclaration)
-                ? new IRReturn(LowerExpr(expressionBody.Expression, model))
+                ? LowerReturnExpression(expressionBody.Expression, model)
                 : new IRExprStmt(LowerExpr(expressionBody.Expression, model)));
         }
     }
@@ -845,7 +845,7 @@ public sealed class IRLowering
         }
         else if (o.ExpressionBody is { } arrow)
         {
-            fn.Body.Statements.Add(new IRReturn(LowerExpr(arrow.Expression, model)));
+            fn.Body.Statements.Add(LowerReturnExpression(arrow.Expression, model));
         }
 
         return fn;
@@ -1145,12 +1145,7 @@ public sealed class IRLowering
                 return new IRExprStmt(LowerExpr(es.Expression, model));
 
             case ReturnStatementSyntax rs:
-                if (rs.Expression is not null && TryLowerStructReturn(rs.Expression, model) is { } structReturn)
-                {
-                    return structReturn;
-                }
-
-                return new IRReturn(rs.Expression is null ? null : LowerExpr(rs.Expression, model));
+                return rs.Expression is null ? new IRReturn(null) : LowerReturnExpression(rs.Expression, model);
 
             case IfStatementSyntax ifs:
                 var thenBlk = new IRBlock();
@@ -2376,6 +2371,15 @@ public sealed class IRLowering
                     .ToArray();
                 return values.Count == fields.Length;
             }
+
+            if (symbol is IMethodSymbol or IPropertySymbol
+                && expression is IdentifierNameSyntax or MemberAccessExpressionSyntax or InvocationExpressionSyntax
+                && GetSymbolType(symbol) is INamedTypeSymbol symbolType
+                && CanFlattenStructType(symbolType))
+            {
+                values = [LowerExpr(expression, model)];
+                return true;
+            }
         }
 
         if (expression is IdentifierNameSyntax or MemberAccessExpressionSyntax)
@@ -2804,6 +2808,9 @@ public sealed class IRLowering
 
         return null;
     }
+
+    private IRStmt LowerReturnExpression(ExpressionSyntax expression, SemanticModel model)
+        => TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model));
 
     private bool TryGetStructExpressionValues(
         ExpressionSyntax expression,

@@ -21,6 +21,10 @@ When a representation guard decides whether a struct local can be flattened, kee
 
 When struct instance receivers are flattened, apply the same receiver expansion to accessor methods such as computed property getters; otherwise chained property reads can accidentally emit Lua colon calls on multi-return struct values.
 
+When a method or property returns a flattenable struct and is itself used as a struct argument, forward the call as the flattened value instead of projecting `.Field` from it; multi-return struct calls are not Lua tables.
+
+When lowering any return position for a flattenable struct, including expression-bodied methods, operators, and property getters, use the struct multi-return path instead of generic expression lowering; generic struct expression lowering may intentionally produce a table for non-return contexts.
+
 When lowering optional parameters, prefer callee-side nil guards (`if arg == nil then arg = default end`) over call-site default substitution so omitted Lua arguments, named-argument gaps, and explicit false/zero defaults share one representation.
 
 When lowering overloaded methods, constructors, or operators, normalize them to unique Lua names at the semantic boundary using the same signature function for declarations and call sites; count-only suffixes are insufficient for same-arity overloads.
