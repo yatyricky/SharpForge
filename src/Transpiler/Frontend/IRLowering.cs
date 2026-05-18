@@ -2037,6 +2037,7 @@ public sealed class IRLowering
                 "RemoveAt" when args.Count == 1 => TryGetFlattenedStructListLocal(receiverExpression, model, out var listLocal)
                     ? BuildFlattenedStructCollectionRemoveAtExpression(listLocal, args[0])
                     : new IRListRemoveAt(receiver, args[0]),
+                "RemoveAll" when args.Count == 1 => new IRListRemoveAll(receiver, args[0]),
                 "Reverse" when args.Count == 0 => new IRListReverse(receiver),
                 "Sort" when args.Count <= 1 => new IRListSort(receiver, args.Count == 0 ? null : args[0]),
                 "ToArray" when args.Count == 0 => new IRListToArray(receiver),
@@ -4733,6 +4734,10 @@ public sealed class IRLowering
             case IRListRemoveAt listRemoveAt:
                 CollectTypeReferences(listRemoveAt.List, dependencies);
                 CollectTypeReferences(listRemoveAt.Index, dependencies);
+                break;
+            case IRListRemoveAll listRemoveAll:
+                CollectTypeReferences(listRemoveAll.List, dependencies);
+                CollectTypeReferences(listRemoveAll.Predicate, dependencies);
                 break;
             case IRListReverse listReverse:
                 CollectTypeReferences(listReverse.List, dependencies);

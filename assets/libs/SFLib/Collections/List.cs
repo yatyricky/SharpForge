@@ -3,6 +3,8 @@
 // </auto-generated>
 namespace SFLib.Collections;
 
+using System;
+
 public sealed class List<T>
 {
     public int Count => 0;
@@ -60,7 +62,7 @@ public sealed class List<T>
     {
     }
 
-    public void Sort(global::System.Func<T, T, bool> less)
+    public void Sort(Func<T, T, bool> less)
     {
     }
 

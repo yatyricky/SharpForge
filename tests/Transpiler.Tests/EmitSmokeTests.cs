@@ -2142,6 +2142,45 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task List_remove_all_lowers_to_helper_with_predicate()
+    {
+        var src = """
+            using SFLib.Collections;
+
+            namespace SFLib.Collections
+            {
+                public class List<T>
+                {
+                    public void Add(T item) { }
+                    public int RemoveAll(global::System.Predicate<T> match) { return 0; }
+                }
+            }
+
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    var items = new List<string>();
+                    items.Add("keep");
+                    items.Add(null);
+                    items.Add("gone");
+                    return items.RemoveAll(item => item == null || item == "gone");
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ListRemoveAll.cs");
+
+        Assert.Contains("function SF__.ListRemoveAll__(list, match)", lua);
+        Assert.Contains("for i = #list.items, 1, -1 do", lua);
+        Assert.Contains("if match(SF__.ListUnwrap__(list.items[i])) then", lua);
+        Assert.Contains("if removed > 0 then list.version = list.version + 1 end", lua);
+        Assert.Contains("return removed", lua);
+        Assert.Contains("return SF__.ListRemoveAll__(items, function(item)", lua);
+        Assert.Contains("return ((item == nil) or (item == \"gone\"))", lua);
+    }
+
+    [Fact]
     public async Task Pipeline_lowers_bundled_SFLib_list_to_lua_table()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");

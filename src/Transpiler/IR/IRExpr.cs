@@ -48,6 +48,7 @@ public sealed record IRListIndexOf(IRExpr List, IRExpr Value, IRExpr? EqualityCo
 public sealed record IRListInsert(IRExpr List, IRExpr Index, IRExpr Value) : IRExpr;
 public sealed record IRListRemove(IRExpr List, IRExpr Value, IRExpr? EqualityComparer = null) : IRExpr;
 public sealed record IRListRemoveAt(IRExpr List, IRExpr Index) : IRExpr;
+public sealed record IRListRemoveAll(IRExpr List, IRExpr Predicate) : IRExpr;
 public sealed record IRListReverse(IRExpr List) : IRExpr;
 public sealed record IRListSort(IRExpr List, IRExpr? Comparer) : IRExpr;
 public sealed record IRListToArray(IRExpr List) : IRExpr;

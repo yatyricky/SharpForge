@@ -75,6 +75,7 @@ public sealed class LuaEmitter
         Insert,
         RemoveAt,
         Remove,
+        RemoveAll,
         Reverse,
         Iterate,
         Sort,
@@ -679,6 +680,7 @@ public sealed class LuaEmitter
         if (_listHelpers.Contains(ListHelper.Insert)) WriteListInsertHelper();
         if (_listHelpers.Contains(ListHelper.RemoveAt)) WriteListRemoveAtHelper();
         if (_listHelpers.Contains(ListHelper.Remove)) WriteListRemoveHelper();
+        if (_listHelpers.Contains(ListHelper.RemoveAll)) WriteListRemoveAllHelper();
         if (_listHelpers.Contains(ListHelper.Reverse)) WriteListReverseHelper();
         if (_listHelpers.Contains(ListHelper.Iterate)) WriteListIterateHelper();
         if (_listHelpers.Contains(ListHelper.Sort)) WriteListSortHelper();
@@ -864,6 +866,28 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         WriteLine("return false");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteListRemoveAllHelper()
+    {
+        WriteLine($"function {_rootTable}.ListRemoveAll__(list, match)");
+        _indent++;
+        WriteLine("local removed = 0");
+        WriteLine("for i = #list.items, 1, -1 do");
+        _indent++;
+        WriteLine($"if match({_rootTable}.ListUnwrap__(list.items[i])) then");
+        _indent++;
+        WriteLine("table.remove(list.items, i)");
+        WriteLine("removed = removed + 1");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+        WriteLine("if removed > 0 then list.version = list.version + 1 end");
+        WriteLine("return removed");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
@@ -1939,6 +1963,13 @@ public sealed class LuaEmitter
                 EmitExpr(listRemoveAt.Index);
                 _sb.Append(')');
                 break;
+            case IRListRemoveAll listRemoveAll:
+                _sb.Append(_rootTable).Append(".ListRemoveAll__(");
+                EmitExpr(listRemoveAll.List);
+                _sb.Append(", ");
+                EmitExpr(listRemoveAll.Predicate);
+                _sb.Append(')');
+                break;
             case IRListReverse listReverse:
                 _sb.Append(_rootTable).Append(".ListReverse__(");
                 EmitExpr(listReverse.List);
@@ -2217,6 +2248,7 @@ public sealed class LuaEmitter
                 changed |= _listHelpers.Add(ListHelper.IndexOf);
                 changed |= _listHelpers.Add(ListHelper.RemoveAt);
             }
+            if (_listHelpers.Contains(ListHelper.RemoveAll)) changed |= _listHelpers.Add(ListHelper.Unwrap);
             if (_listHelpers.Contains(ListHelper.Iterate)) changed |= _listHelpers.Add(ListHelper.Unwrap);
             if (_listHelpers.Contains(ListHelper.Sort)) changed |= _listHelpers.Add(ListHelper.Unwrap);
             if (_listHelpers.Contains(ListHelper.ToArray)) changed |= _listHelpers.Add(ListHelper.Unwrap);
@@ -2488,6 +2520,11 @@ public sealed class LuaEmitter
                 CollectCollectionHelpers(listRemoveAt.List);
                 CollectCollectionHelpers(listRemoveAt.Index);
                 break;
+            case IRListRemoveAll listRemoveAll:
+                _listHelpers.Add(ListHelper.RemoveAll);
+                CollectCollectionHelpers(listRemoveAll.List);
+                CollectCollectionHelpers(listRemoveAll.Predicate);
+                break;
             case IRListReverse listReverse:
                 _listHelpers.Add(ListHelper.Reverse);
                 CollectCollectionHelpers(listReverse.List);
@@ -2612,6 +2649,7 @@ public sealed class LuaEmitter
             IRListInsert listInsert => ExprUsesTernaryHelper(listInsert.List) || ExprUsesTernaryHelper(listInsert.Index) || ExprUsesTernaryHelper(listInsert.Value),
             IRListRemove listRemove => ExprUsesTernaryHelper(listRemove.List) || ExprUsesTernaryHelper(listRemove.Value) || (listRemove.EqualityComparer is not null && ExprUsesTernaryHelper(listRemove.EqualityComparer)),
             IRListRemoveAt listRemoveAt => ExprUsesTernaryHelper(listRemoveAt.List) || ExprUsesTernaryHelper(listRemoveAt.Index),
+            IRListRemoveAll listRemoveAll => ExprUsesTernaryHelper(listRemoveAll.List) || ExprUsesTernaryHelper(listRemoveAll.Predicate),
             IRListReverse listReverse => ExprUsesTernaryHelper(listReverse.List),
             IRListSort listSort => ExprUsesTernaryHelper(listSort.List) || (listSort.Comparer is not null && ExprUsesTernaryHelper(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesTernaryHelper(listToArray.List),
@@ -2756,6 +2794,7 @@ public sealed class LuaEmitter
             IRListInsert listInsert => ExprUsesTypeChecks(listInsert.List) || ExprUsesTypeChecks(listInsert.Index) || ExprUsesTypeChecks(listInsert.Value),
             IRListRemove listRemove => ExprUsesTypeChecks(listRemove.List) || ExprUsesTypeChecks(listRemove.Value) || (listRemove.EqualityComparer is not null && ExprUsesTypeChecks(listRemove.EqualityComparer)),
             IRListRemoveAt listRemoveAt => ExprUsesTypeChecks(listRemoveAt.List) || ExprUsesTypeChecks(listRemoveAt.Index),
+            IRListRemoveAll listRemoveAll => ExprUsesTypeChecks(listRemoveAll.List) || ExprUsesTypeChecks(listRemoveAll.Predicate),
             IRListReverse listReverse => ExprUsesTypeChecks(listReverse.List),
             IRListSort listSort => ExprUsesTypeChecks(listSort.List) || (listSort.Comparer is not null && ExprUsesTypeChecks(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesTypeChecks(listToArray.List),
@@ -2797,6 +2836,7 @@ public sealed class LuaEmitter
             IRListInsert listInsert => ExprUsesStringConcat(listInsert.List) || ExprUsesStringConcat(listInsert.Index) || ExprUsesStringConcat(listInsert.Value),
             IRListRemove listRemove => ExprUsesStringConcat(listRemove.List) || ExprUsesStringConcat(listRemove.Value) || (listRemove.EqualityComparer is not null && ExprUsesStringConcat(listRemove.EqualityComparer)),
             IRListRemoveAt listRemoveAt => ExprUsesStringConcat(listRemoveAt.List) || ExprUsesStringConcat(listRemoveAt.Index),
+            IRListRemoveAll listRemoveAll => ExprUsesStringConcat(listRemoveAll.List) || ExprUsesStringConcat(listRemoveAll.Predicate),
             IRListReverse listReverse => ExprUsesStringConcat(listReverse.List),
             IRListSort listSort => ExprUsesStringConcat(listSort.List) || (listSort.Comparer is not null && ExprUsesStringConcat(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesStringConcat(listToArray.List),
@@ -2855,6 +2895,7 @@ public sealed class LuaEmitter
             IRListInsert listInsert => ExprUsesCoroutineHelpers(listInsert.List) || ExprUsesCoroutineHelpers(listInsert.Index) || ExprUsesCoroutineHelpers(listInsert.Value),
             IRListRemove listRemove => ExprUsesCoroutineHelpers(listRemove.List) || ExprUsesCoroutineHelpers(listRemove.Value) || (listRemove.EqualityComparer is not null && ExprUsesCoroutineHelpers(listRemove.EqualityComparer)),
             IRListRemoveAt listRemoveAt => ExprUsesCoroutineHelpers(listRemoveAt.List) || ExprUsesCoroutineHelpers(listRemoveAt.Index),
+            IRListRemoveAll listRemoveAll => ExprUsesCoroutineHelpers(listRemoveAll.List) || ExprUsesCoroutineHelpers(listRemoveAll.Predicate),
             IRListReverse listReverse => ExprUsesCoroutineHelpers(listReverse.List),
             IRListSort listSort => ExprUsesCoroutineHelpers(listSort.List) || (listSort.Comparer is not null && ExprUsesCoroutineHelpers(listSort.Comparer)),
             IRListToArray listToArray => ExprUsesCoroutineHelpers(listToArray.List),
@@ -3099,6 +3140,10 @@ public sealed class LuaEmitter
             case IRListRemoveAt listRemoveAt:
                 CollectIdentifiers(listRemoveAt.List);
                 CollectIdentifiers(listRemoveAt.Index);
+                break;
+            case IRListRemoveAll listRemoveAll:
+                CollectIdentifiers(listRemoveAll.List);
+                CollectIdentifiers(listRemoveAll.Predicate);
                 break;
             case IRListReverse listReverse:
                 CollectIdentifiers(listReverse.List);

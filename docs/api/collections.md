@@ -18,6 +18,7 @@ bool has = list.Contains("a");
 int idx = list.IndexOf("a");
 list.Insert(0, "z");
 list.Remove("a");
+int removed = list.RemoveAll(item => item == "gone");
 list.RemoveAt(0);
 list.Reverse();
 list.Sort();
@@ -46,6 +47,17 @@ function SF__.ListGet__(list, index)  return list.items[index + 1] end
 function SF__.ListSet__(list, index, value)  list.items[index + 1] = value; list.version = list.version + 1 end
 function SF__.ListAdd__(list, value)  table.insert(list.items, value); list.version = list.version + 1 end
 function SF__.ListRemoveAt__(list, index)  table.remove(list.items, index + 1); list.version = list.version + 1 end
+function SF__.ListRemoveAll__(list, match)
+    local removed = 0
+    for i = #list.items, 1, -1 do
+        if match(SF__.ListUnwrap__(list.items[i])) then
+            table.remove(list.items, i)
+            removed = removed + 1
+        end
+    end
+    if removed > 0 then list.version = list.version + 1 end
+    return removed
+end
 function SF__.ListClear__(list)  list.items = {}; list.version = list.version + 1 end
 ```
 
@@ -62,6 +74,7 @@ local has = SF__.ListContains__(list, "a")
 local idx = SF__.ListIndexOf__(list, "a")
 SF__.ListInsert__(list, 1, "z")
 SF__.ListRemove__(list, "a")
+local removed = SF__.ListRemoveAll__(list, function(item) return item == "gone" end)
 SF__.ListRemoveAt__(list, 1)
 SF__.ListReverse__(list)
 SF__.ListSort__(list)
