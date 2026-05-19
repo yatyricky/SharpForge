@@ -3378,6 +3378,7 @@ public sealed class IRLowering
     private static bool IsRuntimeObjectLikeType(ITypeSymbol? type)
         => type is not null && (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Interface);
 
+    // ref: docs/api/classes.md
     private IRExpr LowerObjectCreation(BaseObjectCreationExpressionSyntax obj, SemanticModel model)
     {
         var typeSymbol = (model.GetSymbolInfo(obj).Symbol as IMethodSymbol)?.ContainingType
@@ -3390,7 +3391,10 @@ public sealed class IRLowering
 
         if (typeSymbol is ITypeParameterSymbol typeParameter)
         {
-            return new IRInvocation(new IRMemberAccess(LowerRuntimeTypeTarget(typeParameter), "New"), Array.Empty<IRExpr>());
+            return ApplyObjectInitializer(
+                obj,
+                new IRInvocation(new IRMemberAccess(LowerRuntimeTypeTarget(typeParameter), "New"), Array.Empty<IRExpr>()),
+                model);
         }
 
         if (typeSymbol is not INamedTypeSymbol type)
@@ -3462,12 +3466,75 @@ public sealed class IRLowering
 
         if (IsExternalLuaObjectType(type))
         {
-            return new IRInvocation(
+            return ApplyObjectInitializer(obj, new IRInvocation(
                 new IRMemberAccess(GetLuaObjectTypeTarget(type), ctor is null ? "new" : GetLuaObjectConstructorName(ctor)),
-                args);
+                args), model);
         }
 
-        return new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args);
+        return ApplyObjectInitializer(
+            obj,
+            new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args),
+            model);
+    }
+
+    private IRExpr ApplyObjectInitializer(BaseObjectCreationExpressionSyntax obj, IRExpr creation, SemanticModel model)
+    {
+        if (obj.Initializer is null || obj.Initializer.Expressions.Count == 0)
+        {
+            return creation;
+        }
+
+        var objectName = AllocateLuaName("obj");
+        var objectRef = new IRIdentifier(objectName);
+        var body = new IRBlock();
+        body.Statements.Add(new IRLocalDecl(objectName, creation));
+
+        foreach (var expression in obj.Initializer.Expressions)
+        {
+            if (expression is not AssignmentExpressionSyntax assignment || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+            {
+                AddDiagnostic(expression.GetLocation(), $"unsupported object initializer expression: {expression.Kind()}");
+                continue;
+            }
+
+            body.Statements.Add(LowerObjectInitializerAssignment(objectRef, assignment, model));
+        }
+
+        body.Statements.Add(new IRReturn(objectRef));
+        return new IRInvocation(new IRFunctionExpression(Array.Empty<string>(), body), Array.Empty<IRExpr>());
+    }
+
+    private IRStmt LowerObjectInitializerAssignment(IRExpr objectRef, AssignmentExpressionSyntax assignment, SemanticModel model)
+    {
+        var target = LowerObjectInitializerTarget(objectRef, assignment.Left, model);
+        if (model.GetSymbolInfo(assignment.Left).Symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
+        {
+            var setterTarget = target is IRMemberAccess memberAccess ? memberAccess.Target : objectRef;
+            return new IRExprStmt(new IRInvocation(
+                new IRMemberAccess(setterTarget, "set_" + property.Name),
+                new[] { LowerExpr(assignment.Right, model) },
+                UseColon: !property.IsStatic));
+        }
+
+        return new IRAssign(target, LowerExpr(assignment.Right, model));
+    }
+
+    private IRExpr LowerObjectInitializerTarget(IRExpr objectRef, ExpressionSyntax target, SemanticModel model)
+    {
+        return target switch
+        {
+            IdentifierNameSyntax identifier => new IRMemberAccess(objectRef, identifier.Identifier.ValueText),
+            MemberAccessExpressionSyntax memberAccess => new IRMemberAccess(
+                LowerObjectInitializerTarget(objectRef, memberAccess.Expression, model),
+                memberAccess.Name.Identifier.ValueText),
+            _ => UnsupportedObjectInitializerTarget(target),
+        };
+    }
+
+    private IRExpr UnsupportedObjectInitializerTarget(ExpressionSyntax target)
+    {
+        AddDiagnostic(target.GetLocation(), $"unsupported object initializer target: {target.Kind()}");
+        return new IRIdentifier("--[[unsupported object initializer target]]nil");
     }
 
     private void TrackLuaObjectModuleBinding(VariableDeclaratorSyntax variable, string localName, SemanticModel model)

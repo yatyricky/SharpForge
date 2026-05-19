@@ -1627,6 +1627,9 @@ public class EmitSmokeTests
         Assert.Contains("self:AddComponent(SF__.Transform)", lua);
         Assert.Contains("function SF__.GameObject:GetComponent(T)", lua);
         Assert.Contains("if SF__.TypeIs__(tComp, T) then", lua);
+        Assert.Matches(@"local obj\d* = T\d*\.New\(\)", lua);
+        Assert.Matches(@"obj\d*\.gameObject = self", lua);
+        Assert.Matches(@"return obj\d*", lua);
         Assert.Contains("SF__.ListGet__", lua);
         Assert.Contains("if SF__.Scene._instance ~= nil then", lua);
         Assert.Contains("SF__.Scene._instance = SF__.Scene.New()", lua);
@@ -1636,6 +1639,39 @@ public class EmitSmokeTests
         Assert.DoesNotContain("unsupported expression: IdentifierName", lua);
         Assert.DoesNotContain("unsupported expression: IsPatternExpression", lua);
         Assert.DoesNotContain("unsupported expression: CoalesceAssignmentExpression", lua);
+    }
+
+    [Fact]
+    public async Task Object_initializer_assignments_run_after_creation_and_return_object()
+    {
+        var src = """
+            public class Component
+            {
+                public GameObject gameObject;
+            }
+
+            public class Transform : Component
+            {
+            }
+
+            public class GameObject
+            {
+                public Transform AddTransform()
+                {
+                    return new Transform
+                    {
+                        gameObject = this
+                    };
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ObjectInitializer.cs");
+
+        Assert.Contains("local obj = SF__.Transform.New()", lua);
+        Assert.Contains("obj.gameObject = self", lua);
+        Assert.Contains("return obj", lua);
+        Assert.DoesNotContain("unsupported object initializer", lua);
     }
 
     [Fact]

@@ -35,6 +35,8 @@ When resolving type syntax for runtime checks such as `is`, `as`, or patterns, f
 
 When lowering constructor initializers (`base(...)` or `this(...)`), lower their arguments only after the constructor's own parameters have been declared in the Lua name map; otherwise initializer calls can capture fallback names instead of the actual lowered parameters.
 
+When expression syntax carries ordered side effects, such as class object initializer assignments, lower it as an immediately invoked function with a temporary, statement sequence, and final return instead of dropping the side effects or trying to encode them into a single Lua expression.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

@@ -32,6 +32,7 @@ Common C# constructs lower to direct Lua patterns:
 | Constructor | `SF__.Type.New(...)` with `setmetatable` |
 | `this(...)` constructor initializer | current type `__Init...` call on `self` before the constructor body |
 | Object creation | `SF__.Type.New(...)` |
+| Object initializer assignment | temporary object plus assignments, then returned temporary |
 | `float` literal | emitted as its source-faithful decimal (`0.65f` → `0.65`, not `0.6499...`) |
 | `double` literal | emitted with full round-trip precision |
 | `string.Empty` | empty string literal (`""`) |

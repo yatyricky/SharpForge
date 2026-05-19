@@ -30,6 +30,7 @@ end
 
 Instance methods use colon syntax. Constructors emit `.New(...)` and return `self`.
 Constructor chaining with `: this(args)` emits a call to the current type's generated `__Init...` function before the chained constructor body. The chained constructor performs instance field initialization, so the outer constructor does not re-run field initializers.
+Object initializer assignments run after construction and return the initialized object. This includes generic construction such as `new T { Owner = this }`, which lowers to a temporary object, assignment statements, and a final return of that temporary.
 
 ```csharp
 public class Hero
