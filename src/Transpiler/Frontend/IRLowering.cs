@@ -1727,9 +1727,12 @@ public sealed class IRLowering
 
                 if (model.GetSymbolInfo(bin).Symbol is IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator } op)
                 {
-                    return new IRInvocation(
-                        new IRMemberAccess(LowerTypeReference(op.ContainingType), GetLuaMethodName(op)),
-                        LowerArguments([bin.Left, bin.Right], op.Parameters, model));
+                    var loweredArgs = LowerCallArguments([bin.Left, bin.Right], op.Parameters, model);
+                    return BuildCallExpression(
+                        loweredArgs,
+                        args => new IRInvocation(
+                            new IRMemberAccess(LowerTypeReference(op.ContainingType), GetLuaMethodName(op)),
+                            args));
                 }
 
                 if (bin.IsKind(SyntaxKind.AddExpression) && IsStringExpression(bin, model))
@@ -1768,25 +1771,34 @@ public sealed class IRLowering
     private IRExpr LowerInvocation(InvocationExpressionSyntax inv, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
-        var args = symbol is null
-            ? inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray()
-            : LowerArguments(inv.ArgumentList.Arguments, symbol.Parameters, model);
+        if (symbol is null)
+        {
+            var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
+            return new IRInvocation(LowerExpr(inv.Expression, model), args);
+        }
+
+        var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model);
+        return BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
+    }
+
+    private IRExpr LowerInvocationCore(InvocationExpressionSyntax inv, IMethodSymbol symbol, IReadOnlyList<IRExpr> args, SemanticModel model)
+    {
         if (symbol is { MethodKind: MethodKind.DelegateInvoke })
         {
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
         }
 
-        if (symbol is not null && IsTaskDelay(symbol))
+        if (IsTaskDelay(symbol))
         {
             return new IRRuntimeInvocation("CorWait__", args);
         }
 
-        if (symbol is not null && TryLowerLuaInteropInvocation(symbol, args) is { } luaInteropInvocation)
+        if (TryLowerLuaInteropInvocation(symbol, args) is { } luaInteropInvocation)
         {
             return luaInteropInvocation;
         }
 
-        if (symbol is not null && TryLowerRegexInvocation(inv, symbol, args, model) is { } regexInvocation)
+        if (TryLowerRegexInvocation(inv, symbol, args, model) is { } regexInvocation)
         {
             return regexInvocation;
         }
@@ -1891,8 +1903,7 @@ public sealed class IRLowering
         }
 
         // Hard error for any call on a type defined outside the compilation (BCL / external API not explicitly handled above).
-        if (symbol is not null
-            && _compilationAssembly is not null
+        if (_compilationAssembly is not null
             && !SymbolEqualityComparer.Default.Equals(symbol.ContainingAssembly, _compilationAssembly))
         {
             AddDiagnostic(inv.GetLocation(), $"unsupported external method '{symbol.ContainingType?.ToDisplayString()}.{symbol.Name}'; SharpForge has no lowering for this API");
@@ -1900,6 +1911,22 @@ public sealed class IRLowering
         }
 
         return new IRInvocation(LowerExpr(inv.Expression, model), callArgs);
+    }
+
+    private sealed record LoweredCallArguments(IReadOnlyList<IRExpr> Arguments, IReadOnlyList<IRStmt> PreludeStatements);
+
+    private IRExpr BuildCallExpression(LoweredCallArguments loweredArgs, Func<IReadOnlyList<IRExpr>, IRExpr> buildCall)
+    {
+        var call = buildCall(loweredArgs.Arguments);
+        if (loweredArgs.PreludeStatements.Count == 0)
+        {
+            return call;
+        }
+
+        var body = new IRBlock();
+        body.Statements.AddRange(loweredArgs.PreludeStatements);
+        body.Statements.Add(new IRReturn(call));
+        return BuildImmediatelyInvokedExpression(body);
     }
 
     private IReadOnlyList<IRExpr> PrependGenericMethodTypeArguments(IMethodSymbol? symbol, IReadOnlyList<IRExpr> args)
@@ -1920,16 +1947,18 @@ public sealed class IRLowering
         }
     }
 
-    private IReadOnlyList<IRExpr> LowerArguments(IEnumerable<ExpressionSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
+    private LoweredCallArguments LowerCallArguments(IEnumerable<ExpressionSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
     {
         var lowered = new List<IRExpr>();
-        using var argumentEnumerator = arguments.GetEnumerator();
-        using var parameterEnumerator = parameters.GetEnumerator();
+        var prelude = new List<IRStmt>();
+        var argumentList = arguments.ToArray();
+        var parameterList = parameters.ToArray();
 
-        while (argumentEnumerator.MoveNext())
+        for (var i = 0; i < argumentList.Length; i++)
         {
-            var parameter = parameterEnumerator.MoveNext() ? parameterEnumerator.Current : null;
-            if (TryLowerDelegateMethodGroupArgument(argumentEnumerator.Current, parameter, model) is { } delegateMethodGroup)
+            var argument = argumentList[i];
+            var parameter = i < parameterList.Length ? parameterList[i] : null;
+            if (TryLowerDelegateMethodGroupArgument(argument, parameter, model) is { } delegateMethodGroup)
             {
                 lowered.Add(delegateMethodGroup);
                 continue;
@@ -1939,24 +1968,26 @@ public sealed class IRLowering
                 && CanFlattenStructType(structType)
                 && GetFlattenableStructFields(structType).Any())
             {
-                lowered.AddRange(LowerStructArgumentValues(argumentEnumerator.Current, structType, model));
+                lowered.AddRange(LowerCallArgumentValues(argument, parameter, model, i < argumentList.Length - 1, prelude));
                 continue;
             }
 
-            lowered.Add(LowerExpr(argumentEnumerator.Current, model));
+            lowered.Add(LowerExpr(argument, model));
         }
 
-        return lowered;
+        return new LoweredCallArguments(lowered, prelude);
     }
 
-    private IReadOnlyList<IRExpr> LowerArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IReadOnlyList<IParameterSymbol> parameters, SemanticModel model)
+    private LoweredCallArguments LowerCallArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IReadOnlyList<IParameterSymbol> parameters, SemanticModel model)
     {
         if (!arguments.Any(argument => argument.NameColon is not null))
         {
-            return LowerArguments(arguments.Select(argument => argument.Expression), parameters, model);
+            return LowerCallArguments(arguments.Select(argument => argument.Expression), parameters, model);
         }
 
+        var prelude = new List<IRStmt>();
         var loweredByIndex = new Dictionary<int, IReadOnlyList<IRExpr>>();
+        var mappedArguments = new List<(ArgumentSyntax Argument, IParameterSymbol Parameter, int Index)>();
         var maxIndex = -1;
         foreach (var argument in arguments)
         {
@@ -1972,8 +2003,18 @@ public sealed class IRLowering
                 continue;
             }
 
-            loweredByIndex[index] = LowerArgumentValues(argument.Expression, parameter, model);
+            mappedArguments.Add((argument, parameter, index));
             maxIndex = Math.Max(maxIndex, index);
+        }
+
+        foreach (var mappedArgument in mappedArguments)
+        {
+            loweredByIndex[mappedArgument.Index] = LowerCallArgumentValues(
+                mappedArgument.Argument.Expression,
+                mappedArgument.Parameter,
+                model,
+                mappedArgument.Index < maxIndex,
+                prelude);
         }
 
         var lowered = new List<IRExpr>();
@@ -1988,11 +2029,11 @@ public sealed class IRLowering
             lowered.AddRange(CreateNilArgumentPlaceholders(parameters[i]));
         }
 
-        return lowered;
+        return new LoweredCallArguments(lowered, prelude);
     }
 
-    private IReadOnlyList<IRExpr> LowerArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
-        => LowerArguments(arguments, parameters.ToArray(), model);
+    private LoweredCallArguments LowerCallArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
+        => LowerCallArguments(arguments, parameters.ToArray(), model);
 
     private IRExpr LowerArgument(ExpressionSyntax argument, IParameterSymbol? parameter, SemanticModel model)
     {
@@ -2014,6 +2055,37 @@ public sealed class IRLowering
         }
 
         return [LowerArgument(argument, parameter, model)];
+    }
+
+    private IReadOnlyList<IRExpr> LowerCallArgumentValues(
+        ExpressionSyntax argument,
+        IParameterSymbol parameter,
+        SemanticModel model,
+        bool hasTrailingArguments,
+        List<IRStmt> prelude)
+    {
+        if (parameter.Type is not INamedTypeSymbol structType
+            || !CanFlattenStructType(structType))
+        {
+            return [LowerArgument(argument, parameter, model)];
+        }
+
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        if (fields.Length == 0)
+        {
+            return [LowerArgument(argument, parameter, model)];
+        }
+
+        var values = LowerStructArgumentValues(argument, structType, model);
+        if (!hasTrailingArguments || fields.Length == 1 || values.Count != 1)
+        {
+            return values;
+        }
+
+        var baseName = EscapeLuaKeyword(parameter.Name);
+        var tempNames = fields.Select(field => AllocateLuaName($"{baseName}__{field.Name}")).ToArray();
+        prelude.Add(new IRMultiLocalDecl(tempNames, values));
+        return tempNames.Select(name => (IRExpr)new IRIdentifier(name)).ToArray();
     }
 
     private IReadOnlyList<IRExpr> CreateNilArgumentPlaceholders(IParameterSymbol parameter)
@@ -2993,6 +3065,16 @@ public sealed class IRLowering
                     continue;
                 }
 
+                if (IsSupportedStructAssignmentSourceUse(id, model))
+                {
+                    continue;
+                }
+
+                if (IsSupportedStructStringUse(id, model))
+                {
+                    continue;
+                }
+
                 return false;
             }
         }
@@ -3021,6 +3103,43 @@ public sealed class IRLowering
         return parameter?.Type is INamedTypeSymbol structType
                && CanFlattenStructType(structType)
                && GetFlattenableStructFields(structType).Any();
+    }
+
+    private bool IsSupportedStructAssignmentSourceUse(IdentifierNameSyntax id, SemanticModel model)
+    {
+        if (id.Parent is not AssignmentExpressionSyntax assignment
+            || assignment.Right != id
+            || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            || !TryGetStructExpressionValues(id, model, out var fields, out _))
+        {
+            return false;
+        }
+
+        return TryGetFlattenedStructAssignmentTargets(assignment.Left, fields, model, out _);
+    }
+
+    private bool IsSupportedStructStringUse(IdentifierNameSyntax id, SemanticModel model)
+    {
+        if (FindStringConcatToStringMethod(id, model) is not IMethodSymbol { ContainingType.TypeKind: TypeKind.Struct } toStringMethod
+            || !CanFlattenStructType(toStringMethod.ContainingType))
+        {
+            return false;
+        }
+
+        ExpressionSyntax current = id;
+        while (current.Parent is ParenthesizedExpressionSyntax parenthesized)
+        {
+            current = parenthesized;
+        }
+
+        return current.Parent switch
+        {
+            InterpolationSyntax interpolation when interpolation.Expression == current => true,
+            BinaryExpressionSyntax binary when (binary.Left == current || binary.Right == current)
+                                               && binary.IsKind(SyntaxKind.AddExpression)
+                                               && IsStringExpression(binary, model) => true,
+            _ => false,
+        };
     }
 
     private static IParameterSymbol? GetArgumentParameter(
@@ -3582,9 +3701,12 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
-        var args = ctor is null
-            ? obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray() ?? Array.Empty<IRExpr>()
-            : obj.ArgumentList is null ? Array.Empty<IRExpr>() : LowerArguments(obj.ArgumentList.Arguments, ctor.Parameters, model);
+        var loweredArgs = ctor is null
+            ? new LoweredCallArguments(obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray() ?? Array.Empty<IRExpr>(), Array.Empty<IRStmt>())
+            : obj.ArgumentList is null
+                ? new LoweredCallArguments(Array.Empty<IRExpr>(), Array.Empty<IRStmt>())
+                : LowerCallArguments(obj.ArgumentList.Arguments, ctor.Parameters, model);
+        var args = loweredArgs.Arguments;
 
         if (CanFlattenStructType(type) && TryGetStructFieldValues(obj, model, out var structFields, out var structValues))
         {
@@ -3627,14 +3749,21 @@ public sealed class IRLowering
 
         if (IsExternalLuaObjectType(type))
         {
-            return ApplyObjectInitializer(obj, new IRInvocation(
-                new IRMemberAccess(GetLuaObjectTypeTarget(type), ctor is null ? "new" : GetLuaObjectConstructorName(ctor)),
-                args), model);
+            return ApplyObjectInitializer(
+                obj,
+                BuildCallExpression(
+                    loweredArgs,
+                    lowered => new IRInvocation(
+                        new IRMemberAccess(GetLuaObjectTypeTarget(type), ctor is null ? "new" : GetLuaObjectConstructorName(ctor)),
+                        lowered)),
+                model);
         }
 
         return ApplyObjectInitializer(
             obj,
-            new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), args),
+            BuildCallExpression(
+                loweredArgs,
+                lowered => new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), lowered)),
             model);
     }
 
@@ -5155,7 +5284,7 @@ public sealed class IRLowering
 
     private IRExpr LowerInterpolation(InterpolationSyntax interpolation, SemanticModel model)
     {
-        var expression = LowerExpr(interpolation.Expression, model);
+        var expression = LowerStringConcatPart(interpolation.Expression, model);
         var format = interpolation.FormatClause?.FormatStringToken.ValueText;
         if (string.IsNullOrWhiteSpace(format))
         {
@@ -5214,9 +5343,77 @@ public sealed class IRLowering
             }
             else
             {
-                yield return LowerExpr(side, model);
+                yield return LowerStringConcatPart(side, model);
             }
         }
+    }
+
+    private IRExpr LowerStringConcatPart(ExpressionSyntax expression, SemanticModel model)
+    {
+        var lowered = LowerExpr(expression, model);
+        var toStringMethod = FindStringConcatToStringMethod(expression, model);
+        if (toStringMethod is null)
+        {
+            return lowered;
+        }
+
+        if (toStringMethod.ContainingType.TypeKind == TypeKind.Struct
+            && CanFlattenStructType(toStringMethod.ContainingType))
+        {
+            return new IRInvocation(
+                new IRMemberAccess(LowerTypeReference(toStringMethod.ContainingType), GetLuaMethodName(toStringMethod)),
+                LowerStructArgumentValues(expression, toStringMethod.ContainingType, model));
+        }
+
+        var valueName = AllocateLuaName("strPart");
+        var valueRef = new IRIdentifier(valueName);
+        var body = new IRBlock();
+        body.Statements.Add(new IRLocalDecl(valueName, lowered));
+
+        var thenBlock = new IRBlock();
+        thenBlock.Statements.Add(new IRReturn(new IRInvocation(
+            new IRMemberAccess(valueRef, GetLuaMethodName(toStringMethod)),
+            Array.Empty<IRExpr>(),
+            UseColon: true)));
+
+        body.Statements.Add(new IRIf(
+            new IRBinary("~=", valueRef, new IRLiteral(null, IRLiteralKind.Nil)),
+            thenBlock,
+            null));
+        body.Statements.Add(new IRReturn(new IRLiteral(null, IRLiteralKind.Nil)));
+        return BuildImmediatelyInvokedExpression(body);
+    }
+
+    private static IMethodSymbol? FindStringConcatToStringMethod(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (model.GetTypeInfo(expression).Type is not INamedTypeSymbol type
+            || type.SpecialType != SpecialType.None
+            || type.TypeKind is not (TypeKind.Class or TypeKind.Struct))
+        {
+            return null;
+        }
+
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            var method = current.GetMembers("ToString")
+                .OfType<IMethodSymbol>()
+                .FirstOrDefault(candidate =>
+                    !candidate.IsStatic
+                    && candidate.MethodKind == MethodKind.Ordinary
+                    && candidate.Parameters.Length == 0
+                    && candidate.ReturnType.SpecialType == SpecialType.System_String);
+
+            if (method is null)
+            {
+                continue;
+            }
+
+            return method.ContainingType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType
+                ? null
+                : method;
+        }
+
+        return null;
     }
 
     private static bool IsStringExpression(ExpressionSyntax expression, SemanticModel model)

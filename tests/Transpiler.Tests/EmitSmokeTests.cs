@@ -299,6 +299,92 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task String_concat_and_interpolation_use_object_tostring_override()
+    {
+        var src = """
+            public class UnitName
+            {
+                private readonly string value;
+
+                public UnitName(string value)
+                {
+                    this.value = value;
+                }
+
+                public override string ToString()
+                {
+                    return "unit:" + value;
+                }
+            }
+
+            public static class Strings
+            {
+                public static string Plus(UnitName? name)
+                {
+                    return "[" + name + "]";
+                }
+
+                public static string Interp(UnitName? name)
+                {
+                    return $"<{name}>";
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ObjectStringConcat.cs");
+
+        Assert.Contains("local strPart = name", lua);
+        Assert.Contains("if (strPart ~= nil) then", lua.Replace("\r\n", "\n"));
+        Assert.Contains("return strPart:ToString()", lua);
+        Assert.Contains("return SF__.StrConcat__(\"[\", (function()", lua);
+        Assert.Contains("return SF__.StrConcat__(\"<\", (function()", lua);
+    }
+
+    [Fact]
+    public async Task String_concat_and_interpolation_use_struct_tostring_override()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public Vector2(float x, float y)
+                {
+                    this.x = x;
+                    this.y = y;
+                }
+
+                public override string ToString()
+                {
+                    return $"({x},{y})";
+                }
+            }
+
+            public static class Strings
+            {
+                public static string Plus(Vector2 value)
+                {
+                    return "[" + value + "]";
+                }
+
+                public static string Interp(Vector2 value)
+                {
+                    return $"<{value}>";
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructStringConcat.cs");
+
+        Assert.Contains("function SF__.Vector2.ToString(self__x, self__y)", lua);
+        Assert.Contains("return SF__.StrConcat__(\"[\", SF__.Vector2.ToString(value__x, value__y), \"]\")", lua);
+        Assert.Contains("return SF__.StrConcat__(\"<\", SF__.Vector2.ToString(", lua);
+        Assert.Contains(", \">\")", lua);
+        Assert.DoesNotContain("value:ToString()", lua);
+    }
+
+    [Fact]
     public async Task Debugger_attribute_inserts_step_probes_between_statements()
     {
         var src = """
@@ -3405,6 +3491,163 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Flattened_struct_locals_stay_expanded_when_stringified()
+    {
+        var lua = await TranspileSourcesAsync(new Dictionary<string, string>
+        {
+            ["AttachEffectComponent.cs"] = """
+                public class AttachEffectComponent
+                {
+                    public GameObject gameObject = new GameObject();
+
+                    private static void Log(string text)
+                    {
+                    }
+
+                    public void Update()
+                    {
+                        var globalPos = gameObject.transform.position;
+                        var globalRot = gameObject.transform.rotation;
+                        var globalScale = gameObject.transform.localScale;
+                        var parent = gameObject.transform.parent;
+                        while (parent != null)
+                        {
+                            Log($"parent.localScale:{parent.localScale}");
+                            Log($"globalPos:{globalPos}");
+                            Log($"parent.rotation:{parent.rotation}");
+                            globalRot = parent.rotation * globalRot;
+                            globalScale = Vector3.Scale(parent.localScale, globalScale);
+                            parent = parent.parent;
+                        }
+                    }
+                }
+                """,
+            ["Transform.cs"] = """
+                public struct Vector3
+                {
+                    public float x;
+                    public float y;
+                    public float z;
+
+                    public override string ToString()
+                    {
+                        return $"({x},{y},{z})";
+                    }
+
+                    public static Vector3 Scale(Vector3 left, Vector3 right)
+                    {
+                        return new Vector3
+                        {
+                            x = left.x * right.x,
+                            y = left.y * right.y,
+                            z = left.z * right.z,
+                        };
+                    }
+                }
+
+                public struct Quaternion
+                {
+                    public float x;
+                    public float y;
+                    public float z;
+                    public float w;
+
+                    public override string ToString()
+                    {
+                        return $"({x},{y},{z},{w})";
+                    }
+
+                    public static Quaternion operator *(Quaternion left, Quaternion right)
+                    {
+                        return left;
+                    }
+                }
+
+                public class Transform
+                {
+                    public Vector3 position;
+                    public Quaternion rotation;
+                    public Vector3 localScale;
+                    public Transform? parent;
+                }
+
+                public class GameObject
+                {
+                    public Transform transform = new Transform();
+                }
+                """,
+        });
+
+        Assert.Contains("local globalPos__x, globalPos__y, globalPos__z = self.gameObject.transform.position__x, self.gameObject.transform.position__y, self.gameObject.transform.position__z", lua);
+        Assert.Contains("SF__.AttachEffectComponent.Log(SF__.StrConcat__(\"globalPos:\", SF__.Vector3.ToString(globalPos__x, globalPos__y, globalPos__z)))", lua);
+        Assert.DoesNotContain("local globalPos = self.gameObject.transform.position", lua);
+        Assert.DoesNotContain("globalPos.x", lua);
+    }
+
+    [Fact]
+    public async Task Flattened_struct_locals_stay_expanded_when_assigned_to_struct_members()
+    {
+        var lua = await TranspileSourcesAsync(new Dictionary<string, string>
+        {
+            ["DivineToll.cs"] = """
+                public static class DivineToll
+                {
+                    public static void Start(SpellData data)
+                    {
+                        var pos = Vector3.FromUnit(data.caster);
+                        var bolt = new GameObject();
+                        bolt.transform.position = pos;
+                        Spawn(pos.x, pos.y);
+                    }
+
+                    public static void Spawn(float x, float y)
+                    {
+                    }
+                }
+
+                public class SpellData
+                {
+                    public int caster;
+                }
+                """,
+            ["Transform.cs"] = """
+                public struct Vector3
+                {
+                    public float x;
+                    public float y;
+                    public float z;
+
+                    public static Vector3 FromUnit(int unit)
+                    {
+                        return new Vector3
+                        {
+                            x = 1,
+                            y = 2,
+                            z = 3,
+                        };
+                    }
+                }
+
+                public class Transform
+                {
+                    public Vector3 position;
+                }
+
+                public class GameObject
+                {
+                    public Transform transform = new Transform();
+                }
+                """,
+        });
+
+        Assert.Contains("local pos__x, pos__y, pos__z = SF__.Vector3.FromUnit(data.caster)", lua);
+        Assert.Contains("position__x, bolt1.transform.position__y, bolt1.transform.position__z = pos__x, pos__y, pos__z", lua);
+        Assert.Contains("SF__.DivineToll.Spawn(pos__x, pos__y)", lua);
+        Assert.DoesNotContain("local pos = SF__.Vector3.FromUnit", lua);
+        Assert.DoesNotContain("position__x, bolt.transform.position__y, bolt.transform.position__z = pos.x, pos.y, pos.z", lua);
+    }
+
+    [Fact]
     public async Task Struct_parameters_are_flattened()
     {
         var src = """
@@ -3479,6 +3722,41 @@ public class EmitSmokeTests
         Assert.Matches(@"local sum__x\d*, sum__y\d* = SF__\.Vector2\.op_Addition\(left__x\d*, left__y\d*, right__x\d*, right__y\d*\)", lua);
         Assert.Matches(@"return SF__\.Vector2\.MagnitudeSquared\(sum__x\d*, sum__y\d*\)", lua);
         Assert.DoesNotContain("function SF__.Vector2:MagnitudeSquared", lua);
+    }
+
+    [Fact]
+    public async Task Nested_struct_operator_calls_spill_non_tail_multi_return_arguments()
+    {
+        var src = """
+            public struct Vector2
+            {
+                public float x;
+                public float y;
+
+                public static Vector2 operator +(Vector2 left, Vector2 right)
+                {
+                    return new Vector2
+                    {
+                        x = left.x + right.x,
+                        y = left.y + right.y,
+                    };
+                }
+            }
+
+            public static class Sample
+            {
+                public static Vector2 Run(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+                {
+                    return (a + b) + (c + d);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "NestedStructOperatorCalls.cs");
+
+        Assert.Contains("function SF__.Vector2.op_Addition(left__x, left__y, right__x, right__y)", lua);
+        Assert.Matches(@"local left__x\d*, left__y\d* = SF__\.Vector2\.op_Addition\(a__x, a__y, b__x, b__y\)", lua);
+        Assert.Matches(@"return SF__\.Vector2\.op_Addition\(left__x\d*, left__y\d*, SF__\.Vector2\.op_Addition\(c__x, c__y, d__x, d__y\)\)", lua);
     }
 
     [Fact]

@@ -62,6 +62,16 @@ DrawPoint(p);
 SF__.MyClass.DrawPoint(p__X, p__Y)
 ```
 
+The same flattened local also stays expanded when assigned into another flattened struct target:
+
+```csharp
+other.Position = p;
+```
+
+```lua
+other.position__X, other.position__Y = p__X, p__Y
+```
+
 Struct-returning SharpForge calls are already multi-return values. When passed to another SharpForge method or operator that accepts that struct, the call itself is forwarded instead of treating the result like a Lua table.
 
 ```csharp
@@ -73,6 +83,17 @@ public Point Clamp(float scale)
 
 ```lua
 return SF__.Point.op_Multiply__pointf(SF__.Point.get_Normalized(self__X, self__Y), scale)
+```
+
+Lua only preserves all returned values when a call stays in the final argument position. If a struct-returning SharpForge call feeds another struct parameter before later arguments, SharpForge spills the returned fields into temporary locals first.
+
+```csharp
+return (a + b) + (c + d);
+```
+
+```lua
+local left__X, left__Y = SF__.Point.op_Addition(a__X, a__Y, b__X, b__Y)
+return SF__.Point.op_Addition(left__X, left__Y, SF__.Point.op_Addition(c__X, c__Y, d__X, d__Y))
 ```
 
 ## Struct Parameters
