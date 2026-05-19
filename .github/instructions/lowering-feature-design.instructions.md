@@ -21,6 +21,8 @@ When a representation guard decides whether a struct local can be flattened, kee
 
 When struct instance receivers are flattened, apply the same receiver expansion to accessor methods such as computed property getters; otherwise chained property reads can accidentally emit Lua colon calls on multi-return struct values.
 
+When adding flattened struct assignment support, resolve the Roslyn symbol before choosing a receiver: check flattened locals first, then flattened members. Class fields and auto-properties use backing members such as `self.position__x`, explicit receivers such as `trs.position` lower to `trs.position__x`, and a same-named local must never default to `self`.
+
 When a method or property returns a flattenable struct and is itself used as a struct argument, forward the call as the flattened value instead of projecting `.Field` from it; multi-return struct calls are not Lua tables.
 
 When lowering any return position for a flattenable struct, including expression-bodied methods, operators, and property getters, use the struct multi-return path instead of generic expression lowering; generic struct expression lowering may intentionally produce a table for non-return contexts.

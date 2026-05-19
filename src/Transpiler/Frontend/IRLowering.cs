@@ -2459,7 +2459,12 @@ public sealed class IRLowering
 
             if (_flattenedStructMembers.TryGetValue(symbol, out var flattenedMember))
             {
-                var target = GetFlattenedStructMemberTarget(flattenedMember);
+                if (!TryGetFlattenedStructMemberTarget(flattenedMember, expression, model, out var target))
+                {
+                    values = Array.Empty<IRExpr>();
+                    return false;
+                }
+
                 values = fields
                     .Select(field => flattenedMember.FieldMembers.TryGetValue(field.Name, out var memberName) ? new IRMemberAccess(target, memberName) : null)
                     .OfType<IRExpr>()
@@ -2659,26 +2664,67 @@ public sealed class IRLowering
 
     private IRStmt? TryLowerStructAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {
-        if (left is not IdentifierNameSyntax id
-            || model.GetSymbolInfo(id).Symbol is not { } localSymbol
-            || !_flattenedStructLocals.TryGetValue(localSymbol, out var flattened)
-            || !TryGetStructExpressionValues(right, model, out var fields, out var values))
+        if (!TryGetStructExpressionValues(right, model, out var fields, out var values)
+            || !TryGetFlattenedStructAssignmentTargets(left, fields, model, out var targets))
         {
             return null;
         }
 
-        var targets = new List<IRExpr>(fields.Count);
-        foreach (var field in fields)
-        {
-            if (!flattened.FieldLocals.TryGetValue(field.Name, out var localName))
-            {
-                return null;
-            }
+        return new IRMultiAssign(targets, values);
+    }
 
-            targets.Add(new IRIdentifier(localName));
+    private bool TryGetFlattenedStructAssignmentTargets(
+        ExpressionSyntax left,
+        IReadOnlyList<StructFieldSlot> fields,
+        SemanticModel model,
+        out IReadOnlyList<IRExpr> targets)
+    {
+        targets = Array.Empty<IRExpr>();
+        if (model.GetSymbolInfo(left).Symbol is not { } symbol)
+        {
+            return false;
         }
 
-        return new IRMultiAssign(targets, values);
+        if (_flattenedStructLocals.TryGetValue(symbol, out var flattenedLocal))
+        {
+            var localTargets = new List<IRExpr>(fields.Count);
+            foreach (var field in fields)
+            {
+                if (!flattenedLocal.FieldLocals.TryGetValue(field.Name, out var localName))
+                {
+                    return false;
+                }
+
+                localTargets.Add(new IRIdentifier(localName));
+            }
+
+            targets = localTargets;
+            return true;
+        }
+
+        if (!_flattenedStructMembers.TryGetValue(symbol, out var flattenedMember))
+        {
+            return false;
+        }
+
+        if (!TryGetFlattenedStructMemberTarget(flattenedMember, left, model, out var target))
+        {
+            return false;
+        }
+
+        var memberTargets = new List<IRExpr>(fields.Count);
+        foreach (var field in fields)
+        {
+            if (!flattenedMember.FieldMembers.TryGetValue(field.Name, out var memberName))
+            {
+                return false;
+            }
+
+            memberTargets.Add(new IRMemberAccess(target, memberName));
+        }
+
+        targets = memberTargets;
+        return true;
     }
 
     private IRExpr? TryLowerFlattenedStructFieldAccess(MemberAccessExpressionSyntax access, SemanticModel model)
@@ -2717,7 +2763,8 @@ public sealed class IRLowering
             && _flattenedStructMembers.TryGetValue(memberSymbol, out var flattenedMember))
         {
             return flattenedMember.FieldMembers.TryGetValue(access.Name.Identifier.ValueText, out var memberName)
-                ? new IRMemberAccess(GetFlattenedStructMemberTarget(flattenedMember), memberName)
+                && TryGetFlattenedStructMemberTarget(flattenedMember, access.Expression, model, out var target)
+                ? new IRMemberAccess(target, memberName)
                 : null;
         }
 
@@ -2737,8 +2784,29 @@ public sealed class IRLowering
         return false;
     }
 
-    private IRExpr GetFlattenedStructMemberTarget(FlattenedStructMember member)
-        => member.IsStatic ? LowerTypeReferenceForAccess(member.ContainingType) : new IRIdentifier("self");
+    private bool TryGetFlattenedStructMemberTarget(FlattenedStructMember member, ExpressionSyntax expression, SemanticModel model, out IRExpr target)
+    {
+        if (member.IsStatic)
+        {
+            target = LowerTypeReferenceForAccess(member.ContainingType);
+            return true;
+        }
+
+        if (expression is MemberAccessExpressionSyntax access)
+        {
+            target = LowerExpr(access.Expression, model);
+            return true;
+        }
+
+        if (expression is IdentifierNameSyntax or ThisExpressionSyntax)
+        {
+            target = new IRIdentifier("self");
+            return true;
+        }
+
+        target = new IRIdentifier("--[[unsupported flattened struct member target]]nil");
+        return false;
+    }
 
     private bool TryAddFlattenedStructMemberFields(
         IRType owner,

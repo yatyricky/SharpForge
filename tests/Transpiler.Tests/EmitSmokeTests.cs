@@ -3217,6 +3217,98 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Assignments_to_flattened_struct_members_expand_to_field_assignments()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public Vector3(float x, float y, float z)
+                {
+                    this.x = x;
+                    this.y = y;
+                    this.z = z;
+                }
+            }
+
+            public struct Quaternion
+            {
+                public float x;
+                public float y;
+                public float z;
+                public float w;
+
+                public static Quaternion Euler(float x, float y, float z)
+                {
+                    return new Quaternion { x = x, y = y, z = z, w = 1f };
+                }
+
+                public static Quaternion operator *(Quaternion left, Quaternion right)
+                {
+                    return new Quaternion { x = left.x + right.x, y = left.y + right.y, z = left.z + right.z, w = left.w + right.w };
+                }
+            }
+
+            public class Transform
+            {
+                public Vector3 position;
+                public Quaternion rotation;
+                public Vector3 localScale;
+
+                public Transform()
+                {
+                    position = new Vector3(0f, 0f, 0f);
+                    rotation = Quaternion.Euler(0f, 0f, 0f);
+                    localScale = new Vector3(1f, 1f, 1f);
+                }
+            }
+
+            public class GameObject
+            {
+                public Transform transform = new Transform();
+            }
+
+            public static class Motion
+            {
+                public static void Spin(GameObject boltMis)
+                {
+                    var trs = boltMis.transform;
+                    var rot = Quaternion.Euler(1f, 0f, 0f);
+                    trs.rotation = rot * trs.rotation;
+                }
+            }
+
+            public class ShadowedTransform
+            {
+                public Quaternion rotation;
+
+                public void Reset()
+                {
+                    var rotation = Quaternion.Euler(1f, 0f, 0f);
+                    rotation = Quaternion.Euler(2f, 0f, 0f);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "TransformStructMembers.cs");
+
+        Assert.Contains("self.position__x, self.position__y, self.position__z = 0, 0, 0", lua);
+        Assert.Contains("self.rotation__x, self.rotation__y, self.rotation__z, self.rotation__w = SF__.Quaternion.Euler(0, 0, 0)", lua);
+        Assert.Contains("self.localScale__x, self.localScale__y, self.localScale__z = 1, 1, 1", lua);
+        Assert.Contains("trs.rotation__x, trs.rotation__y, trs.rotation__z, trs.rotation__w = SF__.Quaternion.op_Multiply(rot__x, rot__y, rot__z, rot__w, trs.rotation__x, trs.rotation__y, trs.rotation__z, trs.rotation__w)", lua);
+        Assert.Contains("local rotation__x, rotation__y, rotation__z, rotation__w = SF__.Quaternion.Euler(1, 0, 0)", lua);
+        Assert.Contains("rotation__x, rotation__y, rotation__z, rotation__w = SF__.Quaternion.Euler(2, 0, 0)", lua);
+        Assert.DoesNotContain("self.position = {", lua);
+        Assert.DoesNotContain("self.rotation = SF__.Quaternion.Euler", lua);
+        Assert.DoesNotContain("self.localScale = {", lua);
+        Assert.DoesNotContain("self.rotation__x, self.rotation__y, self.rotation__z, self.rotation__w = SF__.Quaternion.op_Multiply(rot__x", lua);
+        Assert.DoesNotContain("self.rotation__x, self.rotation__y, self.rotation__z, self.rotation__w = SF__.Quaternion.Euler(2", lua);
+    }
+
+    [Fact]
     public async Task Struct_parameters_are_flattened()
     {
         var src = """

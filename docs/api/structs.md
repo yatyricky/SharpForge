@@ -48,6 +48,8 @@ Point p = GetOrigin();
 ```lua
 local p__X, p__Y = SF__.MyClass.GetOrigin()
 ```
+Assignments to flattened struct fields also expand to field assignments. For example, a class field `position` of struct type lowers to backing fields such as `self.position__X` and `self.position__Y`, and `position = new Point { X = 1, Y = 2 };` assigns those backing fields directly.
+When the struct field is accessed through another object, that receiver is preserved: `trs.position = value;` assigns `trs.position__X` and `trs.position__Y`, not `self.position__X` and `self.position__Y`.
 
 The flattened local remains flattened when passed to another SharpForge method that accepts the same struct type:
 
