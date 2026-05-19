@@ -261,6 +261,26 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task String_add_assignment_uses_nil_safe_polyfill()
+    {
+        var src = """
+            public static class Strings
+            {
+                public static string Append(string text, string inspectorText)
+                {
+                    text += "\n" + inspectorText;
+                    return text;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StringAddAssignment.cs");
+
+        Assert.Contains("text = SF__.StrConcat__(text, \"\\n\", inspectorText)", lua);
+        Assert.DoesNotContain("text = (text +", lua);
+    }
+
+    [Fact]
     public async Task Interpolated_string_format_clauses_use_lua_string_format()
     {
         var src = """

@@ -2,7 +2,7 @@
 
 ## Concatenation
 
-String `+` lowers to `SF__.StrConcat__(...)`. The helper is emitted once into the output when needed:
+String `+` and string `+=` lower to `SF__.StrConcat__(...)`. The helper is emitted once into the output when needed:
 
 ```lua
 function SF__.StrConcat__(...)

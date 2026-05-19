@@ -1380,6 +1380,23 @@ public sealed class IRLowering
         }
 
         var target = LowerExpr(ae.Left, model);
+        if (ae.IsKind(SyntaxKind.AddAssignmentExpression) && IsStringExpression(ae.Left, model))
+        {
+            var parts = new List<IRExpr> { target };
+            if (ae.Right is BinaryExpressionSyntax nestedAdd
+                && nestedAdd.IsKind(SyntaxKind.AddExpression)
+                && IsStringExpression(nestedAdd, model))
+            {
+                parts.AddRange(FlattenStringConcat(nestedAdd, model));
+            }
+            else
+            {
+                parts.Add(LowerExpr(ae.Right, model));
+            }
+
+            return new IRAssign(target, new IRStringConcat(parts));
+        }
+
         var value = LowerExpr(ae.Right, model);
 
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression))

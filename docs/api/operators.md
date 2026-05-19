@@ -61,6 +61,16 @@ count += 1;
 count = (count + 1)
 ```
 
+String `+=` lowers through the nil-safe concatenation helper and flattens nested string `+` expressions:
+
+```csharp
+text += "\n" + inspectorText;
+```
+
+```lua
+text = SF__.StrConcat__(text, "\n", inspectorText)
+```
+
 `??=` lowers to a nil check. As a statement, the right-hand side is assigned only when the target is nil:
 
 ```csharp
