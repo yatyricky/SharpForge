@@ -267,7 +267,7 @@ public sealed class IRLowering
                 case OperatorDeclarationSyntax o:
                     irType.Methods.Add(LowerOperator(o, model, ct));
                     break;
-                case FieldDeclarationSyntax f when f.Modifiers.Any(SyntaxKind.StaticKeyword):
+                case FieldDeclarationSyntax f when f.Modifiers.Any(SyntaxKind.StaticKeyword) || f.Modifiers.Any(SyntaxKind.ConstKeyword):
                     var staticFieldComments = ExtractComments(f.GetLeadingTrivia());
                     foreach (var v in f.Declaration.Variables)
                     {
@@ -538,13 +538,14 @@ public sealed class IRLowering
             Name = c.Identifier.ValueText,
             LuaName = symbol is null ? "New" : GetLuaMethodName(symbol),
             InitLuaName = symbol is null ? "__Init" : GetLuaConstructorInitName(symbol),
-            BaseConstructorCall = LowerBaseConstructorCall(c, owner, model),
             IsConstructor = true,
             IsInstance = false, // emit with `.` because we create `self` ourselves
         };
         fn.Comments.AddRange(ExtractComments(c.GetLeadingTrivia()));
 
         AddLoweredParameters(fn, c.ParameterList.Parameters, model, ct);
+        fn.ThisConstructorCall = LowerThisConstructorCall(c, model);
+        fn.BaseConstructorCall = LowerBaseConstructorCall(c, owner, model);
 
         if (c.Body is { } body)
         {
@@ -556,6 +557,21 @@ public sealed class IRLowering
         }
 
         return fn;
+    }
+
+    private IRThisConstructorCall? LowerThisConstructorCall(ConstructorDeclarationSyntax constructor, SemanticModel model)
+    {
+        if (constructor.Initializer is not { } initializer
+            || !initializer.IsKind(SyntaxKind.ThisConstructorInitializer)
+            || model.GetSymbolInfo(initializer).Symbol is not IMethodSymbol thisCtor)
+        {
+            return null;
+        }
+
+        return new IRThisConstructorCall(
+            LowerTypeReference(thisCtor.ContainingType),
+            GetLuaConstructorInitName(thisCtor),
+            initializer.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray());
     }
 
     private IRBaseConstructorCall? LowerBaseConstructorCall(
@@ -4584,6 +4600,12 @@ public sealed class IRLowering
             case IRBaseConstructorCall baseConstructorCall:
                 dependencies.Add(GetTypeReferenceFullName(baseConstructorCall.BaseType));
                 foreach (var arg in baseConstructorCall.Arguments)
+                {
+                    CollectTypeReferences(arg, dependencies);
+                }
+                break;
+            case IRThisConstructorCall thisConstructorCall:
+                foreach (var arg in thisConstructorCall.Arguments)
                 {
                     CollectTypeReferences(arg, dependencies);
                 }

@@ -33,6 +33,8 @@ When generic lowering needs hidden runtime type arguments, add them only on ordi
 
 When resolving type syntax for runtime checks such as `is`, `as`, or patterns, fall back from `SemanticModel.GetTypeInfo(...).Type` to `GetSymbolInfo(...).Symbol as ITypeSymbol` so generic type parameters like `T` lower to the hidden runtime type parameter instead of becoming unsupported identifier expressions.
 
+When lowering constructor initializers (`base(...)` or `this(...)`), lower their arguments only after the constructor's own parameters have been declared in the Lua name map; otherwise initializer calls can capture fallback names instead of the actual lowered parameters.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

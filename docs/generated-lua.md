@@ -30,6 +30,7 @@ Common C# constructs lower to direct Lua patterns:
 | Static method | `function SF__.Type.Method(...)` |
 | Instance method | `function SF__.Type:Method(...)` |
 | Constructor | `SF__.Type.New(...)` with `setmetatable` |
+| `this(...)` constructor initializer | current type `__Init...` call on `self` before the constructor body |
 | Object creation | `SF__.Type.New(...)` |
 | `float` literal | emitted as its source-faithful decimal (`0.65f` → `0.65`, not `0.6499...`) |
 | `double` literal | emitted with full round-trip precision |
@@ -38,6 +39,7 @@ Common C# constructs lower to direct Lua patterns:
 | Struct object return | Lua multi-return in field declaration order |
 | Instance field access | `self.Field` |
 | Static field initializer | `SF__.Type.Field = ...` |
+| `const` field | static type-table field (`SF__.Type.Field = ...`) |
 | String interpolation | nil-safe `SF__.StrConcat__(...)` calls; supported format clauses use `string.format(...)` |
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding |
 | `is` / `as` | emitted type metadata helpers when needed |

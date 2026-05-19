@@ -199,6 +199,40 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Const_fields_emit_as_static_fields()
+    {
+        var src = """
+            public static class GameState
+            {
+                public const int MaxPlayers = 12;
+                public const string Mode = "melee";
+
+                public static int GetMaxPlayers()
+                {
+                    return MaxPlayers;
+                }
+            }
+
+            public static class Demo
+            {
+                public static string GetMode()
+                {
+                    return GameState.Mode;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ConstFields.cs");
+
+        Assert.Contains("SF__.GameState.MaxPlayers = 12", lua);
+        Assert.Contains("SF__.GameState.Mode = \"melee\"", lua);
+        Assert.Contains("return SF__.GameState.MaxPlayers", lua);
+        Assert.Contains("return SF__.GameState.Mode", lua);
+        Assert.DoesNotContain("self.MaxPlayers", lua);
+        Assert.DoesNotContain("self.Mode", lua);
+    }
+
+    [Fact]
     public async Task String_concat_uses_nil_safe_polyfill()
     {
         var src = """
@@ -693,6 +727,46 @@ public class EmitSmokeTests
         Assert.Contains("function SF__.Overloaded:Pick__i(fallback)", lua);
         Assert.Contains("SF__.Overloaded.New__i(7)", lua);
         Assert.Contains("item:Pick__i(3)", lua);
+    }
+
+    [Fact]
+    public async Task This_constructor_initializer_calls_chained_constructor_init()
+    {
+        var src = """
+            public class GameObject
+            {
+                public string Name;
+                public GameObject? Parent;
+
+                public GameObject(string name)
+                {
+                    Name = name;
+                }
+
+                public GameObject(string name, GameObject parent) : this(name)
+                {
+                    Parent = parent;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ConstructorChain.cs");
+
+        Assert.Contains("function SF__.GameObject.__Init__s(self, name)", lua);
+        Assert.Contains("self.Name = name", lua);
+        Assert.Matches(@"function SF__\.GameObject\.__Init__sgameobject\(self, name\d*, parent\)", lua);
+        Assert.Matches(@"SF__\.GameObject\.__Init__s\(self, name\d*\)", lua);
+        Assert.Contains("self.Parent = parent", lua);
+
+        var secondCtorStart = lua.IndexOf("function SF__.GameObject.__Init__sgameobject", StringComparison.Ordinal);
+        var secondCtorEnd = lua.IndexOf("function SF__.GameObject.New__sgameobject", StringComparison.Ordinal);
+        var secondCtorBody = lua[secondCtorStart..secondCtorEnd];
+        var chainedInitIndex = secondCtorBody.IndexOf("SF__.GameObject.__Init__s(self, name", StringComparison.Ordinal);
+        var parentAssignmentIndex = secondCtorBody.IndexOf("self.Parent = parent", StringComparison.Ordinal);
+        Assert.True(chainedInitIndex >= 0 && parentAssignmentIndex > chainedInitIndex, "expected this(...) init call before chained constructor body");
+
+        Assert.DoesNotContain("self.Name = nil", secondCtorBody);
+        Assert.DoesNotContain("self.Parent = nil", secondCtorBody);
     }
 
     [Fact]

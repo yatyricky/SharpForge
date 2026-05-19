@@ -29,6 +29,7 @@ end
 ## Instance Classes
 
 Instance methods use colon syntax. Constructors emit `.New(...)` and return `self`.
+Constructor chaining with `: this(args)` emits a call to the current type's generated `__Init...` function before the chained constructor body. The chained constructor performs instance field initialization, so the outer constructor does not re-run field initializers.
 
 ```csharp
 public class Hero
@@ -76,7 +77,7 @@ h:TakeDamage(10)
 
 ## Fields
 
-Instance fields are `self.Field`. Static fields are `SF__.Type.Field`. Static field initializers run after the type table and methods are registered, so they can safely call current-type helpers such as `.New()`.
+Instance fields are `self.Field`. Static fields and `const` fields are `SF__.Type.Field`. Static field initializers run after the type table and methods are registered, so they can safely call current-type helpers such as `.New()`.
 
 ## Auto-Properties
 

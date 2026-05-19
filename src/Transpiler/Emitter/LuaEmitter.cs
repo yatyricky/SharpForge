@@ -1193,25 +1193,32 @@ public sealed class LuaEmitter
         WriteLine($"function {typePath}.{initName}(self{(paramList.Length == 0 ? string.Empty : ", " + paramList)})");
         _indent++;
         EmitParameterDefaults(m);
-        if (m.BaseConstructorCall is not null)
+        if (m.ThisConstructorCall is not null)
         {
-            EmitStmt(m.BaseConstructorCall);
+            EmitStmt(m.ThisConstructorCall);
         }
-        WriteLine($"self.__sf_type = {typePath}");
-        foreach (var field in instanceFields)
+        else
         {
-            EmitComments(field.Comments);
-            WriteIndent();
-            _sb.Append("self.").Append(field.Name).Append(" = ");
-            if (field.Initializer is null)
+            if (m.BaseConstructorCall is not null)
             {
-                _sb.Append("nil");
+                EmitStmt(m.BaseConstructorCall);
             }
-            else
+            WriteLine($"self.__sf_type = {typePath}");
+            foreach (var field in instanceFields)
             {
-                EmitExpr(field.Initializer);
+                EmitComments(field.Comments);
+                WriteIndent();
+                _sb.Append("self.").Append(field.Name).Append(" = ");
+                if (field.Initializer is null)
+                {
+                    _sb.Append("nil");
+                }
+                else
+                {
+                    EmitExpr(field.Initializer);
+                }
+                _sb.Append('\n');
             }
-            _sb.Append('\n');
         }
         EmitBlock(m.Body);
         _indent--;
@@ -1335,6 +1342,16 @@ public sealed class LuaEmitter
                 WriteIndent();
                 _sb.Append(FormatTypeReference(baseCall.BaseType)).Append('.').Append(baseCall.InitLuaName).Append("(self");
                 foreach (var argument in baseCall.Arguments)
+                {
+                    _sb.Append(", ");
+                    EmitExpr(argument);
+                }
+                _sb.Append(")\n");
+                break;
+            case IRThisConstructorCall thisCall:
+                WriteIndent();
+                _sb.Append(FormatTypeReference(thisCall.Type)).Append('.').Append(thisCall.InitLuaName).Append("(self");
+                foreach (var argument in thisCall.Arguments)
                 {
                     _sb.Append(", ");
                     EmitExpr(argument);
@@ -2355,6 +2372,9 @@ public sealed class LuaEmitter
             case IRBaseConstructorCall baseCall:
                 foreach (var argument in baseCall.Arguments) CollectCollectionHelpers(argument);
                 break;
+            case IRThisConstructorCall thisCall:
+                foreach (var argument in thisCall.Arguments) CollectCollectionHelpers(argument);
+                break;
             case IRReturn ret when ret.Value is not null:
                 CollectCollectionHelpers(ret.Value);
                 break;
@@ -2629,6 +2649,7 @@ public sealed class LuaEmitter
             IRMultiAssign assign => assign.Targets.Any(ExprUsesTernaryHelper) || assign.Values.Any(ExprUsesTernaryHelper),
             IRExprStmt exprStmt => ExprUsesTernaryHelper(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesTernaryHelper),
+            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesTernaryHelper),
             IRReturn ret => ret.Value is not null && ExprUsesTernaryHelper(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesTernaryHelper),
             IRIf iff => ExprUsesTernaryHelper(iff.Condition) || BlockUsesTernaryHelper(iff.Then) || (iff.Else is not null && BlockUsesTernaryHelper(iff.Else)),
@@ -2718,6 +2739,7 @@ public sealed class LuaEmitter
             IRMultiAssign assign => assign.Targets.Any(ExprUsesTypeChecks) || assign.Values.Any(ExprUsesTypeChecks),
             IRExprStmt exprStmt => ExprUsesTypeChecks(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesTypeChecks),
+            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesTypeChecks),
             IRReturn ret => ret.Value is not null && ExprUsesTypeChecks(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesTypeChecks),
             IRIf iff => ExprUsesTypeChecks(iff.Condition) || BlockUsesTypeChecks(iff.Then) || (iff.Else is not null && BlockUsesTypeChecks(iff.Else)),
@@ -2746,6 +2768,7 @@ public sealed class LuaEmitter
             IRMultiAssign assign => assign.Targets.Any(ExprUsesCoroutineHelpers) || assign.Values.Any(ExprUsesCoroutineHelpers),
             IRExprStmt exprStmt => ExprUsesCoroutineHelpers(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesCoroutineHelpers),
+            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesCoroutineHelpers),
             IRReturn ret => ret.Value is not null && ExprUsesCoroutineHelpers(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesCoroutineHelpers),
             IRIf iff => ExprUsesCoroutineHelpers(iff.Condition) || BlockUsesCoroutineHelpers(iff.Then) || (iff.Else is not null && BlockUsesCoroutineHelpers(iff.Else)),
@@ -2774,6 +2797,7 @@ public sealed class LuaEmitter
             IRMultiAssign assign => assign.Targets.Any(ExprUsesStringConcat) || assign.Values.Any(ExprUsesStringConcat),
             IRExprStmt exprStmt => ExprUsesStringConcat(exprStmt.Expression),
             IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesStringConcat),
+            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesStringConcat),
             IRReturn ret => ret.Value is not null && ExprUsesStringConcat(ret.Value),
             IRMultiReturn ret => ret.Values.Any(ExprUsesStringConcat),
             IRIf iff => ExprUsesStringConcat(iff.Condition) || BlockUsesStringConcat(iff.Then) || (iff.Else is not null && BlockUsesStringConcat(iff.Else)),
@@ -2995,6 +3019,9 @@ public sealed class LuaEmitter
                 break;
             case IRBaseConstructorCall baseCall:
                 foreach (var argument in baseCall.Arguments) CollectIdentifiers(argument);
+                break;
+            case IRThisConstructorCall thisCall:
+                foreach (var argument in thisCall.Arguments) CollectIdentifiers(argument);
                 break;
             case IRReturn ret when ret.Value is not null:
                 CollectIdentifiers(ret.Value);

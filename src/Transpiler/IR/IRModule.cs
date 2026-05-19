@@ -90,7 +90,9 @@ public sealed class IRFunction
 
     public string? InitLuaName { get; init; }
 
-    public IRBaseConstructorCall? BaseConstructorCall { get; init; }
+    public IRBaseConstructorCall? BaseConstructorCall { get; set; }
+
+    public IRThisConstructorCall? ThisConstructorCall { get; set; }
 
     /// <summary>Static method/function — emitted with <c>.</c> and no implicit self.</summary>
     public bool IsStatic { get; init; }
