@@ -81,6 +81,8 @@ public sealed class IRLowering
         _luaNameCounter = 0;
         _debuggerContext = null;
 
+        var compilationUnits = new List<(CompilationUnitSyntax Root, SemanticModel Model)>();
+
         foreach (var tree in compilation.SyntaxTrees)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -91,6 +93,14 @@ public sealed class IRLowering
 
             var model = compilation.GetSemanticModel(tree);
             var root = (CompilationUnitSyntax)tree.GetRoot(cancellationToken);
+            compilationUnits.Add((root, model));
+
+            RegisterFlattenedStructMembers(root, model, cancellationToken);
+        }
+
+        foreach (var (root, model) in compilationUnits)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
 
             foreach (var enumDecl in root.DescendantNodes().OfType<EnumDeclarationSyntax>())
             {
@@ -150,6 +160,72 @@ public sealed class IRLowering
         ValidateEntryPoints(module);
         _module = null;
         return module;
+    }
+
+    private void RegisterFlattenedStructMembers(CompilationUnitSyntax root, SemanticModel model, CancellationToken ct)
+    {
+        foreach (var typeDecl in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+        {
+            var symbol = model.GetDeclaredSymbol(typeDecl, ct);
+            if (symbol is null
+                || _ignoredClasses.Contains(symbol.Name)
+                || IsSFLibType(symbol)
+                || InheritsFromHandle(symbol)
+                || IsExternalLuaObjectType(symbol))
+            {
+                continue;
+            }
+
+            foreach (var member in typeDecl.Members)
+            {
+                switch (member)
+                {
+                    case FieldDeclarationSyntax field:
+                    {
+                        var isStatic = field.Modifiers.Any(SyntaxKind.StaticKeyword) || field.Modifiers.Any(SyntaxKind.ConstKeyword);
+                        var memberType = model.GetTypeInfo(field.Declaration.Type).Type;
+                        foreach (var variable in field.Declaration.Variables)
+                        {
+                            RegisterFlattenedStructMember(model.GetDeclaredSymbol(variable, ct), variable.Identifier.ValueText, memberType, isStatic);
+                        }
+
+                        break;
+                    }
+
+                    case PropertyDeclarationSyntax property when IsAutoProperty(property):
+                        RegisterFlattenedStructMember(
+                            model.GetDeclaredSymbol(property, ct),
+                            property.Identifier.ValueText,
+                            model.GetTypeInfo(property.Type).Type,
+                            property.Modifiers.Any(SyntaxKind.StaticKeyword));
+                        break;
+                }
+            }
+        }
+    }
+
+    private void RegisterFlattenedStructMember(ISymbol? memberSymbol, string memberName, ITypeSymbol? memberType, bool isStatic)
+    {
+        if (memberSymbol is null
+            || memberType is not INamedTypeSymbol structType
+            || !CanFlattenStructType(structType))
+        {
+            return;
+        }
+
+        var fieldSlots = GetFlattenableStructFields(structType).ToArray();
+        if (fieldSlots.Length == 0)
+        {
+            return;
+        }
+
+        var fieldMembers = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var field in fieldSlots)
+        {
+            fieldMembers[field.Name] = $"{memberName}__{field.Name}";
+        }
+
+        _flattenedStructMembers[memberSymbol] = new FlattenedStructMember(isStatic, memberSymbol.ContainingType, fieldMembers);
     }
 
     private IREnum LowerEnum(EnumDeclarationSyntax enumDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
