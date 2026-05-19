@@ -1335,6 +1335,14 @@ public sealed class IRLowering
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
     {
+        if (ae.IsKind(SyntaxKind.CoalesceAssignmentExpression))
+        {
+            var coalesceTarget = LowerExpr(ae.Left, model);
+            var assignIfNil = new IRBlock();
+            assignIfNil.Statements.Add(new IRAssign(coalesceTarget, LowerExpr(ae.Right, model)));
+            return new IRIf(new IRBinary("==", coalesceTarget, new IRLiteral(null, IRLiteralKind.Nil)), assignIfNil, null);
+        }
+
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerStructAssignment(ae.Left, ae.Right, model) is { } structAssignment)
         {
             return structAssignment;
@@ -1489,10 +1497,18 @@ public sealed class IRLowering
             case IdentifierNameSyntax id:
                 return LowerIdentifier(id, model);
 
+            case GenericNameSyntax genericName:
+                return LowerGenericName(genericName, model);
+
             case ThisExpressionSyntax:
                 return new IRIdentifier("self");
 
             case MemberAccessExpressionSyntax ma:
+                if (TryLowerStringEmptyMemberAccess(ma, model) is { } stringEmpty)
+                {
+                    return stringEmpty;
+                }
+
                 if (TryLowerLuaObjectMemberAccess(ma, model) is { } luaObjectMemberAccess)
                 {
                     return luaObjectMemberAccess;
@@ -1585,6 +1601,9 @@ public sealed class IRLowering
 
             case ImplicitArrayCreationExpressionSyntax implicitArrayCreation:
                 return new IRArrayLiteral(implicitArrayCreation.Initializer.Expressions.Select(item => LowerExpr(item, model)).ToArray());
+
+            case AssignmentExpressionSyntax assignment when assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression):
+                return new IRCoalesceAssignment(LowerExpr(assignment.Left, model), LowerExpr(assignment.Right, model));
 
             case BinaryExpressionSyntax bin:
                 if (bin.IsKind(SyntaxKind.IsExpression))
@@ -3103,7 +3122,7 @@ public sealed class IRLowering
     // ref: docs/api/casting.md
     private IRExpr LowerTypeTest(ExpressionSyntax value, ExpressionSyntax typeSyntax, SemanticModel model, bool isAsExpression)
     {
-        var type = model.GetTypeInfo(typeSyntax).Type;
+        var type = GetTypeSymbol(typeSyntax, model);
         if (type is null)
         {
             AddDiagnostic(typeSyntax.GetLocation(), $"unsupported type: {typeSyntax.Kind()}");
@@ -3157,7 +3176,7 @@ public sealed class IRLowering
 
     private IRExpr LowerTypePatternTest(IRExpr value, TypeSyntax typeSyntax, SemanticModel model)
     {
-        var type = model.GetTypeInfo(typeSyntax).Type;
+        var type = GetTypeSymbol(typeSyntax, model);
         if (type is null)
         {
             AddDiagnostic(typeSyntax.GetLocation(), $"unsupported type: {typeSyntax.Kind()}");
@@ -3179,6 +3198,10 @@ public sealed class IRLowering
             ITypeParameterSymbol typeParameter => new IRIdentifier(GetLuaName(typeParameter, typeParameter.Name)),
             _ => new IRLiteral(null, IRLiteralKind.Nil),
         };
+
+    private static ITypeSymbol? GetTypeSymbol(SyntaxNode typeSyntax, SemanticModel model)
+        => model.GetTypeInfo(typeSyntax).Type
+           ?? model.GetSymbolInfo(typeSyntax).Symbol as ITypeSymbol;
 
     private IRStmt? TryLowerDeclarationPatternIf(IfStatementSyntax ifStatement, SemanticModel model, CancellationToken ct)
     {
@@ -3932,6 +3955,12 @@ public sealed class IRLowering
             UseColon: !property.IsStatic);
     }
 
+    private static IRExpr? TryLowerStringEmptyMemberAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+        => access.Name.Identifier.ValueText == "Empty"
+           && model.GetSymbolInfo(access).Symbol is IFieldSymbol { ContainingType.SpecialType: SpecialType.System_String }
+            ? new IRLiteral(string.Empty, IRLiteralKind.String)
+            : null;
+
     private IRExpr? TryLowerIndexerGet(ElementAccessExpressionSyntax access, SemanticModel model)
     {
         if (model.GetSymbolInfo(access).Symbol is not IPropertySymbol { IsIndexer: true } indexer)
@@ -4031,6 +4060,34 @@ public sealed class IRLowering
         }
 
         return new IRIdentifier(EscapeLuaKeyword(id.Identifier.ValueText));
+    }
+
+    private IRExpr LowerGenericName(GenericNameSyntax genericName, SemanticModel model)
+    {
+        var symbol = model.GetSymbolInfo(genericName).Symbol;
+        if (symbol is INamedTypeSymbol type)
+        {
+            return LowerTypeReferenceForAccess(type);
+        }
+
+        if (symbol is ITypeParameterSymbol typeParameter)
+        {
+            return LowerRuntimeTypeTarget(typeParameter);
+        }
+
+        if (symbol is IMethodSymbol method)
+        {
+            if (method.IsStatic)
+            {
+                return IsIgnoredClass(method.ContainingType)
+                    ? new IRIdentifier(method.Name)
+                    : new IRMemberAccess(LowerTypeReferenceForAccess(method.ContainingType), GetLuaMethodName(method));
+            }
+
+            return new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(method));
+        }
+
+        return new IRIdentifier(EscapeLuaKeyword(genericName.Identifier.ValueText));
     }
 
     private string DeclareLuaName(ISymbol? symbol, string name)

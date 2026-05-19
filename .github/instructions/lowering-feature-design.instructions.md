@@ -31,6 +31,8 @@ When lowering overloaded methods, constructors, or operators, normalize them to 
 
 When generic lowering needs hidden runtime type arguments, add them only on ordinary SharpForge method call emission after special API lowerings have consumed source-shaped arguments; do not leak hidden arguments into Lua interop, Regex, collection, or other purpose-built API lowerings.
 
+When resolving type syntax for runtime checks such as `is`, `as`, or patterns, fall back from `SemanticModel.GetTypeInfo(...).Type` to `GetSymbolInfo(...).Symbol as ITypeSymbol` so generic type parameters like `T` lower to the hidden runtime type parameter instead of becoming unsupported identifier expressions.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

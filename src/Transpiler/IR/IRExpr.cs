@@ -61,6 +61,7 @@ public sealed record IRRuntimeInvocation(string Name, IReadOnlyList<IRExpr> Argu
 public sealed record IRBinary(string Op, IRExpr Left, IRExpr Right) : IRExpr;
 public sealed record IRUnary(string Op, IRExpr Operand) : IRExpr;
 public sealed record IRTernary(IRExpr Condition, IRExpr WhenTrue, IRExpr WhenFalse) : IRExpr;
+public sealed record IRCoalesceAssignment(IRExpr Target, IRExpr Value) : IRExpr;
 public sealed record IRIs(IRExpr Value, IRExpr Type) : IRExpr;
 public sealed record IRAs(IRExpr Value, IRExpr Type) : IRExpr;
 public sealed record IRTableLiteralNew(IReadOnlyList<(string Key, IRExpr Value)> Fields) : IRExpr;

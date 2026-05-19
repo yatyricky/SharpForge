@@ -2042,6 +2042,33 @@ public sealed class LuaEmitter
                 EmitExpr(ternary.WhenFalse);
                 _sb.Append(')');
                 break;
+            case IRCoalesceAssignment coalesceAssignment:
+                _sb.Append("(function()\n");
+                _indent++;
+                WriteIndent();
+                _sb.Append("if ");
+                EmitExpr(coalesceAssignment.Target);
+                _sb.Append(" ~= nil then\n");
+                _indent++;
+                WriteIndent();
+                _sb.Append("return ");
+                EmitExpr(coalesceAssignment.Target);
+                _sb.Append('\n');
+                _indent--;
+                WriteLine("end");
+                WriteIndent();
+                EmitExpr(coalesceAssignment.Target);
+                _sb.Append(" = ");
+                EmitExpr(coalesceAssignment.Value);
+                _sb.Append('\n');
+                WriteIndent();
+                _sb.Append("return ");
+                EmitExpr(coalesceAssignment.Target);
+                _sb.Append('\n');
+                _indent--;
+                WriteIndent();
+                _sb.Append("end)()");
+                break;
             case IRIs isExpr:
                 _sb.Append(_rootTable).Append(".TypeIs__(");
                 EmitExpr(isExpr.Value);
@@ -2574,6 +2601,10 @@ public sealed class LuaEmitter
                 CollectCollectionHelpers(ternary.WhenTrue);
                 CollectCollectionHelpers(ternary.WhenFalse);
                 break;
+            case IRCoalesceAssignment coalesceAssignment:
+                CollectCollectionHelpers(coalesceAssignment.Target);
+                CollectCollectionHelpers(coalesceAssignment.Value);
+                break;
             case IRIs isExpr:
                 CollectCollectionHelpers(isExpr.Value);
                 CollectCollectionHelpers(isExpr.Type);
@@ -2662,6 +2693,7 @@ public sealed class LuaEmitter
             IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesTernaryHelper(f.Value)),
             IRBinary binary => ExprUsesTernaryHelper(binary.Left) || ExprUsesTernaryHelper(binary.Right),
             IRUnary unary => ExprUsesTernaryHelper(unary.Operand),
+            IRCoalesceAssignment coalesceAssignment => ExprUsesTernaryHelper(coalesceAssignment.Target) || ExprUsesTernaryHelper(coalesceAssignment.Value),
             IRIs isExpr => ExprUsesTernaryHelper(isExpr.Value) || ExprUsesTernaryHelper(isExpr.Type),
             IRAs asExpr => ExprUsesTernaryHelper(asExpr.Value) || ExprUsesTernaryHelper(asExpr.Type),
             _ => false,
@@ -2807,6 +2839,7 @@ public sealed class LuaEmitter
             IRStructValueTable structValueTable => ExprUsesTypeChecks(structValueTable.Value),
             IRBinary binary => ExprUsesTypeChecks(binary.Left) || ExprUsesTypeChecks(binary.Right),
             IRUnary unary => ExprUsesTypeChecks(unary.Operand),
+            IRCoalesceAssignment coalesceAssignment => ExprUsesTypeChecks(coalesceAssignment.Target) || ExprUsesTypeChecks(coalesceAssignment.Value),
             _ => false,
         };
 
@@ -2856,6 +2889,7 @@ public sealed class LuaEmitter
             IRStructValueTable structValueTable => ExprUsesStringConcat(structValueTable.Value),
             IRBinary binary => ExprUsesStringConcat(binary.Left) || ExprUsesStringConcat(binary.Right),
             IRUnary unary => ExprUsesStringConcat(unary.Operand),
+            IRCoalesceAssignment coalesceAssignment => ExprUsesStringConcat(coalesceAssignment.Target) || ExprUsesStringConcat(coalesceAssignment.Value),
             IRIs isExpr => ExprUsesStringConcat(isExpr.Value) || ExprUsesStringConcat(isExpr.Type),
             IRAs asExpr => ExprUsesStringConcat(asExpr.Value) || ExprUsesStringConcat(asExpr.Type),
             _ => false,
@@ -2907,6 +2941,7 @@ public sealed class LuaEmitter
             IRStructValueTable structValueTable => ExprUsesCoroutineHelpers(structValueTable.Value),
             IRBinary binary => ExprUsesCoroutineHelpers(binary.Left) || ExprUsesCoroutineHelpers(binary.Right),
             IRUnary unary => ExprUsesCoroutineHelpers(unary.Operand),
+            IRCoalesceAssignment coalesceAssignment => ExprUsesCoroutineHelpers(coalesceAssignment.Target) || ExprUsesCoroutineHelpers(coalesceAssignment.Value),
             IRIs isExpr => ExprUsesCoroutineHelpers(isExpr.Value) || ExprUsesCoroutineHelpers(isExpr.Type),
             IRAs asExpr => ExprUsesCoroutineHelpers(asExpr.Value) || ExprUsesCoroutineHelpers(asExpr.Type),
             _ => false,
@@ -3179,6 +3214,10 @@ public sealed class LuaEmitter
                 break;
             case IRUnary unary:
                 CollectIdentifiers(unary.Operand);
+                break;
+            case IRCoalesceAssignment coalesceAssignment:
+                CollectIdentifiers(coalesceAssignment.Target);
+                CollectIdentifiers(coalesceAssignment.Value);
                 break;
             case IRIs isExpr:
                 CollectIdentifiers(isExpr.Value);

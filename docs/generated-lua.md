@@ -33,6 +33,7 @@ Common C# constructs lower to direct Lua patterns:
 | Object creation | `SF__.Type.New(...)` |
 | `float` literal | emitted as its source-faithful decimal (`0.65f` → `0.65`, not `0.6499...`) |
 | `double` literal | emitted with full round-trip precision |
+| `string.Empty` | empty string literal (`""`) |
 | Struct field-only local | flattened locals named `<local>__<field>` |
 | Struct object return | Lua multi-return in field declaration order |
 | Instance field access | `self.Field` |
@@ -40,6 +41,7 @@ Common C# constructs lower to direct Lua patterns:
 | String interpolation | nil-safe `SF__.StrConcat__(...)` calls; supported format clauses use `string.format(...)` |
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding |
 | `is` / `as` | emitted type metadata helpers when needed |
+| `??=` | nil-check assignment; expression form returns the existing or assigned value |
 | `List<T>`, `Dictionary<K,V>` | compact table helper runtimes |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.

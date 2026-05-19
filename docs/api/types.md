@@ -16,12 +16,14 @@ SharpForge supports `int`, `float`, `double`, `bool`, `string`, and `null`. Thes
 ## Literals
 
 `float` literals are emitted source-faithfully (`0.65f` → `0.65`, not `0.6499...`). `double` literals are emitted with full round-trip precision.
+`string.Empty` lowers to an empty Lua string literal.
 
 ```csharp
 int i = 42;
 float f = 0.65f;
 bool flag = true;
 string s = "hello";
+string empty = string.Empty;
 ```
 
 ```lua
@@ -29,6 +31,7 @@ local i = 42
 local f = 0.65
 local flag = true
 local s = "hello"
+local empty = ""
 ```
 
 ## Unsupported Numeric Types

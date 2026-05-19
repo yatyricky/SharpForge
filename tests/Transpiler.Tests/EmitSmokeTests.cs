@@ -1443,6 +1443,128 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task Component_scene_patterns_from_project_emit_lua()
+    {
+        var sources = new Dictionary<string, string>
+        {
+            ["List.cs"] = """
+                namespace SFLib.Collections
+                {
+                    public class List<T>
+                    {
+                        public int Count => 0;
+                        public T this[int index] => default!;
+                        public void Add(T item) { }
+                        public void Clear() { }
+                        public void RemoveAt(int index) { }
+                        public Enumerator GetEnumerator() => new Enumerator();
+
+                        public class Enumerator
+                        {
+                            public T Current => default!;
+                            public bool MoveNext() => false;
+                        }
+                    }
+                }
+                """,
+            ["Component.cs"] = """
+                public class Component
+                {
+                    public GameObject gameObject { get; internal set; } = null!;
+
+                    public virtual string GetInspectorText()
+                    {
+                        return string.Empty;
+                    }
+                }
+                """,
+            ["Transform.cs"] = """
+                public class Transform : Component
+                {
+                }
+                """,
+            ["GameObject.cs"] = """
+                using SFLib.Collections;
+
+                public class GameObject
+                {
+                    public string name { get; private set; }
+                    public Transform transform { get; private set; }
+                    private List<Component> _components = new List<Component>();
+                    public List<Component> components => _components;
+
+                    public GameObject(string name)
+                    {
+                        this.name = name;
+                        transform = AddComponent<Transform>();
+                    }
+
+                    public T? GetComponent<T>() where T : Component
+                    {
+                        foreach (var comp in _components)
+                        {
+                            if (comp is T tComp)
+                            {
+                                return tComp;
+                            }
+                        }
+                        return null;
+                    }
+
+                    public T AddComponent<T>() where T : Component, new()
+                    {
+                        var comp = new T
+                        {
+                            gameObject = this
+                        };
+                        _components.Add(comp);
+                        return comp;
+                    }
+
+                    public void RemoveAllComponents<T>() where T : Component
+                    {
+                        for (int i = _components.Count - 1; i >= 0; i--)
+                        {
+                            if (_components[i] is T)
+                            {
+                                _components.RemoveAt(i);
+                            }
+                        }
+                    }
+                }
+                """,
+            ["Scene.cs"] = """
+                using SFLib.Collections;
+
+                public class Scene
+                {
+                    private static Scene? _instance;
+                    public static Scene Instance => _instance ??= new Scene();
+
+                    public List<GameObject> gameObjs = new();
+                }
+                """,
+        };
+
+        var lua = await TranspileSourcesAsync(sources);
+
+        Assert.Contains("gameObject = nil", lua);
+        Assert.Contains("return \"\"", lua);
+        Assert.Contains("self:AddComponent(SF__.Transform)", lua);
+        Assert.Contains("function SF__.GameObject:GetComponent(T)", lua);
+        Assert.Contains("if SF__.TypeIs__(tComp, T) then", lua);
+        Assert.Contains("SF__.ListGet__", lua);
+        Assert.Contains("if SF__.Scene._instance ~= nil then", lua);
+        Assert.Contains("SF__.Scene._instance = SF__.Scene.New()", lua);
+        Assert.DoesNotContain("unsupported expression: SuppressNullableWarningExpression", lua);
+        Assert.DoesNotContain("unsupported expression: PredefinedType", lua);
+        Assert.DoesNotContain("unsupported expression: GenericName", lua);
+        Assert.DoesNotContain("unsupported expression: IdentifierName", lua);
+        Assert.DoesNotContain("unsupported expression: IsPatternExpression", lua);
+        Assert.DoesNotContain("unsupported expression: CoalesceAssignmentExpression", lua);
+    }
+
+    [Fact]
     public async Task Declaration_is_patterns_remain_diagnostics()
     {
         var src = """

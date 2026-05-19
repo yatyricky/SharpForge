@@ -61,10 +61,24 @@ count += 1;
 count = (count + 1)
 ```
 
+`??=` lowers to a nil check. As a statement, the right-hand side is assigned only when the target is nil:
+
+```csharp
+cached ??= CreateValue();
+```
+
+```lua
+if cached == nil then
+	cached = SF__.CreateValue()
+end
+```
+
+When `??=` is used as an expression, SharpForge emits an immediately invoked function that returns the existing non-nil value or assigns and returns the new value.
+
 ## String Concatenation
 
 The `+` operator on strings lowers to the nil-safe `SF__.StrConcat__(...)` helper. See [strings.md](strings.md).
 
 ## Unsupported Operators
 
-`??`, `??=`, `?[]`, bitwise assignment (`&=`, `|=`, `^=`, `<<=`, `>>=`), and checked arithmetic produce a transpiler error.
+`??`, `?[]`, bitwise assignment (`&=`, `|=`, `^=`, `<<=`, `>>=`), and checked arithmetic produce a transpiler error.
