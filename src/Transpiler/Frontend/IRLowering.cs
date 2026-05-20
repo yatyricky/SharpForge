@@ -1618,6 +1618,11 @@ public sealed class IRLowering
                     return stringEmpty;
                 }
 
+                if (TryLowerRuntimeTypeMetadataAccess(ma, model) is { } runtimeTypeMetadata)
+                {
+                    return runtimeTypeMetadata;
+                }
+
                 if (TryLowerLuaObjectMemberAccess(ma, model) is { } luaObjectMemberAccess)
                 {
                     return luaObjectMemberAccess;
@@ -1791,6 +1796,11 @@ public sealed class IRLowering
         if (IsTaskDelay(symbol))
         {
             return new IRRuntimeInvocation("CorWait__", args);
+        }
+
+        if (TryLowerGetTypeInvocation(inv, symbol, model) is { } getTypeInvocation)
+        {
+            return getTypeInvocation;
         }
 
         if (TryLowerLuaInteropInvocation(symbol, args) is { } luaInteropInvocation)
@@ -2706,6 +2716,20 @@ public sealed class IRLowering
         }
 
         _flattenedStructLocals[localSymbol] = new FlattenedStructLocal(fieldLocals);
+        if (initializer is ConditionalExpressionSyntax ternary)
+        {
+            var branchBlock = new IRBlock();
+            branchBlock.Statements.Add(LowerStructConditionalAssignment(
+                ternary,
+                fields,
+                localNames.Select(name => (IRExpr)new IRIdentifier(name)).ToArray(),
+                model));
+            return new IRStatementList([
+                new IRMultiLocalDecl(localNames, Array.Empty<IRExpr>()),
+                branchBlock,
+            ]);
+        }
+
         return new IRMultiLocalDecl(localNames, values);
     }
 
@@ -2818,7 +2842,60 @@ public sealed class IRLowering
             return null;
         }
 
+        if (right is ConditionalExpressionSyntax ternary)
+        {
+            return LowerStructConditionalAssignmentThroughTemps(ternary, fields, targets, model);
+        }
+
         return new IRMultiAssign(targets, values);
+    }
+
+    private IRStmt LowerStructConditionalAssignmentThroughTemps(
+        ConditionalExpressionSyntax ternary,
+        IReadOnlyList<StructFieldSlot> fields,
+        IReadOnlyList<IRExpr> targets,
+        SemanticModel model)
+    {
+        var tempNames = fields.Select(field => AllocateLuaName($"ternary__{field.Name}")).ToArray();
+        var tempTargets = tempNames.Select(name => (IRExpr)new IRIdentifier(name)).ToArray();
+
+        var assignmentBlock = new IRBlock();
+        assignmentBlock.Statements.Add(LowerStructConditionalAssignment(ternary, fields, tempTargets, model));
+        assignmentBlock.Statements.Add(new IRMultiAssign(targets, tempTargets));
+
+        return new IRStatementList([
+            new IRMultiLocalDecl(tempNames, Array.Empty<IRExpr>()),
+            assignmentBlock,
+        ]);
+    }
+
+    private IRStmt LowerStructConditionalAssignment(
+        ConditionalExpressionSyntax ternary,
+        IReadOnlyList<StructFieldSlot> fields,
+        IReadOnlyList<IRExpr> targets,
+        SemanticModel model)
+    {
+        var thenBlock = new IRBlock();
+        thenBlock.Statements.Add(new IRMultiAssign(targets, LowerStructBranchValues(ternary.WhenTrue, fields, model)));
+
+        var elseBlock = new IRBlock();
+        elseBlock.Statements.Add(new IRMultiAssign(targets, LowerStructBranchValues(ternary.WhenFalse, fields, model)));
+
+        return new IRIf(LowerExpr(ternary.Condition, model), thenBlock, elseBlock);
+    }
+
+    private IReadOnlyList<IRExpr> LowerStructBranchValues(
+        ExpressionSyntax expression,
+        IReadOnlyList<StructFieldSlot> fields,
+        SemanticModel model)
+    {
+        if (model.GetTypeInfo(expression).Type is INamedTypeSymbol branchType
+            && CanFlattenStructType(branchType))
+        {
+            return LowerStructArgumentValues(expression, branchType, model);
+        }
+
+        return fields.Select(_ => (IRExpr)new IRLiteral(null, IRLiteralKind.Nil)).ToArray();
     }
 
     private bool TryGetFlattenedStructAssignmentTargets(
@@ -3164,6 +3241,13 @@ public sealed class IRLowering
             return new IRMultiReturn(values);
         }
 
+        if (model.GetTypeInfo(expression).Type is INamedTypeSymbol type
+            && CanFlattenStructType(type)
+            && GetFlattenableStructFields(type).Any())
+        {
+            return new IRMultiReturn(LowerStructArgumentValues(expression, type, model));
+        }
+
         return null;
     }
 
@@ -3434,6 +3518,45 @@ public sealed class IRLowering
             ? new IRAs(LowerExpr(value, model), LowerRuntimeTypeTarget(type))
             : new IRIs(LowerExpr(value, model), LowerRuntimeTypeTarget(type));
     }
+
+    // ref: docs/api/casting.md#gettype-and-runtime-type-metadata
+    private IRExpr? TryLowerGetTypeInvocation(InvocationExpressionSyntax invocation, IMethodSymbol symbol, SemanticModel model)
+    {
+        if (!IsSystemObjectGetType(symbol)
+            || invocation.Expression is not MemberAccessExpressionSyntax memberAccess)
+        {
+            return null;
+        }
+
+        if (model.GetTypeInfo(memberAccess.Expression).Type is INamedTypeSymbol receiverType
+            && CanFlattenStructType(receiverType))
+        {
+            AddDiagnostic(invocation.GetLocation(), "struct GetType() is not supported; SharpForge structs are compile-time value shapes and do not carry runtime type metadata");
+        }
+
+        return new IRMemberAccess(LowerExpr(memberAccess.Expression, model), "__sf_type");
+    }
+
+    private IRExpr? TryLowerRuntimeTypeMetadataAccess(MemberAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (access.Name.Identifier.ValueText is not ("Name" or "FullName")
+            || model.GetSymbolInfo(access).Symbol is not IPropertySymbol property
+            || property.Name != access.Name.Identifier.ValueText
+            || !IsSystemType(model.GetTypeInfo(access.Expression).Type))
+        {
+            return null;
+        }
+
+        return new IRMemberAccess(LowerExpr(access.Expression, model), access.Name.Identifier.ValueText);
+    }
+
+    private static bool IsSystemObjectGetType(IMethodSymbol symbol)
+        => symbol is { IsStatic: false, Name: "GetType", Parameters.Length: 0 }
+           && symbol.ContainingType.SpecialType == SpecialType.System_Object
+           && symbol.ReturnType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Type";
+
+    private static bool IsSystemType(ITypeSymbol? type)
+        => type?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.Type";
 
     private IRExpr LowerIsPatternExpression(IsPatternExpressionSyntax expression, SemanticModel model)
     {
@@ -4938,6 +5061,12 @@ public sealed class IRLowering
     {
         switch (stmt)
         {
+            case IRStatementList list:
+                foreach (var child in list.Statements)
+                {
+                    CollectTypeReferences(child, dependencies);
+                }
+                break;
             case IRBlock block:
                 foreach (var child in block.Statements)
                 {

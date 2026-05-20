@@ -10,6 +10,8 @@ public sealed record IRBlock : IRStmt
     public List<IRStmt> Statements { get; } = new();
 }
 
+public sealed record IRStatementList(IReadOnlyList<IRStmt> Statements) : IRStmt;
+
 public sealed record IRLocalDecl(string Name, IRExpr? Initializer) : IRStmt;
 public sealed record IRMultiLocalDecl(IReadOnlyList<string> Names, IReadOnlyList<IRExpr> Initializers) : IRStmt;
 public sealed record IRAssign(IRExpr Target, IRExpr Value) : IRStmt;

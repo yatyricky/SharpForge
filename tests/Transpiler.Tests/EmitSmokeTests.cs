@@ -1537,6 +1537,91 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task GetType_Name_and_FullName_lower_to_runtime_type_metadata_fields()
+    {
+        var src = """
+            namespace MyName;
+
+            public class Queue
+            {
+            }
+
+            public class Alias
+            {
+                public static string Name = "RuntimeName";
+                public static string FullName = "Runtime.FullName";
+            }
+
+            public static class Checks
+            {
+                public static object GetRuntimeType()
+                {
+                    var q = new Queue();
+                    var t = q.GetType();
+                    return t;
+                }
+
+                public static object GetInlineRuntimeType()
+                {
+                    var q = new Queue();
+                    return q.GetType();
+                }
+
+                public static string GetLocalTypeName()
+                {
+                    var q = new Queue();
+                    var t = q.GetType();
+                    return t.Name;
+                }
+
+                public static string GetLocalTypeFullName()
+                {
+                    var q = new Queue();
+                    var t = q.GetType();
+                    return t.FullName;
+                }
+
+                public static string GetInlineTypeName()
+                {
+                    var q = new Queue();
+                    return q.GetType().Name;
+                }
+
+                public static string GetInlineTypeFullName()
+                {
+                    var q = new Queue();
+                    return q.GetType().FullName;
+                }
+
+                public static string GetOverwrittenName()
+                {
+                    var alias = new Alias();
+                    return alias.GetType().Name;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "RuntimeTypeName.cs");
+
+        Assert.Contains("SF__.MyName.Queue.Name = \"Queue\"", lua);
+        Assert.Contains("SF__.MyName.Queue.FullName = \"MyName.Queue\"", lua);
+        Assert.Contains("SF__.MyName.Alias.Name = \"Alias\"", lua);
+        Assert.Contains("SF__.MyName.Alias.FullName = \"MyName.Alias\"", lua);
+        Assert.Contains("SF__.MyName.Alias.Name = \"RuntimeName\"", lua);
+        Assert.Contains("SF__.MyName.Alias.FullName = \"Runtime.FullName\"", lua);
+        Assert.Contains("local t = q.__sf_type", lua);
+        Assert.Matches(@"return t\d*\.Name", lua);
+        Assert.Matches(@"return t\d*\.FullName", lua);
+        Assert.Matches(@"return q\d*\.__sf_type\.Name", lua);
+        Assert.Matches(@"return q\d*\.__sf_type\.FullName", lua);
+        Assert.Matches(@"return alias\d*\.__sf_type\.Name", lua);
+        Assert.Contains("q.__sf_type", lua);
+        Assert.DoesNotContain(":GetType()", lua);
+        Assert.DoesNotContain("get_Name", lua);
+        Assert.DoesNotContain("get_FullName", lua);
+    }
+
+    [Fact]
     public async Task Nullable_suppression_and_supported_is_patterns_emit_lua()
     {
         var src = """
@@ -3836,9 +3921,102 @@ public class EmitSmokeTests
         var lua = await TranspileSourceAsync(src, "StructPropertyArgument.cs");
 
         Assert.Matches(@"function SF__\.Vector2\.ClampMagnitude\(self__x\d*, self__y\d*, mag\)", lua);
-        Assert.Matches(@"return SF__\.Vector2\.op_Multiply__vector2f\(SF__\.Vector2\.get_Normalized\(self__x\d*, self__y\d*\), mag\)", lua);
+        Assert.Matches(@"local value__x\d*, value__y\d* = SF__\.Vector2\.get_Normalized\(self__x\d*, self__y\d*\)", lua);
+        Assert.Matches(@"return SF__\.Vector2\.op_Multiply__vector2f\(value__x\d*, value__y\d*, mag\)", lua);
         Assert.DoesNotMatch(@"get_Normalized\(self__x\d*, self__y\d*\)\.x", lua);
         Assert.DoesNotMatch(@"get_Normalized\(self__x\d*, self__y\d*\)\.y", lua);
+    }
+
+    [Fact]
+    public async Task Struct_returning_parameter_stays_flattened()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public static Vector3 operator -(Vector3 left, Vector3 right)
+                {
+                    return new Vector3 { x = left.x - right.x, y = left.y - right.y, z = left.z - right.z };
+                }
+
+                public static Vector3 operator +(Vector3 left, Vector3 right)
+                {
+                    return new Vector3 { x = left.x + right.x, y = left.y + right.y, z = left.z + right.z };
+                }
+
+                public static Vector3 operator /(Vector3 value, float scale)
+                {
+                    return new Vector3 { x = value.x / scale, y = value.y / scale, z = value.z / scale };
+                }
+
+                public float magnitude => x + y + z;
+
+                public static Vector3 MoveTowards(Vector3 current, Vector3 target, float maxDistanceDelta)
+                {
+                    var toVector = target - current;
+                    var dist = toVector.magnitude;
+                    if (dist <= maxDistanceDelta || dist == 0f)
+                    {
+                        return target;
+                    }
+                    return current + toVector / (dist / maxDistanceDelta);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructReturnParameter.cs");
+
+        Assert.Matches(@"function SF__\.Vector3\.MoveTowards\(current__x\d*, current__y\d*, current__z\d*, target__x\d*, target__y\d*, target__z\d*, maxDistanceDelta\)", lua);
+        Assert.Matches(@"return target__x\d*, target__y\d*, target__z\d*", lua);
+        Assert.DoesNotContain("return {x = target__x", lua);
+    }
+
+    [Fact]
+    public async Task Struct_ternary_assignment_spills_branches_to_flattened_fields()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public static Vector3 FromUnit(int unit)
+                {
+                    return new Vector3 { x = unit, y = unit + 1, z = unit + 2 };
+                }
+            }
+
+            public class MoveTowardsComponent
+            {
+                public Vector3 pointTarget;
+                private Vector3 _targetPosition;
+
+                public void Update(bool useUnit, int unitTarget)
+                {
+                    _targetPosition = useUnit ? Vector3.FromUnit(unitTarget) : pointTarget;
+                    var selected = useUnit ? Vector3.FromUnit(unitTarget) : pointTarget;
+                    _targetPosition = selected;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructTernaryAssignment.cs");
+
+        Assert.Contains("if useUnit then", lua);
+        Assert.Contains("local ternary__x, ternary__y, ternary__z", lua);
+        Assert.Matches(@"local ternary__x, ternary__y, ternary__z\s+do\s+if useUnit then", lua);
+        Assert.Contains("ternary__x, ternary__y, ternary__z = SF__.Vector3.FromUnit(unitTarget)", lua);
+        Assert.Contains("ternary__x, ternary__y, ternary__z = self.pointTarget__x, self.pointTarget__y, self.pointTarget__z", lua);
+        Assert.Contains("self._targetPosition__x, self._targetPosition__y, self._targetPosition__z = ternary__x, ternary__y, ternary__z", lua);
+        Assert.Contains("local selected__x, selected__y, selected__z", lua);
+        Assert.Matches(@"local selected__x, selected__y, selected__z\s+do\s+if useUnit then", lua);
+        Assert.Contains("selected__x, selected__y, selected__z = SF__.Vector3.FromUnit(unitTarget)", lua);
+        Assert.Contains("selected__x, selected__y, selected__z = self.pointTarget__x, self.pointTarget__y, self.pointTarget__z", lua);
+        Assert.DoesNotContain("SF__.Ternary__(useUnit", lua);
     }
 
     [Fact]

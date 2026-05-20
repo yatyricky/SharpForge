@@ -41,6 +41,10 @@ When lowering constructor initializers (`base(...)` or `this(...)`), lower their
 
 When expression syntax carries ordered side effects, such as class object initializer assignments, lower it as an immediately invoked function with a temporary, statement sequence, and final return instead of dropping the side effects or trying to encode them into a single Lua expression.
 
+When a flattened struct target or local is assigned from a conditional expression, declare the flattened temporaries in the surrounding scope, then spill the selected branch inside statement-level `if` branches before assigning the target; expression-level helpers consume Lua multi-return values, and `do` blocks hide local declarations.
+
+When metadata values are expected to behave like runtime objects, prefer emitting explicit metadata fields on the runtime representation over compile-time folding or origin-tracking side tables.
+
 ## Core Identity
 
 SharpForge is strong-typed Lua covered by a C# skin. It takes advantage of C# syntax and Roslyn analysis; it is **not** a .NET compatibility layer and does not aim to reproduce .NET semantics in Lua.

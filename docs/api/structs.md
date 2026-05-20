@@ -25,6 +25,7 @@ local x = p__X
 
 Functions that return a struct return the fields as multiple Lua values in declaration order.
 Expression-bodied methods and property getters use the same shape, including target-typed creation such as `public static Point Origin => new(0, 0);`.
+Returning an existing flattened local or parameter also returns its fields directly, not a Lua table.
 
 ```csharp
 public static Point GetOrigin()
@@ -71,6 +72,8 @@ other.Position = p;
 ```lua
 other.position__X, other.position__Y = p__X, p__Y
 ```
+
+Ternary expressions assigned to a flattened struct target lower to field locals declared before a scoped `if` block with field-wise assignments for each branch, so struct-returning calls keep all returned values and the flattened result remains visible after the block.
 
 Struct-returning SharpForge calls are already multi-return values. When passed to another SharpForge method or operator that accepts that struct, the call itself is forwarded instead of treating the result like a Lua table.
 

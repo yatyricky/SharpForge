@@ -1054,6 +1054,8 @@ public sealed class LuaEmitter
         {
             WriteLine($"{typePath} = {typePath} or {{}}");
         }
+        WriteLine($"{typePath}.Name = {FormatLiteral(new IRLiteral(type.Name, IRLiteralKind.String))}");
+        WriteLine($"{typePath}.FullName = {FormatLiteral(new IRLiteral(type.FullName, IRLiteralKind.String))}");
         if (type.BaseType is { } baseType && type.LuaClass is null)
         {
             WriteLine($"setmetatable({typePath}, {{ __index = {FormatTypeReference(baseType)} }})");
@@ -1271,6 +1273,12 @@ public sealed class LuaEmitter
     {
         switch (stmt)
         {
+            case IRStatementList list:
+                foreach (var child in list.Statements)
+                {
+                    EmitStmt(child);
+                }
+                break;
             case IRBlock b:
                 WriteLine("do");
                 _indent++;
@@ -2349,6 +2357,9 @@ public sealed class LuaEmitter
     {
         switch (stmt)
         {
+            case IRStatementList list:
+                foreach (var child in list.Statements) CollectCollectionHelpers(child);
+                break;
             case IRBlock block:
                 CollectCollectionHelpers(block);
                 break;
@@ -2642,6 +2653,7 @@ public sealed class LuaEmitter
     private static bool StmtUsesTernaryHelper(IRStmt stmt)
         => stmt switch
         {
+            IRStatementList list => list.Statements.Any(StmtUsesTernaryHelper),
             IRBlock block => BlockUsesTernaryHelper(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesTernaryHelper(local.Initializer),
             IRMultiLocalDecl local => local.Initializers.Any(ExprUsesTernaryHelper),
@@ -2732,6 +2744,7 @@ public sealed class LuaEmitter
     private static bool StmtUsesTypeChecks(IRStmt stmt)
         => stmt switch
         {
+            IRStatementList list => list.Statements.Any(StmtUsesTypeChecks),
             IRBlock block => BlockUsesTypeChecks(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesTypeChecks(local.Initializer),
             IRMultiLocalDecl local => local.Initializers.Any(ExprUsesTypeChecks),
@@ -2761,6 +2774,7 @@ public sealed class LuaEmitter
     private static bool StmtUsesCoroutineHelpers(IRStmt stmt)
         => stmt switch
         {
+            IRStatementList list => list.Statements.Any(StmtUsesCoroutineHelpers),
             IRBlock block => BlockUsesCoroutineHelpers(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesCoroutineHelpers(local.Initializer),
             IRMultiLocalDecl local => local.Initializers.Any(ExprUsesCoroutineHelpers),
@@ -2790,6 +2804,7 @@ public sealed class LuaEmitter
     private static bool StmtUsesStringConcat(IRStmt stmt)
         => stmt switch
         {
+            IRStatementList list => list.Statements.Any(StmtUsesStringConcat),
             IRBlock block => BlockUsesStringConcat(block),
             IRLocalDecl local => local.Initializer is not null && ExprUsesStringConcat(local.Initializer),
             IRMultiLocalDecl local => local.Initializers.Any(ExprUsesStringConcat),
@@ -2995,6 +3010,9 @@ public sealed class LuaEmitter
     {
         switch (stmt)
         {
+            case IRStatementList list:
+                foreach (var child in list.Statements) CollectIdentifiers(child);
+                break;
             case IRBlock block:
                 CollectIdentifiers(block);
                 break;

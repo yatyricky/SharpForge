@@ -89,6 +89,44 @@ Hero? h = unit as Hero;
 local h = SF__.TypeAs__(unit, SF__.Hero)
 ```
 
+## GetType and Runtime Type Metadata
+
+Every emitted type table receives `Name` and `FullName` metadata fields:
+
+```lua
+SF__.MyName.Queue = SF__.MyName.Queue or {}
+SF__.MyName.Queue.Name = "Queue"
+SF__.MyName.Queue.FullName = "MyName.Queue"
+```
+
+Static fields named `Name` or `FullName` are emitted later and can intentionally overwrite these defaults.
+
+`GetType()` on a class instance lowers to the runtime type metadata stored on the object:
+
+```csharp
+var q = new Queue();
+var t = q.GetType();
+```
+
+```lua
+local q = SF__.MyName.Queue.New()
+local t = q.__sf_type
+```
+
+`Type.Name` and `Type.FullName` lower to runtime metadata field reads:
+
+```csharp
+BJDebugMsg(t.Name);
+BJDebugMsg(t.FullName);
+BJDebugMsg(q.GetType().FullName);
+```
+
+```lua
+BJDebugMsg(t.Name)
+BJDebugMsg(t.FullName)
+BJDebugMsg(q.__sf_type.FullName)
+```
+
 ## Unsupported
 
-`checked` casts, `unchecked` casts, declaration patterns with binding outside an `if` condition (e.g., `return unit is Hero h`), and `switch` pattern matching produce a transpiler error.
+`checked` casts, `unchecked` casts, declaration patterns with binding outside an `if` condition (e.g., `return unit is Hero h`), `switch` pattern matching, `GetType()` on structs, and `System.Type` properties other than `Name` and `FullName` produce a transpiler error.
