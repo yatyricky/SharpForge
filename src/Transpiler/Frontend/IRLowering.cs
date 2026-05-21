@@ -2022,6 +2022,12 @@ public sealed class IRLowering
                 continue;
             }
 
+            if (TryLowerStructFieldAccessPrelude(argument, model, prelude, out var fieldRef))
+            {
+                lowered.Add(fieldRef);
+                continue;
+            }
+
             lowered.Add(LowerExpr(argument, model));
         }
 
@@ -2877,14 +2883,19 @@ public sealed class IRLowering
     private IRStmt? TryLowerStructAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {
         if (!TryGetStructExpressionValues(right, model, out var fields, out var values)
-            || !TryGetFlattenedStructAssignmentTargets(left, fields, model, out var targets))
+            || !TryGetFlattenedStructAssignmentTargets(left, fields, model, out var targets, out var receiverTemp))
         {
             return null;
         }
 
         if (right is ConditionalExpressionSyntax ternary)
         {
-            return LowerStructConditionalAssignmentThroughTemps(ternary, fields, targets, model);
+            return LowerStructConditionalAssignmentThroughTemps(ternary, fields, targets, model, receiverTemp);
+        }
+
+        if (receiverTemp is not null)
+        {
+            return new IRStatementList([receiverTemp, new IRMultiAssign(targets, values)]);
         }
 
         return new IRMultiAssign(targets, values);
@@ -2894,7 +2905,8 @@ public sealed class IRLowering
         ConditionalExpressionSyntax ternary,
         IReadOnlyList<StructFieldSlot> fields,
         IReadOnlyList<IRExpr> targets,
-        SemanticModel model)
+        SemanticModel model,
+        IRStmt? receiverTemp = null)
     {
         var tempNames = fields.Select(field => AllocateLuaName($"ternary__{field.Name}")).ToArray();
         var tempTargets = tempNames.Select(name => (IRExpr)new IRIdentifier(name)).ToArray();
@@ -2903,10 +2915,15 @@ public sealed class IRLowering
         assignmentBlock.Statements.Add(LowerStructConditionalAssignment(ternary, fields, tempTargets, model));
         assignmentBlock.Statements.Add(new IRMultiAssign(targets, tempTargets));
 
-        return new IRStatementList([
-            new IRMultiLocalDecl(tempNames, Array.Empty<IRExpr>()),
-            assignmentBlock,
-        ]);
+        var statements = new List<IRStmt>();
+        if (receiverTemp is not null)
+        {
+            statements.Add(receiverTemp);
+        }
+
+        statements.Add(new IRMultiLocalDecl(tempNames, Array.Empty<IRExpr>()));
+        statements.Add(assignmentBlock);
+        return new IRStatementList(statements);
     }
 
     private IRStmt LowerStructConditionalAssignment(
@@ -2942,9 +2959,11 @@ public sealed class IRLowering
         ExpressionSyntax left,
         IReadOnlyList<StructFieldSlot> fields,
         SemanticModel model,
-        out IReadOnlyList<IRExpr> targets)
+        out IReadOnlyList<IRExpr> targets,
+        out IRStmt? receiverTemp)
     {
         targets = Array.Empty<IRExpr>();
+        receiverTemp = null;
         if (model.GetSymbolInfo(left).Symbol is not { } symbol)
         {
             return false;
@@ -2977,6 +2996,18 @@ public sealed class IRLowering
             return false;
         }
 
+        // If the target receiver expression contains an invocation (e.g.
+        // `obj.AddComponent<T>().rotation = ...`), evaluate it once into a
+        // temp local so that side effects run exactly once across all field
+        // assignments in the IRMultiAssign.  Simple member access chains on
+        // locals (e.g. `bolt.transform.position`) are safe to repeat.
+        if (ReceiverHasInvocation(left))
+        {
+            var tempName = AllocateLuaName("receiver");
+            receiverTemp = new IRLocalDecl(tempName, target);
+            target = new IRIdentifier(tempName);
+        }
+
         var memberTargets = new List<IRExpr>(fields.Count);
         foreach (var field in fields)
         {
@@ -2989,6 +3020,83 @@ public sealed class IRLowering
         }
 
         targets = memberTargets;
+        return true;
+    }
+
+    private static bool ReceiverHasInvocation(ExpressionSyntax expression)
+    {
+        return expression.DescendantNodes().Any(node => node is InvocationExpressionSyntax);
+    }
+
+    /// <summary>
+    /// Detects <c>expr.Field</c> where <c>expr</c> returns a flattenable struct
+    /// (e.g. <c>GetAbilityData(level).TargetCount</c>).  The struct-returning call
+    /// emits multiple values, so we spill them into prelude locals and return just
+    /// the requested field identifier.  Returns <c>true</c> when the pattern matched
+    /// and <paramref name="prelude"/> received the spill statement.
+    /// </summary>
+    private bool TryLowerStructFieldAccessPrelude(
+        ExpressionSyntax argument,
+        SemanticModel model,
+        List<IRStmt> prelude,
+        out IRExpr fieldRef)
+    {
+        fieldRef = null!;
+
+        if (argument is not MemberAccessExpressionSyntax access)
+        {
+            return false;
+        }
+
+        // If the receiver is an identifier that is already a flattened
+        // local or member, the normal LowerExpr path handles it.
+        if (access.Expression is IdentifierNameSyntax id
+            && model.GetSymbolInfo(id).Symbol is { } idSymbol
+            && (_flattenedStructLocals.ContainsKey(idSymbol)
+                || _flattenedStructMembers.ContainsKey(idSymbol)))
+        {
+            return false;
+        }
+
+        // Only handle struct-returning invocations/calls, not plain member
+        // access chains on already-known identifiers or `this`.
+        if (access.Expression is IdentifierNameSyntax or ThisExpressionSyntax
+            && model.GetSymbolInfo(access.Expression).Symbol is ILocalSymbol or IParameterSymbol or null)
+        {
+            return false;
+        }
+
+        var receiverType = model.GetTypeInfo(access.Expression).Type;
+        if (receiverType is not INamedTypeSymbol structType
+            || !CanFlattenStructType(structType)
+            || !GetFlattenableStructFields(structType).Any())
+        {
+            return false;
+        }
+
+        var memberSymbol = model.GetSymbolInfo(access).Symbol;
+        if (memberSymbol is not IFieldSymbol and not IPropertySymbol { DeclaringSyntaxReferences.Length: 0 })
+        {
+            return false;
+        }
+
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        var tempNames = fields.Select(f => AllocateLuaName($"field__{f.Name}")).ToArray();
+        var callExpr = LowerExpr(access.Expression, model);
+
+        prelude.Add(new IRMultiLocalDecl(tempNames, [callExpr]));
+
+        var targetFieldName = access.Name.Identifier.ValueText;
+        var fieldIndex = Array.FindIndex(fields, f => f.Name == targetFieldName);
+        if (fieldIndex >= 0)
+        {
+            fieldRef = new IRIdentifier(tempNames[fieldIndex]);
+        }
+        else
+        {
+            fieldRef = new IRIdentifier("--[[unsupported flattened field]]nil");
+        }
+
         return true;
     }
 
@@ -3033,6 +3141,10 @@ public sealed class IRLowering
                 : null;
         }
 
+        // Field accesses on struct-returning expressions (e.g.
+        // `GetAbilityData(...).TargetCount`) are handled at the statement
+        // level in LowerInvocation where prelude locals can be declared,
+        // avoiding IIFE closure/GC overhead.
         return null;
     }
 
@@ -3232,7 +3344,7 @@ public sealed class IRLowering
             return false;
         }
 
-        return TryGetFlattenedStructAssignmentTargets(assignment.Left, fields, model, out _);
+        return TryGetFlattenedStructAssignmentTargets(assignment.Left, fields, model, out _, out _);
     }
 
     private bool IsSupportedStructStringUse(IdentifierNameSyntax id, SemanticModel model)

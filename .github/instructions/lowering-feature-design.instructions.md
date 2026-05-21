@@ -7,7 +7,7 @@ applyTo: "src/Transpiler/**,tests/Transpiler.Tests/**,*.md"
 
 When designing a new lowering feature, evaluate options in this priority order. Higher-priority rules win over lower-priority rules when they conflict. Example: if performance and human-readable output conflict, prioritize performance unless the readability loss makes the output actively difficult to debug.
 
-1. Performance first. Prefer lowering that avoids runtime allocation, indirection, dynamic dispatch, table churn, or repeated work in generated Lua when an equally correct alternative does not incur those costs.
+1. Performance first. Prefer lowering that avoids runtime allocation, indirection, dynamic dispatch, table churn, IIFE, or repeated work in generated Lua when an equally correct alternative does not incur those costs.
 2. Easy to implement. Prefer designs that fit the existing IR, emitter, semantic model, and test style without broad rewrites or speculative abstractions.
 3. Less likely to produce bugs. Prefer explicit, centralized rules and stable generated shapes over clever special cases, especially at representation boundaries. Avoids identifier name collisions and fragile transformations that could break when the input code changes.
 4. Concise output. Prefer generated Lua where each construct maps to the fewest Lua lines that preserve the full semantics, as long as concision does not hide semantics or introduce fragile transformations.

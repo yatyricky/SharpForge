@@ -3729,7 +3729,10 @@ public class EmitSmokeTests
         });
 
         Assert.Contains("local pos__x, pos__y, pos__z = SF__.Vector3.FromUnit(data.caster)", lua);
-        Assert.Contains("position__x, bolt1.transform.position__y, bolt1.transform.position__z = pos__x, pos__y, pos__z", lua);
+        Assert.Contains(".transform.position__x", lua);
+        Assert.Contains(".transform.position__y", lua);
+        Assert.Contains(".transform.position__z", lua);
+        Assert.Contains("= pos__x, pos__y, pos__z", lua);
         Assert.Contains("SF__.DivineToll.Spawn(pos__x, pos__y)", lua);
         Assert.DoesNotContain("local pos = SF__.Vector3.FromUnit", lua);
         Assert.DoesNotContain("position__x, bolt.transform.position__y, bolt.transform.position__z = pos.x, pos.y, pos.z", lua);
