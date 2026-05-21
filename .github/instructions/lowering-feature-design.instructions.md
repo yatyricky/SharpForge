@@ -29,6 +29,8 @@ When a method or property returns a flattenable struct and is itself used as a s
 
 When lowering any return position for a flattenable struct, including expression-bodied methods, operators, and property getters, use the struct multi-return path instead of generic expression lowering; generic struct expression lowering may intentionally produce a table for non-return contexts.
 
+When lowering null-conditional delegate invocation, preserve C# short-circuiting with a temporary plus a nil guard or another lazy form; do not route `handler?.Invoke(args)` through eager ternary-style helpers because the receiver must be evaluated once and the arguments only when the delegate is non-nil.
+
 When lowering optional parameters, prefer callee-side nil guards (`if arg == nil then arg = default end`) over call-site default substitution so omitted Lua arguments, named-argument gaps, and explicit false/zero defaults share one representation.
 
 When lowering overloaded methods, constructors, or operators, normalize them to unique Lua names at the semantic boundary using the same signature function for declarations and call sites; count-only suffixes are insufficient for same-arity overloads.

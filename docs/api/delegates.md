@@ -40,6 +40,19 @@ ExTriggerRegisterNewUnit(function(u)
 end)
 ```
 
+Statement-form conditional delegate invocation is supported. SharpForge evaluates the receiver once, stores it in a temporary, and only invokes when that temporary is non-nil.
+
+```csharp
+handler?.Invoke(value);
+```
+
+```lua
+local delegate = handler
+if (delegate ~= nil) then
+    delegate(value)
+end
+```
+
 ## Operator Overloads
 
 Operator overloads (`operator +`, `operator ==`, etc.) lower to static functions named with a suffix. They are not called implicitly by the transpiler for built-in binary expressions; they must be called explicitly or the transpiler will use the operator directly.

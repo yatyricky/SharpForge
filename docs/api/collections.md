@@ -22,7 +22,7 @@ int removed = list.RemoveAll(item => item == "gone");
 list.RemoveAt(0);
 list.Reverse();
 list.Sort();
-list.Sort((a, b) => a < b);
+list.Sort((a, b) => a - b);
 string[] arr = list.ToArray();
 list.Clear();
 ```
@@ -78,7 +78,27 @@ local removed = SF__.ListRemoveAll__(list, function(item) return item == "gone" 
 SF__.ListRemoveAt__(list, 1)
 SF__.ListReverse__(list)
 SF__.ListSort__(list)
-SF__.ListSort__(list, function(a, b) return (a < b) end)
+SF__.ListSort__(list, function(a, b) return (a - b) end)
+
+function SF__.ListSort__(list, comparison)
+    local compare = comparison or function(a, b)
+        if a < b then return -1 end
+        if a > b then return 1 end
+        return 0
+    end
+    local items = list.items
+    for i = 2, #items do
+        local value = items[i]
+        local j = i - 1
+        while j >= 1 and compare(SF__.ListUnwrap__(value), SF__.ListUnwrap__(items[j])) < 0 do
+            items[j + 1] = items[j]
+            j = j - 1
+        end
+        items[j + 1] = value
+    end
+    list.version = list.version + 1
+    return list
+end
 local arr = SF__.ListToArray__(list)
 SF__.ListClear__(list)
 ```

@@ -1243,6 +1243,9 @@ public sealed class IRLowering
             case ExpressionStatementSyntax es when TryLowerStructCollectionMutationStatement(es.Expression, model) is { } structCollectionMutation:
                 return structCollectionMutation;
 
+                case ExpressionStatementSyntax es when TryLowerConditionalDelegateInvocationStatement(es.Expression, model) is { } conditionalDelegateInvocation:
+                    return conditionalDelegateInvocation;
+
             case ExpressionStatementSyntax es when IsIncrementOrDecrement(es.Expression):
                 return LowerIncrementOrDecrement(es.Expression, model);
 
@@ -1784,6 +1787,43 @@ public sealed class IRLowering
 
         var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model);
         return BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
+    }
+
+    // ref: docs/api/delegates.md
+    private IRStmt? TryLowerConditionalDelegateInvocationStatement(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (expression is not ConditionalAccessExpressionSyntax
+            {
+                Expression: { } receiverExpression,
+                WhenNotNull: InvocationExpressionSyntax
+                {
+                    Expression: MemberBindingExpressionSyntax { Name.Identifier.ValueText: "Invoke" }
+                } invocation
+            })
+        {
+            return null;
+        }
+
+        var symbol = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+        if (symbol is not { MethodKind: MethodKind.DelegateInvoke })
+        {
+            return null;
+        }
+
+        var delegateName = AllocateLuaName("delegate");
+        var delegateIdentifier = new IRIdentifier(delegateName);
+        var loweredArgs = LowerCallArguments(invocation.ArgumentList.Arguments, symbol.Parameters, model);
+        var thenBlock = new IRBlock();
+        thenBlock.Statements.AddRange(loweredArgs.PreludeStatements);
+        thenBlock.Statements.Add(new IRExprStmt(new IRInvocation(delegateIdentifier, loweredArgs.Arguments)));
+
+        return new IRStatementList([
+            new IRLocalDecl(delegateName, LowerExpr(receiverExpression, model)),
+            new IRIf(
+                new IRBinary("~=", delegateIdentifier, new IRLiteral(null, IRLiteralKind.Nil)),
+                thenBlock,
+                null),
+        ]);
     }
 
     private IRExpr LowerInvocationCore(InvocationExpressionSyntax inv, IMethodSymbol symbol, IReadOnlyList<IRExpr> args, SemanticModel model)

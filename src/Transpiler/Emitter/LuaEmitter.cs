@@ -934,15 +934,21 @@ public sealed class LuaEmitter
 
     private void WriteListSortHelper()
     {
-        WriteLine($"function {_rootTable}.ListSort__(list, less)");
+        WriteLine($"function {_rootTable}.ListSort__(list, comparison)");
         _indent++;
-        WriteLine("local compare = less or function(a, b) return a < b end");
+        WriteLine("local compare = comparison or function(a, b)");
+        _indent++;
+        WriteLine("if a < b then return -1 end");
+        WriteLine("if a > b then return 1 end");
+        WriteLine("return 0");
+        _indent--;
+        WriteLine("end");
         WriteLine("local items = list.items");
         WriteLine("for i = 2, #items do");
         _indent++;
         WriteLine("local value = items[i]");
         WriteLine("local j = i - 1");
-        WriteLine($"while j >= 1 and compare({_rootTable}.ListUnwrap__(value), {_rootTable}.ListUnwrap__(items[j])) do");
+        WriteLine($"while j >= 1 and compare({_rootTable}.ListUnwrap__(value), {_rootTable}.ListUnwrap__(items[j])) < 0 do");
         _indent++;
         WriteLine("items[j + 1] = items[j]");
         WriteLine("j = j - 1");

@@ -2287,7 +2287,7 @@ public class EmitSmokeTests
         Assert.Contains("function SF__.ListCount__(list)", lua);
         Assert.DoesNotContain("function SF__.ListUnwrap__(value)", lua);
         Assert.DoesNotContain("function SF__.ListGet__(list, index)", lua);
-        Assert.DoesNotContain("function SF__.ListSort__(list, less)", lua);
+        Assert.DoesNotContain("function SF__.ListSort__(list, comparison)", lua);
         Assert.DoesNotContain("function SF__.ListRemove__(list, value, equals)", lua);
         Assert.DoesNotContain("function SF__.ListIterate__(list)", lua);
         Assert.DoesNotContain("function SF__.ListToArray__(list)", lua);
@@ -2402,7 +2402,7 @@ public class EmitSmokeTests
                     public void RemoveAt(int index) { }
                     public void Reverse() { }
                     public void Sort() { }
-                    public void Sort(global::System.Func<T, T, bool> less) { }
+                    public void Sort(global::System.Func<T, T, int> comparison) { }
                     public T[] ToArray() { return default!; }
                     public Enumerator GetEnumerator() => default!;
                     public class Enumerator
@@ -2456,7 +2456,7 @@ public class EmitSmokeTests
                     values.AddRange(more);
                     values.Reverse();
                     values.Sort();
-                    values.Sort((a, b) => a > b);
+                    values.Sort((a, b) => b - a);
                     foreach (var item in values)
                     {
                         index += item;
@@ -2538,11 +2538,14 @@ public class EmitSmokeTests
         Assert.Contains("SF__.ListAddRange__(values, {4, 5})", lua);
         Assert.Contains("SF__.ListAddRange__(values, more)", lua);
         Assert.Contains("SF__.ListReverse__(values)", lua);
-        Assert.Contains("function SF__.ListSort__(list, less)", lua);
+        Assert.Contains("function SF__.ListSort__(list, comparison)", lua);
         Assert.Contains("local items = list.items", lua);
-        Assert.Contains("while j >= 1 and compare(SF__.ListUnwrap__(value), SF__.ListUnwrap__(items[j])) do", lua);
+        Assert.Contains("if a < b then return -1 end", lua);
+        Assert.Contains("if a > b then return 1 end", lua);
+        Assert.Contains("while j >= 1 and compare(SF__.ListUnwrap__(value), SF__.ListUnwrap__(items[j])) < 0 do", lua);
         Assert.Contains("SF__.ListSort__(values)", lua);
         Assert.Contains("SF__.ListSort__(values, function(a, b)", lua);
+        Assert.Contains("return (b - a)", lua);
         Assert.Contains("function SF__.ListToArray__(list)", lua);
         Assert.Contains("local array = SF__.ListToArray__(values)", lua);
         Assert.Contains("SF__.ListClear__(values)", lua);
@@ -4146,6 +4149,30 @@ public class EmitSmokeTests
         Assert.Matches(@"function\(\)\s+SF__\.ListClear__\(self\._units\)\s+end", lua);
         Assert.DoesNotContain("ExTriggerRegisterNewUnit(self._units.Add)", lua);
         Assert.DoesNotContain("self._units:Add", lua);
+    }
+
+    [Fact]
+    public async Task Conditional_delegate_invoke_statements_lower_to_nil_guarded_temp_calls()
+    {
+        var src = """
+            using System;
+
+            public static class Signals
+            {
+                public static void Raise(Action<int>? handler, int value)
+                {
+                    handler?.Invoke(value);
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ConditionalDelegateInvoke.cs");
+
+        Assert.Contains("local delegate = handler", lua);
+        Assert.Contains("if (delegate ~= nil) then", lua);
+        Assert.Contains("delegate(value)", lua);
+        Assert.DoesNotContain("unsupported expression: ConditionalAccessExpression", lua);
+        Assert.DoesNotContain("delegate.Invoke", lua);
     }
 
     [Fact]
