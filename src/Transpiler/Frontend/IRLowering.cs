@@ -3304,6 +3304,13 @@ public sealed class IRLowering
                     continue;
                 }
 
+                if (id.Parent is ReturnStatementSyntax returnStmt
+                    && returnStmt.Expression == id
+                    && IsStructExpression(id, model))
+                {
+                    continue;
+                }
+
                 return false;
             }
         }
@@ -5674,6 +5681,13 @@ public sealed class IRLowering
             return null;
         }
 
+        // System.Exception overrides ToString() to include stack trace etc.
+        // In the Jass/Lua target, exception values should be emitted as-is.
+        if (DerivesFromSystemException(type))
+        {
+            return null;
+        }
+
         for (var current = type; current is not null; current = current.BaseType)
         {
             var method = current.GetMembers("ToString")
@@ -5695,6 +5709,20 @@ public sealed class IRLowering
         }
 
         return null;
+    }
+
+    private static bool DerivesFromSystemException(ITypeSymbol type)
+    {
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            if (current.MetadataName == "Exception"
+                && current.ContainingNamespace?.ToDisplayString() == "System")
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsStringExpression(ExpressionSyntax expression, SemanticModel model)

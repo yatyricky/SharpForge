@@ -1,0 +1,1 @@
+This is for hermes agent. Use `.github/**/*.md` as rules and instructions.

@@ -385,6 +385,32 @@ public class EmitSmokeTests
     }
 
     [Fact]
+    public async Task String_interpolation_emits_exception_as_is_without_ToString()
+    {
+        var src = """
+            public static class Demo
+            {
+                public static string Run()
+                {
+                    try
+                    {
+                        throw new System.Exception("boom");
+                    }
+                    catch (System.Exception ex)
+                    {
+                        return $"Error: {ex}";
+                    }
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "ExceptionInterpolation.cs");
+
+        Assert.Contains("return SF__.StrConcat__(\"Error: \", ex)", lua);
+        Assert.DoesNotContain("ex:ToString()", lua);
+    }
+
+    [Fact]
     public async Task Debugger_attribute_inserts_step_probes_between_statements()
     {
         var src = """
@@ -3353,6 +3379,54 @@ public class EmitSmokeTests
         Assert.DoesNotContain("SF__.Vector2 = SF__.Vector2 or {}", lua);
         Assert.DoesNotContain("function SF__.Vector2.__Init", lua);
         Assert.DoesNotContain("function SF__.Vector2.New", lua);
+    }
+
+    [Fact]
+    public async Task Struct_local_used_in_loop_and_return_is_flattened()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public Vector3(float x, float y, float z)
+                {
+                    this.x = x;
+                    this.y = y;
+                    this.z = z;
+                }
+
+                public static Vector3 operator +(Vector3 a, Vector3 b)
+                {
+                    return new Vector3(a.x + b.x, a.y + b.y, a.z + b.z);
+                }
+            }
+
+            public static class TransformDemo
+            {
+                public static Vector3 Compute(Vector3 localPos, Vector3 offset, int count)
+                {
+                    var pos = localPos;
+                    var i = 0;
+                    while (i < count)
+                    {
+                        pos = pos + offset;
+                        i++;
+                    }
+                    return pos;
+                }
+            }
+            """;
+
+        var lua = await TranspileSourceAsync(src, "StructReturnFlatten.cs");
+
+        Assert.Contains("local pos__x, pos__y, pos__z = localPos__x, localPos__y, localPos__z", lua);
+        Assert.Contains("pos__x, pos__y, pos__z = SF__.Vector3.op_Addition(pos__x, pos__y, pos__z, offset__x, offset__y, offset__z)", lua);
+        Assert.Contains("return pos__x, pos__y, pos__z", lua);
+        Assert.DoesNotContain("local pos = localPos", lua);
+        Assert.DoesNotContain("return pos.x", lua);
     }
 
     [Fact]
