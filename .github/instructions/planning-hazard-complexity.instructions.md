@@ -3,35 +3,15 @@ description: "Use when planning or implementing SharpForge features whose behavi
 applyTo: "src/Transpiler/**,tests/Transpiler.Tests/**,docs/**,*.md"
 ---
 
-# Planning Hazard Complexity
+# Hazard Matrix
 
-As SharpForge grows, feature risk grows faster than the feature count. Every new lowering or runtime feature can interact with existing runtime and lowering features. Treat all potential interactions between the new feature and existing runtime/lowering features as part of the design.
+Every new feature can regress existing ones. Before implementing, check intersections in order:
 
-Before implementing a non-trivial feature, add a short hazard matrix to the plan. Evaluate interactions in this order (higher-risk categories first):
+1. **Representation**: struct flattening, `List<T>`, `Dictionary<K,V>`, arrays, `foreach`
+2. **Type system**: overloads, virtual dispatch, inheritance, interfaces, nil/null/defaults
+3. **Interop**: JASS handles, `LuaObject`, raw tables, functions, userdata
+4. **Surface**: unsupported intersections → diagnostics, not best-effort Lua
 
-**Representation layer** (check first — most likely to break generated correctness):
-- What changes in the core happy path?
-- What happens with structs and struct flattening?
-- What happens inside `List<T>`, `Dictionary<K,V>`, arrays, and `foreach`?
+Prefer separate representations for separate semantics. Keep helpers small and purpose-built. Add explicit diagnostics for unsupported intersections.
 
-**Type system layer** (check second):
-- What happens with overloads, virtual/override dispatch, inheritance, and interfaces?
-- What happens with `nil`, nullable values, default values, and sentinels?
-
-**Interop layer** (check third):
-- What happens when Lua values are JASS handles, `LuaObject` wrappers, raw tables, functions, or userdata?
-
-**Surface layer** (check last):
-- What unsupported intersections should become diagnostics instead of best-effort Lua?
-- Which docs must state behavior, limits, and escape hatches?
-
-Prefer designs that reduce cross-feature coupling:
-
-- Use separate representations when two cases have genuinely different semantics.
-- Add explicit diagnostics for unsupported intersections.
-- Keep runtime helpers small and purpose-built instead of expanding toward broad .NET compatibility.
-- Avoid hash-based or identity-based shortcuts for value-shaped data unless equality, iteration, serialization, float behavior, object/handle behavior, and docs are all accounted for.
-
-Tests should cover the riskiest pairwise intersections, not only isolated happy paths. For each substantial feature, include focused tests for at least the relevant combinations with structs, collections, overloads, nil/null, iteration/versioning, and Lua/JASS interop.
-
-User docs should describe supported behavior and limits. Design reasoning, rejected alternatives, and planning heuristics belong in instruction files or repo memory, not in user-facing docs.
+Tests must cover pairwise intersections with structs, collections, overloads, nil/null, and Lua/JASS interop — not only isolated happy paths.

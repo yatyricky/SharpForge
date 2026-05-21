@@ -44,3 +44,6 @@ Use the existing System.CommandLine beta style in CLI factories. Context-based h
 - Avoid hand-editing generated `*.g.cs` stubs in `assets/libs/Jass-2.0.4/` unless the task is specifically about the checked-in generated baseline; normally regenerate with `sf-jassgen`.
 - `Basic.Reference.Assemblies.Net100` is used for Roslyn references; avoid `typeof(object).Assembly.Location` because single-file publish triggers IL3000.
 - Keep changes surgical. The repo has intentionally separate tools, so avoid cross-project abstractions unless tests or repeated local patterns justify them.
+
+## Agents and Instructions
+- When updating instructions or adding new ones, use `.github` files as source of truth, then run `agent-sync-rules.ps1` to update for other agents.
