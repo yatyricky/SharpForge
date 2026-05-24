@@ -35,8 +35,8 @@ Use the existing System.CommandLine beta style in CLI factories. Context-based h
 - Injection wraps generated bundles between `--sf-builder:<length>/<checksum>` markers, emits `function SF__Bundle()`, and splices a single `pcall(SF__Bundle)` into `function main()`.
 
 ## Testing Style
-- Prefer focused xUnit tests near the affected tool: `EmitSmokeTests`, `BuilderTests`, `JassGenTests`, or `ClassSampleTests`.
-- Assert structural behavior with `Assert.Contains` / `Assert.Matches`; avoid byte-for-byte golden assertions for emitted Lua.
+- Prefer focused xUnit tests per feature: `StringsTests`, `StructsTests`, `ClassesTests`, etc. Each test file covers one lowering feature.
+- Use `Assert.Equal` with full expected Lua output as the default assertion style. Use `Assert.Contains`/`Assert.Matches` only when output includes generated temporaries with numeric suffixes.
 - Tests commonly create temporary source trees and call pipelines directly instead of shelling out to published executables.
 
 ## Pitfalls

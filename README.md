@@ -27,28 +27,11 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 - [GUI](docs/gui.md) - GUI wrapper behavior and fields.
 - [Generated Lua](docs/generated-lua.md) - emitted Lua shape, root table contract, runtime bias, and build notes.
 
-### API Reference
+### Language Features
 
-Complete documentation for every supported language construct and how it lowers to Lua:
+Each lowering feature is documented by its test file in `tests/Transpiler.Tests/`. Tests contain C# source input and expected Lua output, serving as the language specification:
 
-- [Types](docs/api/types.md) — primitives, literals
-- [Operators](docs/api/operators.md) — binary, unary, compound assignment
-- [Strings](docs/api/strings.md) — interpolation, concatenation, format specifiers
-- [Control Flow](docs/api/control-flow.md) — if/else, while, for, foreach, switch, break, continue
-- [Arrays](docs/api/arrays.md) — creation, element access, length
-- [Classes](docs/api/classes.md) — static/instance, constructors, fields, auto-properties, events
-- [Inheritance](docs/api/inheritance.md) — single inheritance, virtual/override, base(), interfaces
-- [Structs](docs/api/structs.md) — field flattening, multi-return
-- [Enums](docs/api/enums.md) — enum lowering, Flags diagnostic
-- [Exceptions](docs/api/exceptions.md) — try/catch/finally, throw
-- [Delegates](docs/api/delegates.md) — lambdas, Func\<\>, operator overloads
-- [Async](docs/api/async.md) — coroutines, Task.Delay, CorRun__/CorWait__
-- Collections — `List<T>` and `Dictionary<K,V>` are implemented as an external library
-- [Regex](docs/api/regex.md) — Regex.IsMatch subset
-- [Lua Interop](docs/api/lua-interop.md) — LuaInterop, LuaObject, [Lua(...)] attributes
-- [Casting](docs/api/casting.md) — explicit cast erasure, is/as
-- [Conditional](docs/api/conditional.md) — ternary ?:, Ternary__ helper
-- [Diagnostics](docs/api/diagnostics.md) — [Debugger] probes, DesyncLinter
+`TypesTests`, `OperatorsTests`, `StringsTests`, `ControlFlowTests`, `ClassesTests`, `InheritanceTests`, `StructsTests`, `EnumsTests`, `ExceptionsTests`, `DelegatesTests`, `CastingTests`, `AsyncTests`, `RegexTests`, `ArraysTests`, `ConditionalTests`, `LuaInteropTests`, `DiagnosticsTests`, `PipelineTests`
 
 ## Repository Layout
 

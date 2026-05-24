@@ -21,7 +21,7 @@ Do not leave feature knowledge only in tests, commit messages, chat, or local pl
 
 When documenting a runtime helper (e.g., `ArrayNew__`, `StrConcat__`), include the emitted Lua implementation so readers understand what runs at runtime, not just that the helper exists.
 
-When implementing or expanding a feature that has a docs/api/ page, add a `// ref: docs/api/FEATURE.md` comment on the line immediately above the primary lowering or emission entry-point method for that feature. Use `#fragment` only when one page covers two distinct subsystems (e.g., `docs/api/collections.md#list` vs `#dictionary`). One anchor per feature cluster is sufficient; do not annotate sub-helpers.
+When implementing or expanding a lowering feature, ensure the corresponding test file in `tests/Transpiler.Tests/` covers the behavior. Tests serve as the language specification — each test shows C# input and expected Lua output.
 
 ## Capture Reusable Principles
 

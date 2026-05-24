@@ -272,7 +272,6 @@ public sealed class IRLowering
         return false;
     }
 
-    // ref: docs/api/classes.md
     private IRType LowerType(TypeDeclarationSyntax typeDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
     {
         var nsSegments = GetTypeContainerSegments(symbol);
@@ -643,7 +642,6 @@ public sealed class IRLowering
         return GetImplicitBaseConstructorCall(owner);
     }
 
-    // ref: docs/api/async.md
     private IRFunction LowerMethod(MethodDeclarationSyntax m, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
         var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
@@ -768,7 +766,6 @@ public sealed class IRLowering
             && parameters[0].Type is IArrayTypeSymbol { Rank: 1, ElementType.SpecialType: SpecialType.System_String };
     }
 
-    // ref: docs/api/structs.md
     private IEnumerable<IRFunction> LowerProperty(PropertyDeclarationSyntax p, INamedTypeSymbol owner, SemanticModel model, CancellationToken ct)
     {
         var isStatic = p.Modifiers.Any(SyntaxKind.StaticKeyword);
@@ -1015,7 +1012,6 @@ public sealed class IRLowering
     private IReadOnlyDictionary<string, string> AddFlattenedStructSelfParameters(IRFunction fn, INamedTypeSymbol structType)
         => AddFlattenedStructParameters(fn, "self", structType);
 
-    // ref: docs/api/structs.md
     private IReadOnlyDictionary<string, string> AddFlattenedStructParameters(IRFunction fn, string baseName, INamedTypeSymbol structType)
     {
         var fieldLocals = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1253,7 +1249,6 @@ public sealed class IRLowering
         }
     }
 
-    // ref: docs/api/control-flow.md
     private IRStmt LowerSwitch(SwitchStatementSyntax switchStatement, SemanticModel model, CancellationToken ct)
     {
         var sections = new List<IRSwitchSection>();
@@ -1319,7 +1314,6 @@ public sealed class IRLowering
             _ => new IRExprStmt(LowerExpr(expression, model)),
         };
 
-    // ref: docs/api/control-flow.md
     private IRStmt LowerForEach(ForEachStatementSyntax fe, SemanticModel model, CancellationToken ct)
     {
         var collection = LowerExpr(fe.Expression, model);
@@ -1330,7 +1324,6 @@ public sealed class IRLowering
         return new IRForEach(itemName, collection, body);
     }
 
-    // ref: docs/api/exceptions.md
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
     {
         if (ts.Catches.Count > 1)
@@ -1709,7 +1702,6 @@ public sealed class IRLowering
         return BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
     }
 
-    // ref: docs/api/delegates.md
     private IRStmt? TryLowerConditionalDelegateInvocationStatement(ExpressionSyntax expression, SemanticModel model)
     {
         if (expression is not ConditionalAccessExpressionSyntax
@@ -2171,7 +2163,6 @@ public sealed class IRLowering
         return new[] { LowerExpr(expression, model) };
     }
 
-    // ref: docs/api/regex.md
     private IRExpr? TryLowerRegexInvocation(InvocationExpressionSyntax invocation, IMethodSymbol symbol, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
         if (!IsRegexType(symbol.ContainingType))
@@ -3053,7 +3044,6 @@ public sealed class IRLowering
         return result;
     }
 
-    // ref: docs/api/delegates.md
     private IRExpr LowerAnonymousFunction(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
     {
         var parameters = GetAnonymousFunctionParameters(anonymousFunction)
@@ -3107,7 +3097,6 @@ public sealed class IRLowering
     private static bool AnonymousFunctionReturnsVoid(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
         => (model.GetTypeInfo(anonymousFunction).ConvertedType as INamedTypeSymbol)?.DelegateInvokeMethod?.ReturnsVoid == true;
 
-    // ref: docs/api/casting.md
     private IRExpr LowerTypeTest(ExpressionSyntax value, ExpressionSyntax typeSyntax, SemanticModel model, bool isAsExpression)
     {
         var type = GetTypeSymbol(typeSyntax, model);
@@ -3127,7 +3116,6 @@ public sealed class IRLowering
             : new IRIs(LowerExpr(value, model), LowerRuntimeTypeTarget(type));
     }
 
-    // ref: docs/api/casting.md#gettype-and-runtime-type-metadata
     private IRExpr? TryLowerGetTypeInvocation(InvocationExpressionSyntax invocation, IMethodSymbol symbol, SemanticModel model)
     {
         if (!IsSystemObjectGetType(symbol)
@@ -3389,7 +3377,6 @@ public sealed class IRLowering
     private static bool IsRuntimeObjectLikeType(ITypeSymbol? type)
         => type is not null && (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Interface);
 
-    // ref: docs/api/classes.md
     private IRExpr LowerObjectCreation(BaseObjectCreationExpressionSyntax obj, SemanticModel model)
     {
         var typeSymbol = (model.GetSymbolInfo(obj).Symbol as IMethodSymbol)?.ContainingType
@@ -3631,7 +3618,6 @@ public sealed class IRLowering
         };
     }
 
-    // ref: docs/api/lua-interop.md
     private static IRExpr? TryLowerLuaInteropInvocation(IMethodSymbol symbol, IReadOnlyList<IRExpr> args)
     {
         if (!IsLuaInteropMethod(symbol))

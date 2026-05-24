@@ -93,7 +93,6 @@ public sealed class LuaEmitter
         }
     }
 
-    // ref: docs/api/conditional.md
     private void WriteTernaryHelper()
     {
         WriteLine($"function {_rootTable}.Ternary__(cond, a, b)");
@@ -131,7 +130,6 @@ public sealed class LuaEmitter
         _sb.Append('\n');
     }
 
-    // ref: docs/api/strings.md
     private void WriteStringConcatHelper()
     {
         WriteLine($"function {_rootTable}.StrConcat__(...)");
@@ -153,7 +151,6 @@ public sealed class LuaEmitter
         _sb.Append('\n');
     }
 
-    // ref: docs/api/async.md
     private void WriteCoroutineHelpers()
     {
         WriteLine($"{_rootTable}.CorTimerPool__ = {_rootTable}.CorTimerPool__ or {{}}");
@@ -260,7 +257,6 @@ public sealed class LuaEmitter
         _sb.Append('\n');
     }
 
-    // ref: docs/api/classes.md
     private void EmitType(IRType type)
     {
         if (type.IsTableLiteral)
@@ -756,7 +752,6 @@ public sealed class LuaEmitter
         WriteLine("end");
     }
 
-    // ref: docs/api/control-flow.md
     private void EmitSwitch(IRSwitch switchStmt)
     {
         var valueName = NewTemp("switchValue");
@@ -853,7 +848,6 @@ public sealed class LuaEmitter
         WriteLine("end");
     }
 
-    // ref: docs/api/control-flow.md
     private void EmitForEach(IRForEach f)
     {
         var collectionName = NewTemp("collection");
@@ -875,7 +869,6 @@ public sealed class LuaEmitter
         WriteLine("end");
     }
 
-    // ref: docs/api/exceptions.md
     private void EmitTry(IRTry t)
     {
         WriteLine("do");
