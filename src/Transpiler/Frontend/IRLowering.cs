@@ -151,7 +151,6 @@ public sealed class IRLowering
         }
 
         module.Enums.Sort((left, right) => StringComparer.Ordinal.Compare(left.FullName, right.FullName));
-        AddReferencedSFLibInterfaceTypes(module);
         SortTypesByInheritance(module.Types);
         ValidateEntryPoints(module);
         _module = null;
@@ -259,33 +258,7 @@ public sealed class IRLowering
         return irEnum;
     }
 
-    private static void AddReferencedSFLibInterfaceTypes(IRModule module)
-    {
-        var existingTypes = new HashSet<string>(module.Types.Select(t => t.FullName), StringComparer.Ordinal);
-        var interfaces = module.Types
-            .SelectMany(type => type.Interfaces)
-            .Where(IsSFLibTypeReference)
-            .DistinctBy(GetTypeReferenceFullName)
-            .OrderBy(GetTypeReferenceFullName, StringComparer.Ordinal)
-            .ToArray();
 
-        foreach (var iface in interfaces)
-        {
-            var fullName = GetTypeReferenceFullName(iface);
-            if (!existingTypes.Add(fullName))
-            {
-                continue;
-            }
-
-            module.Types.Add(new IRType
-            {
-                NamespaceSegments = iface.NamespaceSegments,
-                Name = iface.Name,
-                FullName = fullName,
-                IsInterface = true,
-            });
-        }
-    }
 
     private static bool InheritsFromHandle(INamedTypeSymbol symbol)
     {
@@ -1673,6 +1646,21 @@ public sealed class IRLowering
                         args => new IRInvocation(
                             new IRMemberAccess(LowerTypeReference(op.ContainingType), GetLuaMethodName(op)),
                             args));
+                }
+
+                if (bin.IsKind(SyntaxKind.EqualsExpression) || bin.IsKind(SyntaxKind.NotEqualsExpression))
+                {
+                    var leftType = model.GetTypeInfo(bin.Left).Type;
+                    var rightType = model.GetTypeInfo(bin.Right).Type;
+                    if (leftType is INamedTypeSymbol { TypeKind: TypeKind.Struct } leftStruct
+                        && rightType is INamedTypeSymbol { TypeKind: TypeKind.Struct }
+                        && SymbolEqualityComparer.Default.Equals(leftType, rightType)
+                        && CanFlattenStructType(leftStruct)
+                        && GetFlattenableStructFields(leftStruct).Any())
+                    {
+                        var eq = BuildStructEqualityExpression(bin.Left, bin.Right, leftStruct, model);
+                        return bin.IsKind(SyntaxKind.NotEqualsExpression) ? new IRUnary("not", eq) : eq;
+                    }
                 }
 
                 if (bin.IsKind(SyntaxKind.AddExpression) && IsStringExpression(bin, model))
@@ -3716,7 +3704,6 @@ public sealed class IRLowering
 
     private static bool IsSFLibNamespaceName(string name)
         => name == "SFLib.Async"
-           || name == "SFLib.Contracts"
            || name == "SFLib.Diagnostics"
            || name == "SFLib.Interop";
 
@@ -4335,6 +4322,30 @@ public sealed class IRLowering
     private sealed record FlattenedStructMember(bool IsStatic, INamedTypeSymbol ContainingType, IReadOnlyDictionary<string, string> FieldMembers);
 
     private sealed record StructFieldSlot(string Name, ITypeSymbol Type, int SortKey);
+
+    private IRExpr BuildStructEqualityExpression(ExpressionSyntax leftExpr, ExpressionSyntax rightExpr, INamedTypeSymbol structType, SemanticModel model)
+    {
+        var leftFields = LowerStructArgumentValues(leftExpr, structType, model);
+        var rightFields = LowerStructArgumentValues(rightExpr, structType, model);
+        var fields = GetFlattenableStructFields(structType).ToArray();
+
+        IRExpr? combined = null;
+        for (var i = 0; i < fields.Length; i++)
+        {
+            var isFloat = fields[i].Type.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
+            var fieldEq = isFloat
+                ? new IRBinary("<",
+                    new IRInvocation(
+                        new IRMemberAccess(new IRIdentifier("math"), "abs"),
+                        new[] { new IRBinary("-", leftFields[i], rightFields[i]) }),
+                    new IRLiteral(0.0001, IRLiteralKind.Real))
+                : new IRBinary("==", leftFields[i], rightFields[i]);
+
+            combined = combined is null ? fieldEq : new IRBinary("and", combined, fieldEq);
+        }
+
+        return combined ?? new IRLiteral(true, IRLiteralKind.Boolean);
+    }
 
     private static void SortTypesByInheritance(List<IRType> types)
     {
