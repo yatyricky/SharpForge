@@ -12,7 +12,7 @@ namespace SFLib.Interop;
 /// All functions are available in Warcraft III's embedded Lua 5.3 runtime.
 /// See <see href="https://www.lua.org/manual/5.3/manual.html#6.7">Lua 5.3 math reference</see>.
 /// </summary>
-public class math : LuaObject
+public partial class math : LuaObject
 {
     /// <summary>
     /// Returns the absolute value of x.

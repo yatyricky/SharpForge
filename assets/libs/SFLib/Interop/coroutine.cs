@@ -12,7 +12,7 @@ namespace SFLib.Interop;
 /// All coroutine functions are available in Warcraft III's embedded Lua 5.3 runtime.
 /// See <see href="https://www.lua.org/manual/5.3/manual.html#6.2">Lua 5.3 coroutine reference</see>.
 /// </summary>
-public class coroutine : LuaObject
+public partial class coroutine : LuaObject
 {
     /// <summary>
     /// Creates a new coroutine, with body f. f must be a Lua function.

@@ -13,7 +13,7 @@ namespace SFLib.Interop;
 /// except <c>string.dump</c> which is not available.
 /// See <see href="https://www.lua.org/manual/5.3/manual.html#6.4">Lua 5.3 string reference</see>.
 /// </summary>
-public class @string : LuaObject
+public partial class @string : LuaObject
 {
     /// <summary>
     /// Returns the internal numerical codes of the characters s[i], s[i+1], ..., s[j].

@@ -14,7 +14,7 @@ namespace SFLib.Interop;
 /// and are not included: os.execute, os.exit, os.getenv, os.remove, os.rename, os.setlocale, os.tmpname.
 /// See <see href="https://www.lua.org/manual/5.3/manual.html#6.9">Lua 5.3 os reference</see>.
 /// </summary>
-public class os : LuaObject
+public partial class os : LuaObject
 {
     /// <summary>
     /// Returns an approximation of the amount in seconds of CPU time used by the program.

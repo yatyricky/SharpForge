@@ -12,7 +12,7 @@ namespace SFLib.Interop;
 /// All utf8 functions are available in Warcraft III's embedded Lua 5.3 runtime.
 /// See <see href="https://www.lua.org/manual/5.3/manual.html#6.5">Lua 5.3 utf8 reference</see>.
 /// </summary>
-public class utf8 : LuaObject
+public partial class utf8 : LuaObject
 {
     /// <summary>
     /// Receives zero or more integers, converts each one to its corresponding UTF-8 byte sequence
