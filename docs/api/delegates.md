@@ -32,11 +32,11 @@ end
 local ok = self.Filter(5)
 ```
 
-Bound instance method groups passed to delegate parameters lower as receiver-capturing lambdas before emission. For example, `_units.Add` passed to an `Action<unit>` parameter lowers like `u => _units.Add(u)`, then collection lowering emits the usual list helper call.
+Bound instance method groups passed to delegate parameters lower as receiver-capturing lambdas before emission. For example, `_units.Add` passed to an `Action<unit>` parameter lowers like `u => _units.Add(u)`.
 
 ```lua
 ExTriggerRegisterNewUnit(function(u)
-    SF__.ListAdd__(self._units, u)
+    self._units:Add(u)
 end)
 ```
 

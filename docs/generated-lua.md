@@ -45,13 +45,13 @@ Common C# constructs lower to direct Lua patterns:
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
-| `List<T>`, `Dictionary<K,V>` | compact table helper runtimes |
+| `List<T>`, `Dictionary<K,V>` | transpiled as regular classes (see external library) |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.
 
 ## Minimal Runtime Bias
 
-SharpForge emits only helpers needed by the lowered code. `List<T>` uses a compact Lua table with helper functions for add, count, indexing, iteration, and sorting. These are not full .NET collection surfaces translated into Lua.
+SharpForge emits only helpers needed by the lowered code. Collections like `List<T>` and `Dictionary<K,V>` are implemented as regular C# classes that get transpiled like any user code, backed by an external library over the Lua API.
 
 That bias keeps output small and predictable: use platform functions directly, model only what the generated Lua needs, and avoid a broad compatibility runtime.
 

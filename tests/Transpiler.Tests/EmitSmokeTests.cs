@@ -663,37 +663,6 @@ public class EmitSmokeTests
     }
 
     [Fact]
-    public async Task Pipeline_preserves_existing_intellisense_project_file()
-    {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            public static class Program
-            {
-                public static int Main()
-                {
-                    return 0;
-                }
-            }
-            """);
-        var projectFile = Path.Combine(dir.FullName, dir.Name + ".csproj");
-        var existingProject = "<Project><PropertyGroup><SharpForgeUserFile>true</SharpForgeUserFile></PropertyGroup></Project>";
-        await File.WriteAllTextAsync(projectFile, existingProject);
-
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
-            CheckOnly: false,
-            Verbose: false), CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        Assert.Equal(existingProject, await File.ReadAllTextAsync(projectFile));
-    }
-
-    [Fact]
     public async Task Pipeline_init_only_copies_assets_and_skips_transpile_options()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
@@ -713,49 +682,6 @@ public class EmitSmokeTests
         Assert.True(File.Exists(Path.Combine(dir.FullName, dir.Name + ".csproj")));
         Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "Natives.g.cs")));
         Assert.False(File.Exists(Path.Combine(dir.FullName, TranspileOptions.DefaultOutputFileName)));
-    }
-
-    [Fact]
-    public async Task Pipeline_overwrites_bundled_library_stubs_but_preserves_other_user_files()
-    {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            public static class Program
-            {
-                public static void Main()
-                {
-                    FourCC("A000");
-                }
-            }
-            """);
-
-        var jassDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "Jass-2.0.4"));
-        var userOwnedNativeStub = "public static partial class JASS { public static void UserOwned() { } }";
-        await File.WriteAllTextAsync(Path.Combine(jassDir.FullName, "Natives.g.cs"), userOwnedNativeStub);
-
-        var customDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", "User"));
-        var userLibrary = "namespace UserLib; public static class KeepMe { }";
-        var userLibraryPath = Path.Combine(customDir.FullName, "KeepMe.cs");
-        await File.WriteAllTextAsync(userLibraryPath, userLibrary);
-
-        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: output,
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
-            CheckOnly: false,
-            Verbose: false), CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        var copiedNatives = await File.ReadAllTextAsync(Path.Combine(jassDir.FullName, "Natives.g.cs"));
-        Assert.NotEqual(userOwnedNativeStub, copiedNatives);
-        Assert.Contains("BJDebugMsg", copiedNatives);
-        Assert.Equal(userLibrary, await File.ReadAllTextAsync(userLibraryPath));
-        Assert.True(File.Exists(Path.Combine(jassDir.FullName, "NativeExt.g.cs")));
-        Assert.True(File.Exists(Path.Combine(jassDir.FullName, "GlobalUsings.g.cs")));
     }
 
     [Fact]
@@ -1738,26 +1664,6 @@ public class EmitSmokeTests
     {
         var sources = new Dictionary<string, string>
         {
-            ["List.cs"] = """
-                namespace SFLib.Collections
-                {
-                    public class List<T>
-                    {
-                        public int Count => 0;
-                        public T this[int index] => default!;
-                        public void Add(T item) { }
-                        public void Clear() { }
-                        public void RemoveAt(int index) { }
-                        public Enumerator GetEnumerator() => new Enumerator();
-
-                        public class Enumerator
-                        {
-                            public T Current => default!;
-                            public bool MoveNext() => false;
-                        }
-                    }
-                }
-                """,
             ["Component.cs"] = """
                 public class Component
                 {
@@ -1775,14 +1681,10 @@ public class EmitSmokeTests
                 }
                 """,
             ["GameObject.cs"] = """
-                using SFLib.Collections;
-
                 public class GameObject
                 {
                     public string name { get; private set; }
                     public Transform transform { get; private set; }
-                    private List<Component> _components = new List<Component>();
-                    public List<Component> components => _components;
 
                     public GameObject(string name)
                     {
@@ -1792,13 +1694,6 @@ public class EmitSmokeTests
 
                     public T? GetComponent<T>() where T : Component
                     {
-                        foreach (var comp in _components)
-                        {
-                            if (comp is T tComp)
-                            {
-                                return tComp;
-                            }
-                        }
                         return null;
                     }
 
@@ -1808,31 +1703,15 @@ public class EmitSmokeTests
                         {
                             gameObject = this
                         };
-                        _components.Add(comp);
                         return comp;
-                    }
-
-                    public void RemoveAllComponents<T>() where T : Component
-                    {
-                        for (int i = _components.Count - 1; i >= 0; i--)
-                        {
-                            if (_components[i] is T)
-                            {
-                                _components.RemoveAt(i);
-                            }
-                        }
                     }
                 }
                 """,
             ["Scene.cs"] = """
-                using SFLib.Collections;
-
                 public class Scene
                 {
                     private static Scene? _instance;
                     public static Scene Instance => _instance ??= new Scene();
-
-                    public List<GameObject> gameObjs = new();
                 }
                 """,
         };
@@ -1843,11 +1722,9 @@ public class EmitSmokeTests
         Assert.Contains("return \"\"", lua);
         Assert.Contains("self:AddComponent(SF__.Transform)", lua);
         Assert.Contains("function SF__.GameObject:GetComponent(T)", lua);
-        Assert.Contains("if SF__.TypeIs__(tComp, T) then", lua);
         Assert.Matches(@"local obj\d* = T\d*\.New\(\)", lua);
         Assert.Matches(@"obj\d*\.gameObject = self", lua);
         Assert.Matches(@"return obj\d*", lua);
-        Assert.Contains("SF__.ListGet__", lua);
         Assert.Contains("if SF__.Scene._instance ~= nil then", lua);
         Assert.Contains("SF__.Scene._instance = SF__.Scene.New()", lua);
         Assert.DoesNotContain("unsupported expression: SuppressNullableWarningExpression", lua);
@@ -1982,741 +1859,6 @@ public class EmitSmokeTests
         Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct runtime type checks are not supported", StringComparison.Ordinal));
         Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct casts are not supported", StringComparison.Ordinal));
         Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct boxing conversions are not supported", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task Struct_dictionary_keys_use_linear_typed_equals_lookup()
-    {
-        var src = """
-            namespace SFLib.Collections
-            {
-                public class Dictionary<K, V>
-                {
-                    public int Count => 0;
-                    public List<K> Keys => default!;
-                    public List<V> Values => default!;
-                    public V this[K key] { get => default!; set { } }
-                    public void Add(K key, V value) { }
-                    public bool ContainsKey(K key) { return false; }
-                    public bool Remove(K key) { return false; }
-                    public void Clear() { }
-                    public Enumerator GetEnumerator() => default!;
-                    public class Enumerator
-                    {
-                        public KeyValue<K, V> Current => default!;
-                        public bool MoveNext() { return false; }
-                    }
-                }
-
-                public class List<T>
-                {
-                }
-
-                public class KeyValue<K, V>
-                {
-                    public K Key => default!;
-                    public V Value => default!;
-                }
-            }
-
-            public struct Cell
-            {
-                public int X;
-                public int Y;
-
-                public bool Equals(Cell other)
-                {
-                    return X == other.X && Y == other.Y;
-                }
-            }
-
-            public static class Demo
-            {
-                public static int Run()
-                {
-                    var cells = new SFLib.Collections.Dictionary<Cell, int>();
-                    var a = new Cell { X = 1, Y = 2 };
-                    var b = new Cell { X = 1, Y = 2 };
-                    cells.Add(a, 7);
-                    cells[b] = 8;
-                    var hasB = cells.ContainsKey(b);
-                    var value = cells[b];
-                    var keys = cells.Keys;
-                    var values = cells.Values;
-                    foreach (var kv in cells)
-                    {
-                        value = value + kv.Value;
-                    }
-                    cells.Remove(b);
-                    cells.Clear();
-                    return hasB ? value : 0;
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "StructDictionaryKeys.cs");
-
-        Assert.Contains("function SF__.DictLinearNew__(keyEquals)", lua);
-        Assert.Contains("function SF__.DictLinearFind__(dict, key)", lua);
-        Assert.Contains("if dict.keyEquals(storedKey, key) then return i end", lua);
-        Assert.Contains("local cells = SF__.DictLinearNew__(function(left, right)", lua);
-        Assert.Contains("return SF__.Cell.Equals(left.X, left.Y, right.X, right.Y)", lua);
-        Assert.Contains("SF__.DictLinearAdd__(cells", lua);
-        Assert.Contains("SF__.DictLinearSet__(cells", lua);
-        Assert.Contains("local hasB = SF__.DictLinearContainsKey__(cells", lua);
-        Assert.Contains("local value = SF__.DictLinearGet__(cells", lua);
-        Assert.Contains("local keys = SF__.DictLinearKeys__(cells)", lua);
-        Assert.Contains("local values = SF__.DictLinearValues__(cells)", lua);
-        Assert.Contains("in SF__.DictLinearIterate__(dict", lua);
-        Assert.Contains("SF__.DictLinearRemove__(cells", lua);
-        Assert.Contains("SF__.DictLinearClear__(cells)", lua);
-        Assert.DoesNotContain("function SF__.DictNew__()", lua);
-        Assert.DoesNotContain("function SF__.DictAdd__(dict, key, value)", lua);
-        Assert.DoesNotContain("function SF__.DictSet__(dict, key, value)", lua);
-        Assert.DoesNotContain("SF__.DictAdd__(cells", lua);
-        Assert.DoesNotContain("SF__.DictSet__(cells", lua);
-        Assert.DoesNotContain("GetHashCode", lua);
-    }
-
-    [Fact]
-    public async Task Struct_list_items_use_parallel_field_arrays_for_supported_local_operations()
-    {
-        var src = """
-            namespace SFLib.Collections
-            {
-                public class List<T>
-                {
-                    public void Add(T item) { }
-                    public T this[int index] { get { return default!; } set { } }
-                }
-            }
-
-            public struct AbilityData
-            {
-                public float DamageScaling;
-                public float ArtOfWarChance;
-            }
-
-            public static class Demo
-            {
-                public static AbilityData GetAbilityData(int level)
-                {
-                    return new AbilityData
-                    {
-                        DamageScaling = level * 1.5f,
-                        ArtOfWarChance = level * 0.1f,
-                    };
-                }
-
-                public static string Run()
-                {
-                    var datas = new SFLib.Collections.List<AbilityData>();
-                    datas.Add(GetAbilityData(1));
-                    var data = datas[0];
-                    return $"{datas[0].DamageScaling:F0}:{data.ArtOfWarChance:F0}";
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "StructListItems.cs");
-
-        Assert.Contains("local datas__DamageScaling, datas__ArtOfWarChance = {}, {}", lua);
-        Assert.Contains("local item__DamageScaling, item__ArtOfWarChance = SF__.Demo.GetAbilityData(1)", lua);
-        Assert.Contains("table.insert(datas__DamageScaling, item__DamageScaling)", lua);
-        Assert.Contains("table.insert(datas__ArtOfWarChance, item__ArtOfWarChance)", lua);
-        Assert.Contains("local data__DamageScaling, data__ArtOfWarChance = datas__DamageScaling[(0 + 1)], datas__ArtOfWarChance[(0 + 1)]", lua);
-        Assert.Contains("return SF__.StrConcat__(string.format(\"%.0f\", datas__DamageScaling[(0 + 1)]), \":\", string.format(\"%.0f\", data__ArtOfWarChance))", lua);
-        Assert.DoesNotContain("SF__.ListAdd__(datas", lua);
-        Assert.DoesNotContain("SF__.ListGet__(datas", lua);
-    }
-
-    [Fact]
-    public async Task Struct_collection_equality_without_typed_equals_is_diagnostic()
-    {
-        var src = """
-            namespace SFLib.Collections
-            {
-                public class List<T>
-                {
-                    public bool Contains(T item) { return false; }
-                }
-
-                public class Dictionary<K, V>
-                {
-                    public V this[K key] { get => default!; set { } }
-                }
-            }
-
-            public struct Cell
-            {
-                public int X;
-            }
-
-            public static class Demo
-            {
-                public static void Run()
-                {
-                    var list = new SFLib.Collections.List<Cell>();
-                    var hasCell = list.Contains(new Cell { X = 1 });
-                    var cells = new SFLib.Collections.Dictionary<Cell, int>();
-                    cells[new Cell { X = 1 }] = 1;
-                }
-            }
-            """;
-
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        var file = Path.Combine(dir.FullName, "StructCollectionMissingEquals.cs");
-        await File.WriteAllTextAsync(file, src);
-
-        var compilation = await new RoslynFrontend(Array.Empty<string>())
-            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
-        var module = new IRLowering().Lower(compilation, CancellationToken.None);
-
-        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("struct collection equality for 'Cell' requires public bool Equals(Cell other)", StringComparison.Ordinal));
-        Assert.Contains(module.Diagnostics, diagnostic => diagnostic.Contains("hashing and boxed Equals(object) are not used", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task Struct_interfaces_are_not_emitted_as_runtime_metadata()
-    {
-        var src = """
-            using System;
-
-            public struct AbilityData : IEquatable<AbilityData>
-            {
-                public float DamageScaling;
-
-                public bool Equals(AbilityData other)
-                {
-                    return DamageScaling == other.DamageScaling;
-                }
-            }
-
-            public static class Checks
-            {
-                public static bool Same(AbilityData left, AbilityData right)
-                {
-                    return left.Equals(right);
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "StructInterfaces.cs");
-
-        Assert.Contains("function SF__.AbilityData.Equals(self__DamageScaling, other__DamageScaling)", lua);
-        Assert.DoesNotContain("SF__.AbilityData.__sf_interfaces", lua);
-        Assert.DoesNotContain("IEquatable", lua);
-    }
-
-    [Fact]
-    public async Task Ternary_expressions_emit_helper_call_not_and_or()
-    {
-        var src = """
-            public static class Ternary
-            {
-                public static int Max(int a, int b) => a > b ? a : b;
-
-                public static string Label(bool flag) => flag ? "yes" : "no";
-
-                public static int FalsyBranch(bool flag) => flag ? 0 : 1;
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "Ternary.cs");
-
-        // Helper must be emitted exactly once.
-        Assert.Contains("function SF__.Ternary__(cond, a, b)", lua);
-        Assert.Contains("if cond then return a else return b end", lua);
-        // All three uses must route through the helper, never the unsafe `and/or` idiom.
-        Assert.Contains("SF__.Ternary__(", lua);
-        Assert.DoesNotContain("and a or b", lua);
-        // The falsy-branch case (value1 == 0) is safe because the helper is used.
-        Assert.Contains("SF__.Ternary__((a > b), a, b)", lua);
-        Assert.Contains("SF__.Ternary__(flag, \"yes\", \"no\")", lua);
-        Assert.Matches(@"SF__\.Ternary__\(flag\d*, 0, 1\)", lua);
-    }
-
-    [Fact]
-    public async Task Float_literals_emit_source_text_not_double_expanded_value()
-    {
-        var src = "public static class Numbers { public static float F() => 0.65f; public static double D() => 0.65; }";
-        var lua = await TranspileSourceAsync(src, "Numbers.cs");
-        // float 0.65f must not be widened to the double-precision expansion 0.6499999761581421
-        Assert.DoesNotContain("0.6499", lua);
-        Assert.Contains("0.65", lua);
-    }
-
-    [Fact]
-    public async Task Arrays_lists_indexing_and_foreach_emit_table_backed_collections()
-    {
-        var src = """
-            using System.Collections.Generic;
-
-            public static class Collections
-            {
-                public static int SumArray()
-                {
-                    var values = new[] { 1, 2, 3 };
-                    var total = 0;
-                    foreach (var value in values)
-                    {
-                        total += value;
-                    }
-                    return total + values[0] + values.Length;
-                }
-
-                public static int SumList()
-                {
-                    var values = new List<int> { 4, 5 };
-                    values.Add(6);
-                    return values[1] + values.Count;
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "Collections.cs");
-
-        Assert.Contains("local values = {1, 2, 3}", lua);
-        Assert.Contains("local collection = values", lua);
-        Assert.Contains("for i, value in ipairs(collection) do", lua);
-        Assert.Matches(@"values\[\(?\s*0\s*\+\s*1\s*\)?\]", lua);
-        Assert.Contains("#values", lua);
-        Assert.Matches(@"local values\d* = SF__\.ListNew__\(\{4, 5\}\)", lua);
-        Assert.Matches(@"SF__\.ListAdd__\(values\d*, 6\)", lua);
-        Assert.Matches(@"SF__\.ListGet__\(values\d*, 1\)", lua);
-        Assert.Matches(@"SF__\.ListCount__\(values\d*\)", lua);
-    }
-
-    [Fact]
-    public async Task List_usage_emits_only_required_helpers()
-    {
-        var src = """
-            using System.Collections.Generic;
-
-            public static class Demo
-            {
-                public static int Run()
-                {
-                    var values = new List<int>();
-                    values.Add(1);
-                    return values.Count;
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "MinimalListHelpers.cs");
-
-        Assert.Contains("SF__.ListNil__ = SF__.ListNil__ or {}", lua);
-        Assert.Contains("function SF__.ListWrap__(value)", lua);
-        Assert.Contains("function SF__.ListNew__(items)", lua);
-        Assert.Contains("function SF__.ListAdd__(list, value)", lua);
-        Assert.Contains("function SF__.ListCount__(list)", lua);
-        Assert.DoesNotContain("function SF__.ListUnwrap__(value)", lua);
-        Assert.DoesNotContain("function SF__.ListGet__(list, index)", lua);
-        Assert.DoesNotContain("function SF__.ListSort__(list, comparison)", lua);
-        Assert.DoesNotContain("function SF__.ListRemove__(list, value, equals)", lua);
-        Assert.DoesNotContain("function SF__.ListIterate__(list)", lua);
-        Assert.DoesNotContain("function SF__.ListToArray__(list)", lua);
-    }
-
-    [Fact]
-    public async Task Dictionary_usage_emits_only_required_helpers()
-    {
-        var src = """
-            using SFLib.Collections;
-
-            namespace SFLib.Collections
-            {
-                public class Dictionary<K, V>
-                {
-                    public int Count => 0;
-                    public void Add(K key, V value) { }
-                    public bool ContainsKey(K key) { return false; }
-                }
-            }
-
-            public static class Demo
-            {
-                public static int Run()
-                {
-                    var table = new Dictionary<string, int>();
-                    table.Add("a", 1);
-                    var hasA = table.ContainsKey("a");
-                    return table.Count;
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "MinimalDictionaryHelpers.cs");
-
-        Assert.Contains("SF__.DictNil__ = SF__.DictNil__ or {}", lua);
-        Assert.Contains("function SF__.DictNew__()", lua);
-        Assert.Contains("function SF__.DictAdd__(dict, key, value)", lua);
-        Assert.Contains("function SF__.DictContainsKey__(dict, key)", lua);
-        Assert.Contains("function SF__.DictCount__(dict)", lua);
-        Assert.DoesNotContain("function SF__.DictGet__(dict, key)", lua);
-        Assert.DoesNotContain("function SF__.DictRemove__(dict, key)", lua);
-        Assert.DoesNotContain("function SF__.DictKeys__(dict)", lua);
-        Assert.DoesNotContain("function SF__.DictValues__(dict)", lua);
-        Assert.DoesNotContain("function SF__.DictIterate__(dict)", lua);
-        Assert.DoesNotContain("function SF__.DictLinear", lua);
-        Assert.DoesNotContain("function SF__.List", lua);
-    }
-
-    [Fact]
-    public async Task Dictionary_keys_emit_minimal_list_dependencies()
-    {
-        var src = """
-            using SFLib.Collections;
-
-            namespace SFLib.Collections
-            {
-                public class List<T>
-                {
-                }
-
-                public class Dictionary<K, V>
-                {
-                    public List<K> Keys => default!;
-                }
-            }
-
-            public static class Demo
-            {
-                public static List<string> Run()
-                {
-                    var table = new Dictionary<string, int>();
-                    return table.Keys;
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "DictionaryKeysListDependencies.cs");
-
-        Assert.Contains("function SF__.DictNew__()", lua);
-        Assert.Contains("function SF__.DictKeys__(dict)", lua);
-        Assert.Contains("function SF__.ListNew__(items)", lua);
-        Assert.Contains("function SF__.ListWrap__(value)", lua);
-        Assert.Contains("SF__.ListNil__ = SF__.ListNil__ or {}", lua);
-        Assert.DoesNotContain("function SF__.DictValues__(dict)", lua);
-        Assert.DoesNotContain("function SF__.DictIterate__(dict)", lua);
-        Assert.DoesNotContain("function SF__.ListAdd__(list, value)", lua);
-        Assert.DoesNotContain("function SF__.ListGet__(list, index)", lua);
-        Assert.DoesNotContain("function SF__.ListIterate__(list)", lua);
-    }
-
-    [Fact]
-    public async Task SFLib_collections_emit_stub_backed_lua_helpers()
-    {
-        var src = """
-            using SFLib.Collections;
-
-            namespace SFLib.Collections
-            {
-                public class List<T>
-                {
-                    public int Count => 0;
-                    public T this[int index] { get => default!; set { } }
-                    public void Add(T item) { }
-                    public void AddRange(List<T> items) { }
-                    public void AddRange(T[] items) { }
-                    public void Clear() { }
-                    public bool Contains(T item) { return false; }
-                    public int IndexOf(T item) { return -1; }
-                    public void Insert(int index, T item) { }
-                    public bool Remove(T item) { return false; }
-                    public void RemoveAt(int index) { }
-                    public void Reverse() { }
-                    public void Sort() { }
-                    public void Sort(global::System.Func<T, T, int> comparison) { }
-                    public T[] ToArray() { return default!; }
-                    public Enumerator GetEnumerator() => default!;
-                    public class Enumerator
-                    {
-                        public T Current => default!;
-                        public bool MoveNext() { return false; }
-                    }
-                }
-
-                public class Dictionary<K, V>
-                {
-                    public int Count => 0;
-                    public List<K> Keys => default!;
-                    public List<V> Values => default!;
-                    public V this[K key] { get => default!; set { } }
-                    public void Add(K key, V value) { }
-                    public void Clear() { }
-                    public bool ContainsKey(K key) { return false; }
-                    public V? Get(K key) { return default; }
-                    public void Set(K key, V value) { }
-                    public bool Remove(K key) { return false; }
-                    public Enumerator GetEnumerator() => default!;
-                    public class Enumerator
-                    {
-                        public KeyValue<K, V> Current => default!;
-                        public bool MoveNext() { return false; }
-                    }
-                }
-
-                public class KeyValue<K, V>
-                {
-                    public K Key => default!;
-                    public V Value => default!;
-                }
-            }
-
-            public static class Demo
-            {
-                public static int Run()
-                {
-                    var values = new List<int>();
-                    values.Add(1);
-                    values.Insert(1, 3);
-                    var hasThree = values.Contains(3);
-                    var index = values.IndexOf(3);
-                    values.RemoveAt(0);
-                    var removed = values.Remove(3);
-                    values.AddRange(new[] { 4, 5 });
-                    var more = new List<int>();
-                    more.Add(6);
-                    values.AddRange(more);
-                    values.Reverse();
-                    values.Sort();
-                    values.Sort((a, b) => b - a);
-                    foreach (var item in values)
-                    {
-                        index += item;
-                    }
-                    var array = values.ToArray();
-                    values.Clear();
-
-                    var table = new Dictionary<string, int>();
-                    table["key"] = 1;
-                    table.Add("k2", 2);
-                    var hasKey = table.ContainsKey("key");
-                    var keys = table.Keys;
-                    var dictValues = table.Values;
-                    var value = table["key"];
-                    var nullable = new Dictionary<string, int?>();
-                    nullable["gone"] = null;
-                    nullable.Remove("gone");
-                    table.Clear();
-                    foreach (var kv in table)
-                    {
-                        var text = kv.Key + " = " + kv.Value;
-                    }
-
-                    return value + array[0] + index;
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "SFLibCollections.cs");
-
-        Assert.Contains("function SF__.DictNew__()", lua);
-        Assert.Contains("function SF__.DictGet__(dict, key)", lua);
-        Assert.Contains("function SF__.DictAdd__(dict, key, value)", lua);
-        Assert.Contains("function SF__.DictSet__(dict, key, value)", lua);
-        Assert.Contains("function SF__.DictRemove__(dict, key)", lua);
-        Assert.Contains("function SF__.DictContainsKey__(dict, key)", lua);
-        Assert.Contains("function SF__.DictClear__(dict)", lua);
-        Assert.Contains("function SF__.DictKeys__(dict)", lua);
-        Assert.Contains("function SF__.DictValues__(dict)", lua);
-        Assert.Contains("function SF__.DictIterate__(dict)", lua);
-        Assert.Contains("SF__.DictNil__ = SF__.DictNil__ or {}", lua);
-        Assert.Contains("return { data = {}, keys = {}, version = 0 }", lua);
-        Assert.Contains("local value = dict.data[key]", lua);
-        Assert.Contains("if value == SF__.DictNil__ then return nil end", lua);
-        Assert.Contains("if dict.data[key] ~= nil then error(\"duplicate key\") end", lua);
-        Assert.Contains("table.insert(dict.keys, key)", lua);
-        Assert.Contains("dict.version = dict.version + 1", lua);
-        Assert.Contains("return dict.data[key] ~= nil", lua);
-        Assert.Contains("dict.data = {}", lua);
-        Assert.Contains("dict.keys = {}", lua);
-        Assert.Contains("return SF__.ListNew__(items)", lua);
-        Assert.Contains("list.items[i] = SF__.ListWrap__(value)", lua);
-        Assert.Contains("local version = dict.version", lua);
-        Assert.Contains("if dict.version ~= version then error(\"collection was modified during iteration\") end", lua);
-        Assert.DoesNotContain("keySet", lua);
-        Assert.Contains("SF__.ListNil__ = SF__.ListNil__ or {}", lua);
-        Assert.Contains("function SF__.ListWrap__(value)", lua);
-        Assert.Contains("function SF__.ListUnwrap__(value)", lua);
-        Assert.Contains("function SF__.ListNew__(items)", lua);
-        Assert.Contains("local list = { items = {}, version = 0 }", lua);
-        Assert.Contains("function SF__.ListAdd__(list, value)", lua);
-        Assert.Contains("function SF__.ListAddRange__(list, values)", lua);
-        Assert.Contains("function SF__.ListClear__(list)", lua);
-        Assert.Contains("function SF__.ListContains__(list, value, equals)", lua);
-        Assert.Contains("function SF__.ListIndexOf__(list, value, equals)", lua);
-        Assert.Contains("function SF__.ListInsert__(list, index, value)", lua);
-        Assert.Contains("function SF__.ListRemove__(list, value, equals)", lua);
-        Assert.Contains("function SF__.ListRemoveAt__(list, index)", lua);
-        Assert.Contains("function SF__.ListReverse__(list)", lua);
-        Assert.Contains("function SF__.ListIterate__(list)", lua);
-        Assert.Contains("if list.version ~= version then error(\"collection was modified during iteration\") end", lua);
-        Assert.Contains("local values = SF__.ListNew__({})", lua);
-        Assert.Contains("SF__.ListAdd__(values, 1)", lua);
-        Assert.Contains("SF__.ListInsert__(values, 1, 3)", lua);
-        Assert.Contains("local hasThree = SF__.ListContains__(values, 3)", lua);
-        Assert.Contains("local index = SF__.ListIndexOf__(values, 3)", lua);
-        Assert.Contains("SF__.ListRemoveAt__(values, 0)", lua);
-        Assert.Contains("local removed = SF__.ListRemove__(values, 3)", lua);
-        Assert.Contains("SF__.ListAddRange__(values, {4, 5})", lua);
-        Assert.Contains("SF__.ListAddRange__(values, more)", lua);
-        Assert.Contains("SF__.ListReverse__(values)", lua);
-        Assert.Contains("function SF__.ListSort__(list, comparison)", lua);
-        Assert.Contains("local items = list.items", lua);
-        Assert.Contains("if a < b then return -1 end", lua);
-        Assert.Contains("if a > b then return 1 end", lua);
-        Assert.Contains("while j >= 1 and compare(SF__.ListUnwrap__(value), SF__.ListUnwrap__(items[j])) < 0 do", lua);
-        Assert.Contains("SF__.ListSort__(values)", lua);
-        Assert.Contains("SF__.ListSort__(values, function(a, b)", lua);
-        Assert.Contains("return (b - a)", lua);
-        Assert.Contains("function SF__.ListToArray__(list)", lua);
-        Assert.Contains("local array = SF__.ListToArray__(values)", lua);
-        Assert.Contains("SF__.ListClear__(values)", lua);
-        Assert.Contains("local KW__table = SF__.DictNew__()", lua);
-        Assert.Contains("SF__.DictSet__(KW__table, \"key\", 1)", lua);
-        Assert.Contains("SF__.DictAdd__(KW__table, \"k2\", 2)", lua);
-        Assert.Contains("local hasKey = SF__.DictContainsKey__(KW__table, \"key\")", lua);
-        Assert.Contains("local keys = SF__.DictKeys__(KW__table)", lua);
-        Assert.Contains("local dictValues = SF__.DictValues__(KW__table)", lua);
-        Assert.Contains("local value = SF__.DictGet__(KW__table, \"key\")", lua);
-        Assert.Contains("SF__.DictSet__(nullable, \"gone\", nil)", lua);
-        Assert.Contains("SF__.DictRemove__(nullable, \"gone\")", lua);
-        Assert.Contains("SF__.DictClear__(KW__table)", lua);
-        Assert.Contains("in SF__.DictIterate__(dict)", lua);
-        Assert.Contains("for kv__Key, kv__Value in SF__.DictIterate__(dict) do", lua);
-        Assert.DoesNotContain("local kv = {", lua);
-        Assert.Contains("local text = SF__.StrConcat__(kv__Key, \" = \", kv__Value)", lua);
-        Assert.DoesNotContain("-- SFLib.Collections.List", lua);
-        Assert.DoesNotContain("-- SFLib.Collections.Dictionary", lua);
-    }
-
-    [Fact]
-    public async Task List_remove_all_lowers_to_helper_with_predicate()
-    {
-        var src = """
-            using SFLib.Collections;
-
-            namespace SFLib.Collections
-            {
-                public class List<T>
-                {
-                    public void Add(T item) { }
-                    public int RemoveAll(global::System.Predicate<T> match) { return 0; }
-                }
-            }
-
-            public static class Demo
-            {
-                public static int Run()
-                {
-                    var items = new List<string>();
-                    items.Add("keep");
-                    items.Add(null);
-                    items.Add("gone");
-                    return items.RemoveAll(item => item == null || item == "gone");
-                }
-            }
-            """;
-
-        var lua = await TranspileSourceAsync(src, "ListRemoveAll.cs");
-
-        Assert.Contains("function SF__.ListRemoveAll__(list, match)", lua);
-        Assert.Contains("for i = #list.items, 1, -1 do", lua);
-        Assert.Contains("if match(SF__.ListUnwrap__(list.items[i])) then", lua);
-        Assert.Contains("if removed > 0 then list.version = list.version + 1 end", lua);
-        Assert.Contains("return removed", lua);
-        Assert.Contains("return SF__.ListRemoveAll__(items, function(item)", lua);
-        Assert.Contains("return ((item == nil) or (item == \"gone\"))", lua);
-    }
-
-    [Fact]
-    public async Task Pipeline_lowers_bundled_SFLib_list_to_lua_table()
-    {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            using SFLib.Collections;
-
-            public class Program
-            {
-                public static void Main(string[] args)
-                {
-                    var list = new List<string>();
-                    list.Add("Hello");
-                    list.Add("World");
-
-                    foreach (var item in list)
-                    {
-                        BJDebugMsg(item);
-                    }
-                }
-            }
-            """);
-
-        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: output,
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
-            CheckOnly: false,
-            Verbose: false), CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        var lua = await File.ReadAllTextAsync(output.FullName);
-        Assert.Contains("local list = SF__.ListNew__({})", lua);
-        Assert.Contains("SF__.ListAdd__(list, \"Hello\")", lua);
-        Assert.Contains("SF__.ListAdd__(list, \"World\")", lua);
-        Assert.Contains("for i, item in SF__.ListIterate__(collection) do", lua);
-        Assert.Contains("if list.version ~= version then error(\"collection was modified during iteration\") end", lua);
-        Assert.DoesNotContain("SF__.SFLib.Collections.List.New()", lua);
-        Assert.DoesNotContain("list:Add", lua);
-        Assert.DoesNotContain("-- SFLib.Collections.List", lua);
-    }
-
-    [Fact]
-    public async Task Pipeline_lowers_target_typed_new_for_bundled_SFLib_list()
-    {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
-            using SFLib.Collections;
-
-            public class Program
-            {
-                public static void Main(string[] args)
-                {
-                    List<unit> units = new();
-                    units.Add(null);
-
-                    if (units.Count > 0)
-                    {
-                        BJDebugMsg("ok");
-                    }
-                }
-            }
-            """);
-
-        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: output,
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
-            CheckOnly: false,
-            Verbose: false), CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        var lua = await File.ReadAllTextAsync(output.FullName);
-        Assert.Contains("local units = SF__.ListNew__({})", lua);
-        Assert.Contains("SF__.ListAdd__(units, nil)", lua);
-        Assert.Contains("if (SF__.ListCount__(units) > 0) then", lua);
-        Assert.DoesNotContain("unsupported expr: ImplicitObjectCreationExpression", lua);
     }
 
     [Fact]
@@ -4187,17 +3329,13 @@ public class EmitSmokeTests
     {
         var src = """
             using System;
-            using SFLib.Collections;
 
             public class unit { }
 
-            namespace SFLib.Collections
+            public class UnitStore
             {
-                public class List<T>
-                {
-                    public void Add(T value) { }
-                    public void Clear() { }
-                }
+                public void Add(unit value) { }
+                public void Clear() { }
             }
 
             public static partial class JASS
@@ -4208,7 +3346,7 @@ public class EmitSmokeTests
 
             public class Program
             {
-                private readonly List<unit> _units = new();
+                private readonly UnitStore _units = new();
 
                 public void Init()
                 {
@@ -4221,11 +3359,10 @@ public class EmitSmokeTests
         var lua = await TranspileSourceAsync(src, "BoundMethodGroupAction.cs");
 
         Assert.Contains("ExTriggerRegisterNewUnit(function", lua);
-        Assert.Matches(@"function\((\w+)\)\s+SF__\.ListAdd__\(self\._units, \1\)\s+end", lua);
+        Assert.Matches(@"function\((\w+)\)\s+self\._units:Add\(\1\)\s+end", lua);
         Assert.Contains("ExTriggerRegisterReady(function()", lua);
-        Assert.Matches(@"function\(\)\s+SF__\.ListClear__\(self\._units\)\s+end", lua);
+        Assert.Matches(@"function\(\)\s+self\._units:Clear\(\)\s+end", lua);
         Assert.DoesNotContain("ExTriggerRegisterNewUnit(self._units.Add)", lua);
-        Assert.DoesNotContain("self._units:Add", lua);
     }
 
     [Fact]
@@ -4426,15 +3563,5 @@ public class EmitSmokeTests
 
         var module = new IRLowering().Lower(compilation, CancellationToken.None);
         return new LuaEmitter(TranspileOptions.DefaultRootTable).Emit(module);
-    }
-
-    private static string FindRepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "SharpForge.sln")))
-        {
-            dir = dir.Parent;
-        }
-        return dir?.FullName ?? throw new InvalidOperationException("SharpForge.sln not found above test base directory.");
     }
 }

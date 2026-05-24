@@ -80,7 +80,7 @@ end
 
 ## yield return (iterator-style)
 
-Simple `yield return` sequences in a method are materialized into a `List<T>` at call time. The method returns a `List<T>` containing all yielded values.
+Simple `yield return` sequences in a method are materialized into an array at call time. The method returns an array containing all yielded values.
 
 ## Unsupported
 

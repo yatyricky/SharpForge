@@ -100,7 +100,7 @@ public class math : LuaObject
     /// The float value HUGE_VAL, a value larger than any other numeric value.
     /// In Lua, <c>math.huge</c> is used to represent positive infinity.
     /// </summary>
-    public static readonly float huge => throw null;
+    public static float huge => throw null;
 
     /// <summary>
     /// Returns the logarithm of x in the given base.
@@ -130,7 +130,7 @@ public class math : LuaObject
     /// An integer with the maximum value for an integer.
     /// In Lua 5.3, this is <c>2^63 - 1</c> (9223372036854775807 for 64-bit integers).
     /// </summary>
-    public static readonly int maxinteger => throw null;
+    public static int maxinteger => throw null;
 
     /// <summary>
     /// Returns the argument with the minimum value, according to the Lua operator &lt;.
@@ -144,7 +144,7 @@ public class math : LuaObject
     /// An integer with the minimum value for an integer.
     /// In Lua 5.3, this is <c>-2^63</c> (-9223372036854775808 for 64-bit integers).
     /// </summary>
-    public static readonly int mininteger => throw null;
+    public static int mininteger => throw null;
 
     /// <summary>
     /// Returns the integral part of x and the fractional part of x.
@@ -158,7 +158,7 @@ public class math : LuaObject
     /// <summary>
     /// The value of π (approximately 3.14159265358979).
     /// </summary>
-    public static readonly float pi => throw null;
+    public static float pi => throw null;
 
     /// <summary>
     /// Converts the angle x from degrees to radians.

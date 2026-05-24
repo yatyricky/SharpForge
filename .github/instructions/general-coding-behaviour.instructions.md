@@ -14,7 +14,7 @@ When adding or changing user-visible behavior, update the appropriate documentat
 
 - CLI contracts and examples belong in `docs/cli.md`.
 - GUI behavior belongs in `docs/gui.md`.
-- Generated Lua shape, lowering behavior, runtime helpers, and transpiler feature coverage belong in `docs/generated-lua.md` or a focused feature doc such as `docs/collections.md`, `docs/struct.md`, or `docs/lua-interop.md`.
+- Generated Lua shape, lowering behavior, runtime helpers, and transpiler feature coverage belong in `docs/generated-lua.md` or a focused feature doc such as `docs/struct.md` or `docs/lua-interop.md`.
 - Add or update `README.md` links when a new doc page or major feature needs to be discoverable from the project overview.
 
 Do not leave feature knowledge only in tests, commit messages, chat, or local plans.

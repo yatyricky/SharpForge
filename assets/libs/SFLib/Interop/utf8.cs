@@ -95,5 +95,5 @@ public class utf8 : LuaObject
     /// The pattern (a string, not a function) "[\0-\x7F\xC2-\xF4][\x80-\xBF]*",
     /// which matches exactly one UTF-8 byte sequence, assuming that the subject is a valid UTF-8 string.
     /// </summary>
-    public static readonly string charpattern => throw null;
+    public static string charpattern => throw null;
 }

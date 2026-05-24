@@ -64,38 +64,6 @@ for _, item in ipairs(items) do
 end
 ```
 
-## foreach over List\<T\>
-
-```csharp
-foreach (var item in list)
-{
-    Use(item);
-}
-```
-
-```lua
-for i = 1, SF__.ListCount__(list) do
-    local item = SF__.ListGet__(list, i)
-    Use(item)
-end
-```
-
-## foreach over Dictionary\<K,V\>
-
-```csharp
-foreach (var kv in dict)
-{
-    Use(kv.Key, kv.Value);
-}
-```
-
-```lua
-for _, kv__ in ipairs(SF__.DictKeys__(dict)) do
-    local kv__key = kv__
-    local kv__val = SF__.DictGet__(dict, kv__)
-    Use(kv__key, kv__val)
-end
-```
 
 ## switch
 

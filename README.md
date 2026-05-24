@@ -10,7 +10,7 @@ SharpForge is a C# scripting toolchain for Warcraft III: Reforged map developmen
 - **Integrate with your current toolchain.** World Editor still owns terrain, object data, and placed units. SharpForge fits beside your editor, source tree, Lua modules, and map build process.
 - **Do not reinvent the JASS API.** SharpForge does not translate platform calls into a fantasy object model. `KillUnit(unit)` stays `KillUnit(unit)`, not `unit.Kill()`.
 - **Migrate incrementally.** Existing Lua modules keep working. New C# code can call into Lua, Lua can call generated output, and projects can move one subsystem at a time.
-- **Emit performant Lua.** Generated code is direct Lua with a small helper surface. The bundled C# library is intentionally minimal: usable `List<T>` and `Dictionary<K,V>` shapes, not a full clone of every .NET collection interface.
+- **Emit performant Lua.** Generated code is direct Lua with a small helper surface. Collections like `List<T>` and `Dictionary<K,V>` are transpiled as regular classes via an external C# library over the Lua API.
 - **Keep the runtime small.** SharpForge provides only the helpers needed by emitted code and interop stubs. It does not ship a broad standard-library translation layer.
 
 ## Discussion
@@ -38,12 +38,12 @@ Complete documentation for every supported language construct and how it lowers 
 - [Arrays](docs/api/arrays.md) — creation, element access, length
 - [Classes](docs/api/classes.md) — static/instance, constructors, fields, auto-properties, events
 - [Inheritance](docs/api/inheritance.md) — single inheritance, virtual/override, base(), interfaces
-- [Structs](docs/api/structs.md) — field flattening, multi-return, SoA List
+- [Structs](docs/api/structs.md) — field flattening, multi-return
 - [Enums](docs/api/enums.md) — enum lowering, Flags diagnostic
 - [Exceptions](docs/api/exceptions.md) — try/catch/finally, throw
 - [Delegates](docs/api/delegates.md) — lambdas, Func\<\>, operator overloads
 - [Async](docs/api/async.md) — coroutines, Task.Delay, CorRun__/CorWait__
-- [Collections](docs/api/collections.md) — List\<T\> and Dictionary\<K,V\>
+- Collections — `List<T>` and `Dictionary<K,V>` are implemented as an external library
 - [Regex](docs/api/regex.md) — Regex.IsMatch subset
 - [Lua Interop](docs/api/lua-interop.md) — LuaInterop, LuaObject, [Lua(...)] attributes
 - [Casting](docs/api/casting.md) — explicit cast erasure, is/as

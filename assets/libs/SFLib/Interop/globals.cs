@@ -226,10 +226,10 @@ public static class globals
     /// <summary>
     /// The global table (global variables). _G._G = _G.
     /// </summary>
-    public static readonly LuaObject _G => throw null;
+    public static LuaObject _G => throw null;
 
     /// <summary>
     /// A string containing the current interpreter version (e.g., "Lua 5.3").
     /// </summary>
-    public static readonly string _VERSION => throw null;
+    public static string _VERSION => throw null;
 }

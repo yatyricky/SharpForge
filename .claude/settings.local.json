@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dotnet build:*)"
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(find assets/libs/SFLib -type f -name *.cs)",
+      "Bash(find assets/libs -type f -name *.cs)",
+      "Bash(node:*)"
     ]
   }
 }

@@ -35,7 +35,7 @@ When lowering optional parameters, prefer callee-side nil guards (`if arg == nil
 
 When lowering overloaded methods, constructors, or operators, normalize them to unique Lua names at the semantic boundary using the same signature function for declarations and call sites; count-only suffixes are insufficient for same-arity overloads.
 
-When generic lowering needs hidden runtime type arguments, add them only on ordinary SharpForge method call emission after special API lowerings have consumed source-shaped arguments; do not leak hidden arguments into Lua interop, Regex, collection, or other purpose-built API lowerings.
+When generic lowering needs hidden runtime type arguments, add them only on ordinary SharpForge method call emission after special API lowerings have consumed source-shaped arguments; do not leak hidden arguments into Lua interop, Regex, or other purpose-built API lowerings.
 
 When resolving type syntax for runtime checks such as `is`, `as`, or patterns, fall back from `SemanticModel.GetTypeInfo(...).Type` to `GetSymbolInfo(...).Symbol as ITypeSymbol` so generic type parameters like `T` lower to the hidden runtime type parameter instead of becoming unsupported identifier expressions.
 

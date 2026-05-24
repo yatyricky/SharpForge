@@ -126,10 +126,6 @@ Instance methods on a struct receive the flattened fields as individual paramete
 
 Computed instance properties on a struct use the same flattened receiver shape as instance methods. A property read such as `(left - right).Magnitude` calls the generated getter with the struct field values instead of using Lua `:` syntax on a table receiver.
 
-## SoA List\<Struct\>
-
-`List<T>` where `T` is a struct uses a Structure-of-Arrays (SoA) layout: one parallel array per field. Element access and iteration unpack the per-field arrays.
-
 ## Unsupported
 
 Nested structs (a struct containing another struct as a field), `ref struct`, and passing structs to non-SharpForge code produce a transpiler error.

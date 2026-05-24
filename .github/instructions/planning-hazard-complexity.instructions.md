@@ -7,11 +7,11 @@ applyTo: "src/Transpiler/**,tests/Transpiler.Tests/**,docs/**,*.md"
 
 Every new feature can regress existing ones. Before implementing, check intersections in order:
 
-1. **Representation**: struct flattening, `List<T>`, `Dictionary<K,V>`, arrays, `foreach`
+1. **Representation**: struct flattening, arrays, `foreach`
 2. **Type system**: overloads, virtual dispatch, inheritance, interfaces, nil/null/defaults
 3. **Interop**: JASS handles, `LuaObject`, raw tables, functions, userdata
 4. **Surface**: unsupported intersections → diagnostics, not best-effort Lua
 
 Prefer separate representations for separate semantics. Keep helpers small and purpose-built. Add explicit diagnostics for unsupported intersections.
 
-Tests must cover pairwise intersections with structs, collections, overloads, nil/null, and Lua/JASS interop — not only isolated happy paths.
+Tests must cover pairwise intersections with structs, overloads, nil/null, and Lua/JASS interop — not only isolated happy paths.
