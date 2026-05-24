@@ -37,11 +37,11 @@ public static class LuaInterop
 
     public static T Require<T>(string moduleName) => default!;
 
-    public static T Get<T>(LuaObject target, string name) => default!;
+    public static T Get<T>(LuaObject target, object key) => default!;
 
     public static T GetGlobal<T>(string name) => default!;
 
-    public static void Set(LuaObject target, string name, object? value)
+    public static void Set(LuaObject target, object key, object? value)
     {
     }
 
