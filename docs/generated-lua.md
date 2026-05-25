@@ -2,6 +2,21 @@
 
 This page describes the Lua shape produced by `sf-transpile` and the small runtime helpers it may emit.
 
+For lower-level design guidance behind these shapes, see [Transpiler Lowering Design Notes](lowering-design-notes.md).
+
+## Transpiler Architecture
+
+SharpForge treats C# input as a layered authoring surface that gets progressively simplified before Lua emission:
+
+| Layer | Role | Examples |
+| --- | --- | --- |
+| 4. User code | Map and gameplay code written by project authors. | Game systems, triggers, abilities, project-specific helpers |
+| 3. Library surface | Reusable C#-shaped APIs that user code can reference without turning SharpForge into a .NET compatibility layer. | `List<T>`, `Dictionary<K,V>`, `Vector3`, `SpellEvent`, interop stubs |
+| 2. Normalization | Broad C# syntax conveniences are rewritten into simpler, Lua-oriented forms before final Lua emission. | Method groups become lambdas, `async`/`await` becomes coroutine flow, `action?.Invoke()` becomes an explicit nil-guarded call |
+| 1. Lua emission | The final lowered representation is emitted as direct Lua with the smallest practical helper surface. | Root-table functions, tables, nil guards, coroutine helpers only when needed |
+
+The intent is that the final Lua emitter stays small and predictable. Authoring ergonomics belong in user code, reusable concepts belong in libraries, and broad language features should usually be normalized before the last Lua-lowering layer sees them.
+
 ## Root Table Contract
 
 Every transpiled namespace and type lives under one configurable root table. The default is `SF__`.
@@ -45,13 +60,13 @@ Common C# constructs lower to direct Lua patterns:
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
-| `List<T>`, `Dictionary<K,V>` | transpiled as regular classes (see external library) |
+| `List<T>`, `Dictionary<K,V>` | library-layer APIs backed by explicit Lua/interoperability behavior |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.
 
 ## Minimal Runtime Bias
 
-SharpForge emits only helpers needed by the lowered code. Collections like `List<T>` and `Dictionary<K,V>` are implemented as regular C# classes that get transpiled like any user code, backed by an external library over the Lua API.
+SharpForge emits only helpers needed by the lowered code. Library APIs such as `List<T>` and `Dictionary<K,V>` belong above the final Lua emission layer, backed by explicit library or interop code rather than a broad translated runtime.
 
 That bias keeps output small and predictable: use platform functions directly, model only what the generated Lua needs, and avoid a broad compatibility runtime.
 
