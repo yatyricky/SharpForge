@@ -39,4 +39,3 @@ public sealed record IRCoalesceAssignment(IRExpr Target, IRExpr Value) : IRExpr;
 public sealed record IRIs(IRExpr Value, IRExpr Type) : IRExpr;
 public sealed record IRAs(IRExpr Value, IRExpr Type) : IRExpr;
 public sealed record IRTableLiteralNew(IReadOnlyList<(string Key, IRExpr Value)> Fields) : IRExpr;
-public sealed record IRStructValueTable(IRExpr Value, IReadOnlyList<string> Fields) : IRExpr;

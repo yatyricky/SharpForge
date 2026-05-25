@@ -4477,9 +4477,6 @@ public sealed class IRLowering
                     CollectTypeReferences(value, dependencies);
                 }
                 break;
-            case IRStructValueTable structValueTable:
-                CollectTypeReferences(structValueTable.Value, dependencies);
-                break;
         }
     }
 
