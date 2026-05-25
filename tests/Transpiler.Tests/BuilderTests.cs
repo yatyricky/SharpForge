@@ -122,7 +122,8 @@ public sealed class BuilderTests
         Assert.Contains("print('main')", result);
         Assert.Contains("require(\"Main\")", result);
         Assert.Contains("print('editor')", result);
-        Assert.Contains("local s, m = pcall(SF__Bundle)", result);
+        Assert.Contains("function SF__BundleError__(m)", result);
+        Assert.Contains("local s, m = xpcall(SF__Bundle, SF__BundleError__)", result);
         Assert.True(result.IndexOf("require(\"Main\")", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
         Assert.False(File.Exists(Path.Combine(target.FullName, "bundle.lua")));
     }
@@ -184,7 +185,7 @@ public sealed class BuilderTests
         Assert.Contains("print('main')", result);
         Assert.Contains("require(\"Main\")", result);
         Assert.Contains("print('editor')", result);
-        Assert.Contains("local s, m = pcall(SF__Bundle)", result);
+        Assert.Contains("local s, m = xpcall(SF__Bundle, SF__BundleError__)", result);
         Assert.True(result.IndexOf("require(\"Main\")", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
     }
 
@@ -242,12 +243,12 @@ public sealed class BuilderTests
         Assert.Contains("print('editor')", result);
         Assert.Contains("print('second')", result);
         Assert.Contains("function SF__Bundle()", result);
-        Assert.Contains("local s, m = pcall(SF__Bundle)", result);
+        Assert.Contains("local s, m = xpcall(SF__Bundle, SF__BundleError__)", result);
         Assert.Matches(@"--sf-builder:\d{9}/[0-9a-f]{16}", result);
         Assert.DoesNotContain("print('first')", result);
         Assert.True(result.IndexOf("function SF__Bundle()", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
-        Assert.True(result.IndexOf("print('editor')", StringComparison.Ordinal) < result.IndexOf("pcall(SF__Bundle)", StringComparison.Ordinal));
-        Assert.True(result.IndexOf("pcall(SF__Bundle)", StringComparison.Ordinal) < result.LastIndexOf("end", StringComparison.Ordinal));
+        Assert.True(result.IndexOf("print('editor')", StringComparison.Ordinal) < result.IndexOf("xpcall(SF__Bundle", StringComparison.Ordinal));
+        Assert.True(result.IndexOf("xpcall(SF__Bundle", StringComparison.Ordinal) < result.LastIndexOf("end", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -273,7 +274,7 @@ public sealed class BuilderTests
         Assert.DoesNotContain(new string('界', 64), result);
         Assert.Equal(2, CountOccurrences(result, "--sf-builder:"));
         Assert.Equal(1, CountOccurrences(result, "function SF__Bundle()"));
-        Assert.Equal(1, CountOccurrences(result, "pcall(SF__Bundle)"));
+        Assert.Equal(1, CountOccurrences(result, "xpcall(SF__Bundle"));
     }
 
     [Fact]
@@ -316,7 +317,8 @@ public sealed class BuilderTests
         Assert.DoesNotContain("print('old')", result);
         Assert.Equal(2, CountOccurrences(result, "--sf-builder:"));
         Assert.Equal(1, CountOccurrences(result, "function SF__Bundle()"));
-        Assert.Equal(1, CountOccurrences(result, "pcall(SF__Bundle)"));
+        Assert.Equal(1, CountOccurrences(result, "xpcall(SF__Bundle"));
+        Assert.DoesNotContain("pcall(SF__Bundle)", result);
     }
 
     private static int CountOccurrences(string text, string value)

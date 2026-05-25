@@ -32,7 +32,7 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 
 Each lowering feature is documented by its test file in `tests/Transpiler.Tests/`. Tests contain C# source input and expected Lua output, serving as the language specification:
 
-`TypesTests`, `OperatorsTests`, `StringsTests`, `ControlFlowTests`, `ClassesTests`, `InheritanceTests`, `StructsTests`, `EnumsTests`, `ExceptionsTests`, `DelegatesTests`, `CastingTests`, `AsyncTests`, `RegexTests`, `ArraysTests`, `ConditionalTests`, `LuaInteropTests`, `DiagnosticsTests`, `PipelineTests`
+`TypesTests`, `OperatorsTests`, `StringsTests`, `ControlFlowTests`, `ClassesTests`, `InheritanceTests`, `StructsTests`, `EnumsTests`, `ExceptionsTests`, `DelegatesTests`, `CastingTests`, `AsyncTests`, `RegexTests`, `ArraysTests`, `ConditionalTests`, `LuaInteropTests`, `PipelineTests`
 
 ## Repository Layout
 

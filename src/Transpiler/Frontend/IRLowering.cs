@@ -29,18 +29,7 @@ public sealed class IRLowering
     private IReadOnlyDictionary<string, string>? _currentStructSelfFields;
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
-    private DebuggerLoweringContext? _debuggerContext;
     private IAssemblySymbol? _compilationAssembly;
-
-    private sealed record DebuggerValue(string Label, string LuaName, int ScopeDepth);
-
-    private sealed class DebuggerLoweringContext(string methodDisplayName)
-    {
-        public string MethodDisplayName { get; } = methodDisplayName;
-        public int Step { get; set; } = 1;
-        public int ScopeDepth { get; set; }
-        public List<DebuggerValue> Values { get; } = new();
-    }
 
     public IRLowering(
         IEnumerable<string>? ignoredClasses = null,
@@ -75,8 +64,6 @@ public sealed class IRLowering
         _currentStructSelfFields = null;
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
-        _debuggerContext = null;
-
         var compilationUnits = new List<(CompilationUnitSyntax Root, SemanticModel Model)>();
 
         foreach (var tree in compilation.SyntaxTrees)
@@ -647,8 +634,6 @@ public sealed class IRLowering
         var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
         var isStructInstanceMethod = owner.TypeKind == TypeKind.Struct && !isStatic;
         var symbol = model.GetDeclaredSymbol(m, ct);
-        var previousDebuggerContext = _debuggerContext;
-        var hasDebugger = symbol is not null && HasDebuggerAttribute(symbol);
         var fn = new IRFunction
         {
             Name = m.Identifier.ValueText,
@@ -672,14 +657,8 @@ public sealed class IRLowering
 
         try
         {
-            if (hasDebugger)
-            {
-                _debuggerContext = new DebuggerLoweringContext($"{owner.Name}.{m.Identifier.ValueText}");
-            }
-
             AddLoweredTypeParameters(fn, m.TypeParameterList?.Parameters ?? default, model, ct);
             AddLoweredParameters(fn, m.ParameterList.Parameters, model, ct);
-            AddDebuggerParameterValues(m.ParameterList.Parameters, model, ct);
 
             if (m.DescendantNodes().OfType<YieldStatementSyntax>().Any())
             {
@@ -703,8 +682,6 @@ public sealed class IRLowering
         }
         finally
         {
-            _debuggerContext = previousDebuggerContext;
-
             if (isStructInstanceMethod)
             {
                 _currentStructSelfType = previousStructSelfType;
@@ -1060,104 +1037,8 @@ public sealed class IRLowering
                 target.Statements.Add(new IRRawComment(comment));
             }
 
-            AddDebuggerLocalValue(s, model);
-            if (_debuggerContext is not null && i < statements.Length - 1)
-            {
-                target.Statements.Add(CreateDebuggerProbe());
-            }
         }
     }
-
-    private void AddDebuggerParameterValues(IEnumerable<ParameterSyntax> parameters, SemanticModel model, CancellationToken ct)
-    {
-        if (_debuggerContext is null)
-        {
-            return;
-        }
-
-        foreach (var parameter in parameters)
-        {
-            var symbol = model.GetDeclaredSymbol(parameter, ct);
-            if (symbol is null || !IsDebuggerLoggableType(symbol.Type) || !_luaNames.TryGetValue(symbol, out var luaName))
-            {
-                continue;
-            }
-
-            AddDebuggerValue(parameter.Identifier.ValueText, luaName);
-        }
-    }
-
-    private void AddDebuggerLocalValue(StatementSyntax statement, SemanticModel model)
-    {
-        if (_debuggerContext is null || statement is not LocalDeclarationStatementSyntax localDeclaration)
-        {
-            return;
-        }
-
-        var variable = localDeclaration.Declaration.Variables.FirstOrDefault();
-        if (variable is null || model.GetDeclaredSymbol(variable) is not ILocalSymbol symbol)
-        {
-            return;
-        }
-
-        if (IsDebuggerLoggableType(symbol.Type) && _luaNames.TryGetValue(symbol, out var luaName))
-        {
-            AddDebuggerValue(variable.Identifier.ValueText, luaName);
-        }
-    }
-
-    private void AddDebuggerValue(string label, string luaName)
-    {
-        if (_debuggerContext is null || _debuggerContext.Values.Any(value => value.LuaName == luaName))
-        {
-            return;
-        }
-
-        _debuggerContext.Values.Add(new DebuggerValue(label, luaName, _debuggerContext.ScopeDepth));
-    }
-
-    private IRStmt CreateDebuggerProbe()
-    {
-        var context = _debuggerContext ?? throw new InvalidOperationException("Debugger probe requested outside a debugger context.");
-        var prefix = $"{{{context.MethodDisplayName} step {context.Step++}}}";
-        IRExpr message;
-        if (context.Values.Count == 0)
-        {
-            message = new IRLiteral(prefix, IRLiteralKind.String);
-        }
-        else
-        {
-            var parts = new List<IRExpr> { new IRLiteral(prefix + " {", IRLiteralKind.String) };
-            for (var i = 0; i < context.Values.Count; i++)
-            {
-                var value = context.Values[i];
-                parts.Add(new IRLiteral((i == 0 ? string.Empty : " ") + value.Label + "=", IRLiteralKind.String));
-                parts.Add(new IRIdentifier(value.LuaName));
-            }
-            parts.Add(new IRLiteral("}", IRLiteralKind.String));
-            message = new IRStringConcat(parts);
-        }
-
-        return new IRExprStmt(new IRInvocation(new IRIdentifier("BJDebugMsg"), new[] { message }));
-    }
-
-    private static bool IsDebuggerLoggableType(ITypeSymbol? type)
-        => type is not null
-           && (type.TypeKind == TypeKind.Enum
-               || type.SpecialType is SpecialType.System_Boolean
-                   or SpecialType.System_Char
-                   or SpecialType.System_String
-                   or SpecialType.System_SByte
-                   or SpecialType.System_Byte
-                   or SpecialType.System_Int16
-                   or SpecialType.System_UInt16
-                   or SpecialType.System_Int32
-                   or SpecialType.System_UInt32
-                   or SpecialType.System_Int64
-                   or SpecialType.System_UInt64
-                   or SpecialType.System_Single
-                   or SpecialType.System_Double
-                   or SpecialType.System_Decimal);
 
     private IRStmt LowerStatement(StatementSyntax s, SemanticModel model, CancellationToken ct)
     {
@@ -1430,7 +1311,6 @@ public sealed class IRLowering
     private void LowerBlock(BlockSyntax block, IRBlock target, SemanticModel model, CancellationToken ct)
     {
         var pushedLuaModuleBlock = TryPushLuaModuleBlock(target);
-        var debuggerScope = PushDebuggerScope();
         try
         {
             LowerStatements(block.Statements, target, model, ct);
@@ -1438,7 +1318,6 @@ public sealed class IRLowering
         }
         finally
         {
-            PopDebuggerScope(debuggerScope);
             PopLuaModuleBlock(pushedLuaModuleBlock);
         }
     }
@@ -1446,7 +1325,6 @@ public sealed class IRLowering
     private void LowerBlock(StatementSyntax statement, IRBlock target, SemanticModel model, CancellationToken ct)
     {
         var pushedLuaModuleBlock = TryPushLuaModuleBlock(target);
-        var debuggerScope = PushDebuggerScope();
         try
         {
             if (statement is BlockSyntax block)
@@ -1460,31 +1338,8 @@ public sealed class IRLowering
         }
         finally
         {
-            PopDebuggerScope(debuggerScope);
             PopLuaModuleBlock(pushedLuaModuleBlock);
         }
-    }
-
-    private int? PushDebuggerScope()
-    {
-        if (_debuggerContext is null)
-        {
-            return null;
-        }
-
-        _debuggerContext.ScopeDepth++;
-        return _debuggerContext.ScopeDepth;
-    }
-
-    private void PopDebuggerScope(int? scopeDepth)
-    {
-        if (_debuggerContext is null || scopeDepth is null)
-        {
-            return;
-        }
-
-        _debuggerContext.Values.RemoveAll(value => value.ScopeDepth >= scopeDepth.Value);
-        _debuggerContext.ScopeDepth = scopeDepth.Value - 1;
     }
 
     private bool TryPushLuaModuleBlock(IRBlock block)
@@ -3685,12 +3540,8 @@ public sealed class IRLowering
     private static bool IsSFLibInteropNamespace(INamespaceSymbol ns)
         => IsSFLibInteropNamespaceName(ns.ToDisplayString());
 
-    private static bool IsSFLibDiagnosticsNamespace(INamespaceSymbol ns)
-        => IsSFLibDiagnosticsNamespaceName(ns.ToDisplayString());
-
     private static bool IsSFLibNamespaceName(string name)
         => name == "SFLib.Async"
-           || name == "SFLib.Diagnostics"
            || name == "SFLib.Interop";
 
     private static bool IsSFLibAsyncNamespaceName(string name)
@@ -3698,9 +3549,6 @@ public sealed class IRLowering
 
     private static bool IsSFLibInteropNamespaceName(string name)
         => name == "SFLib.Interop";
-
-    private static bool IsSFLibDiagnosticsNamespaceName(string name)
-        => name == "SFLib.Diagnostics";
 
     private bool IsInLibraryFolder(SyntaxTree tree)
     {
@@ -4231,20 +4079,6 @@ public sealed class IRLowering
                 }
             }
         }
-        return false;
-    }
-
-    private static bool HasDebuggerAttribute(IMethodSymbol symbol)
-    {
-        foreach (var attribute in symbol.GetAttributes())
-        {
-            if (attribute.AttributeClass is { Name: "DebuggerAttribute", ContainingNamespace: { } ns }
-                && IsSFLibDiagnosticsNamespace(ns))
-            {
-                return true;
-            }
-        }
-
         return false;
     }
 

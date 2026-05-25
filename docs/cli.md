@@ -89,7 +89,7 @@ Output behavior:
 - `--output <war3map.lua>`: injects that Lua file directly.
 - Other existing file targets are rejected with exit code `2`.
 
-Map injection wraps the bundle in `function SF__Bundle()` and splices a guarded `pcall(SF__Bundle)` into `function main()`. Previous SharpForge bundle blocks are replaced using `--sf-builder:<length>/<checksum>` markers.
+Map injection wraps the bundle in `function SF__Bundle()` and splices a guarded `xpcall(SF__Bundle, SF__BundleError__)` into `function main()`. On failure, the injected error handler prints the traceback, sends it to `BJDebugMsg` when available, and rethrows it. Previous SharpForge bundle blocks are replaced using `--sf-builder:<length>/<checksum>` markers.
 
 ## `sf-jassgen`
 

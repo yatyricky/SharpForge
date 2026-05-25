@@ -64,8 +64,8 @@ public sealed class MapInjector
         var wrapper = WrapBundle(bundle, newline);
 
         // Clean file, re-injection, or migration from lua-bundler. Walk lines
-        // and splice exactly one pcall(SF__Bundle) before main()'s closing
-        // `end`, dropping any generated pcall blocks already present.
+        // and splice exactly one guarded SF__Bundle call before main()'s
+        // closing `end`, dropping any generated guard blocks already present.
         var modified = ProcessMainFunction(cleaned, removeLegacyPcall: hadLegacyWrapper, newline);
         return wrapper + modified;
     }
@@ -105,6 +105,16 @@ public sealed class MapInjector
                 }
             }
 
+            if (insideMain && IsSharpForgeXpcallStart(line))
+            {
+                var skipped = TrySkipXpcallBlock(lines, i);
+                if (skipped > 0)
+                {
+                    i += skipped;
+                    continue;
+                }
+            }
+
             if (insideMain && removeLegacyPcall && IsLegacyPcallStart(line))
             {
                 var skipped = TrySkipPcallBlock(lines, i);
@@ -117,9 +127,9 @@ public sealed class MapInjector
 
             if (insideMain && line == "end")
             {
-                sb.Append("    local s, m = pcall(SF__Bundle)").Append(newline);
+                sb.Append("    local s, m = xpcall(SF__Bundle, SF__BundleError__)").Append(newline);
                 sb.Append("    if not s then").Append(newline);
-                sb.Append("        print(m)").Append(newline);
+                sb.Append("        error(m)").Append(newline);
                 sb.Append("    end").Append(newline);
                 insideMain = false;
                 AppendRaw(sb, raw, isLast);
@@ -159,6 +169,9 @@ public sealed class MapInjector
     private static bool IsSharpForgePcallStart(string line)
         => Regex.IsMatch(line, @"^\s*local\s+s\s*,\s*m\s*=\s*pcall\(SF__Bundle\)\s*$", RegexOptions.CultureInvariant);
 
+    private static bool IsSharpForgeXpcallStart(string line)
+        => Regex.IsMatch(line, @"^\s*local\s+s\s*,\s*m\s*=\s*xpcall\(SF__Bundle\s*,\s*SF__BundleError__\)\s*$", RegexOptions.CultureInvariant);
+
     private static int TrySkipPcallBlock(string[] lines, int start)
     {
         // Block: local s, m = pcall(...) / if not s then / print(m) / end
@@ -169,6 +182,20 @@ public sealed class MapInjector
 
         if (!Regex.IsMatch(lines[start + 1].TrimEnd('\r'), @"^\s*if\s+not\s+s\s+then\s*$", RegexOptions.CultureInvariant)) return 0;
         if (!Regex.IsMatch(lines[start + 2].TrimEnd('\r'), @"^\s*print\(m\)\s*$", RegexOptions.CultureInvariant)) return 0;
+        if (!Regex.IsMatch(lines[start + 3].TrimEnd('\r'), @"^\s*end\s*$", RegexOptions.CultureInvariant)) return 0;
+        return 4;
+    }
+
+    private static int TrySkipXpcallBlock(string[] lines, int start)
+    {
+        // Block: local s, m = xpcall(...) / if not s then / error(m) / end
+        if (start + 3 >= lines.Length)
+        {
+            return 0;
+        }
+
+        if (!Regex.IsMatch(lines[start + 1].TrimEnd('\r'), @"^\s*if\s+not\s+s\s+then\s*$", RegexOptions.CultureInvariant)) return 0;
+        if (!Regex.IsMatch(lines[start + 2].TrimEnd('\r'), @"^\s*error\(m\)\s*$", RegexOptions.CultureInvariant)) return 0;
         if (!Regex.IsMatch(lines[start + 3].TrimEnd('\r'), @"^\s*end\s*$", RegexOptions.CultureInvariant)) return 0;
         return 4;
     }
@@ -467,7 +494,18 @@ public sealed class MapInjector
 
     internal static string WrapBundle(string bundle, string newline)
     {
-        var body = $"function SF__Bundle(){newline}{bundle.TrimEnd()}{newline}end";
+        var body = string.Join(newline,
+            "function SF__BundleError__(m)",
+            "    local message = tostring(m)",
+            "    if debug ~= nil and debug.traceback ~= nil then",
+            "        message = debug.traceback(message, 2)",
+            "    end",
+            "    print(message)",
+            "    if BJDebugMsg ~= nil then BJDebugMsg(message) end",
+            "    return message",
+            "end",
+            string.Empty,
+            $"function SF__Bundle(){newline}{bundle.TrimEnd()}{newline}end");
         var checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bundle))).ToLowerInvariant()[..ChecksumChars];
         var placeholderTag = new string('0', LengthDigits) + "/" + checksum;
         var placeholder = $"{MarkerPrefix}{placeholderTag}{newline}{body}{newline}{MarkerPrefix}{placeholderTag}{newline}";
