@@ -57,12 +57,18 @@ Common C# constructs lower to direct Lua patterns:
 | Static field initializer | `SF__.Type.Field = ...` |
 | `const` field | static type-table field (`SF__.Type.Field = ...`) |
 | String interpolation | nil-safe `SF__.StrConcat__(...)` calls; supported format clauses use `string.format(...)` |
-| `try` / `catch` / `finally` | Lua `pcall` scaffolding |
+| `try` / `catch` / `finally` | Lua `pcall` scaffolding with typed SharpForge exception headers |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
 | `List<T>`, `Dictionary<K,V>` | library-layer APIs backed by explicit Lua/interoperability behavior |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.
+
+## Exceptions
+
+SharpForge exceptions are represented as Lua error strings. The first 13 characters are a compile-time type header in the form `SF__E########`, where the hash-like suffix is derived from the C# exception type symbol. User-defined classes that inherit from `System.Exception` receive their own headers.
+
+`throw new SomeException("boom")` lowers to an `error(...)` call whose message begins with that header. `catch` clauses compare the header, so multiple catches and catches of user-defined base exception types can dispatch without constructing a .NET exception object at runtime. A `catch (Exception)` clause catches any SharpForge exception header; unmatched Lua errors are rethrown after `finally` runs.
 
 ## Minimal Runtime Bias
 

@@ -878,22 +878,29 @@ public sealed class LuaEmitter
         EmitBlock(t.Try);
         _indent--;
         WriteLine("end)");
+        WriteLine("local __sf_handled = false");
 
-        if (t.Catch is not null)
+        if (t.Catches.Count > 0)
         {
             WriteLine("if not __sf_ok then");
             _indent++;
-            if (!string.IsNullOrEmpty(t.CatchVariable))
+            WriteLine("local __sf_err_msg = tostring(__sf_err)");
+            for (var i = 0; i < t.Catches.Count; i++)
             {
-                WriteLine($"local {t.CatchVariable} = __sf_err");
+                var catchClause = t.Catches[i];
+                WriteLine($"{(i == 0 ? "if" : "elseif")} {FormatCatchCondition(catchClause)} then");
+                _indent++;
+                WriteLine("__sf_handled = true");
+                if (!string.IsNullOrEmpty(catchClause.Variable))
+                {
+                    WriteLine($"local {catchClause.Variable} = __sf_err_msg");
+                }
+                EmitBlock(catchClause.Body);
+                _indent--;
             }
-            EmitBlock(t.Catch);
+            WriteLine("end");
             _indent--;
             WriteLine("end");
-        }
-        else
-        {
-            WriteLine("if not __sf_ok then error(__sf_err) end");
         }
 
         if (t.Finally is not null)
@@ -901,8 +908,26 @@ public sealed class LuaEmitter
             EmitBlock(t.Finally);
         }
 
+        WriteLine("if not __sf_ok and not __sf_handled then error(__sf_err) end");
+
         _indent--;
         WriteLine("end");
+    }
+
+    private static string FormatCatchCondition(IRCatch catchClause)
+    {
+        if (catchClause.CatchesAny)
+        {
+            return "true";
+        }
+
+        if (catchClause.CatchesAnySharpForgeException)
+        {
+            return "string.sub(__sf_err_msg, 1, 4) == \"SF__\"";
+        }
+
+        return string.Join(" or ", catchClause.ExceptionHeaders.Select(header =>
+            $"string.sub(__sf_err_msg, 1, 13) == {FormatLiteral(new IRLiteral(header, IRLiteralKind.String))}"));
     }
 
     private void EmitExpr(IRExpr expr)
@@ -1361,7 +1386,7 @@ public sealed class LuaEmitter
                 break;
             case IRTry tr:
                 CollectCollectionHelpers(tr.Try);
-                if (tr.Catch is not null) CollectCollectionHelpers(tr.Catch);
+                foreach (var catchClause in tr.Catches) CollectCollectionHelpers(catchClause.Body);
                 if (tr.Finally is not null) CollectCollectionHelpers(tr.Finally);
                 break;
             case IRThrow th when th.Value is not null:
@@ -1477,7 +1502,7 @@ public sealed class LuaEmitter
                 || BlockUsesTernaryHelper(fr.Body),
             IRForEach fe => ExprUsesTernaryHelper(fe.Collection) || BlockUsesTernaryHelper(fe.Body),
             IRTry tr => BlockUsesTernaryHelper(tr.Try)
-                || (tr.Catch is not null && BlockUsesTernaryHelper(tr.Catch))
+                || tr.Catches.Any(catchClause => BlockUsesTernaryHelper(catchClause.Body))
                 || (tr.Finally is not null && BlockUsesTernaryHelper(tr.Finally)),
             IRThrow th => th.Value is not null && ExprUsesTernaryHelper(th.Value),
             _ => false,
@@ -1542,7 +1567,7 @@ public sealed class LuaEmitter
                 || BlockUsesTypeChecks(fr.Body),
             IRForEach fe => ExprUsesTypeChecks(fe.Collection) || BlockUsesTypeChecks(fe.Body),
             IRTry tr => BlockUsesTypeChecks(tr.Try)
-                || (tr.Catch is not null && BlockUsesTypeChecks(tr.Catch))
+                || tr.Catches.Any(catchClause => BlockUsesTypeChecks(catchClause.Body))
                 || (tr.Finally is not null && BlockUsesTypeChecks(tr.Finally)),
             IRThrow th => th.Value is not null && ExprUsesTypeChecks(th.Value),
             _ => false,
@@ -1571,7 +1596,7 @@ public sealed class LuaEmitter
                 || BlockUsesCoroutineHelpers(fr.Body),
             IRForEach fe => ExprUsesCoroutineHelpers(fe.Collection) || BlockUsesCoroutineHelpers(fe.Body),
             IRTry tr => BlockUsesCoroutineHelpers(tr.Try)
-                || (tr.Catch is not null && BlockUsesCoroutineHelpers(tr.Catch))
+                || tr.Catches.Any(catchClause => BlockUsesCoroutineHelpers(catchClause.Body))
                 || (tr.Finally is not null && BlockUsesCoroutineHelpers(tr.Finally)),
             IRThrow th => th.Value is not null && ExprUsesCoroutineHelpers(th.Value),
             _ => false,
@@ -1600,7 +1625,7 @@ public sealed class LuaEmitter
                 || BlockUsesStringConcat(fr.Body),
             IRForEach fe => ExprUsesStringConcat(fe.Collection) || BlockUsesStringConcat(fe.Body),
             IRTry tr => BlockUsesStringConcat(tr.Try)
-                || (tr.Catch is not null && BlockUsesStringConcat(tr.Catch))
+                || tr.Catches.Any(catchClause => BlockUsesStringConcat(catchClause.Body))
                 || (tr.Finally is not null && BlockUsesStringConcat(tr.Finally)),
             IRThrow th => th.Value is not null && ExprUsesStringConcat(th.Value),
             _ => false,
@@ -1775,8 +1800,11 @@ public sealed class LuaEmitter
                 break;
             case IRTry tr:
                 CollectIdentifiers(tr.Try);
-                if (!string.IsNullOrEmpty(tr.CatchVariable)) _usedIdentifiers.Add(tr.CatchVariable);
-                if (tr.Catch is not null) CollectIdentifiers(tr.Catch);
+                foreach (var catchClause in tr.Catches)
+                {
+                    if (!string.IsNullOrEmpty(catchClause.Variable)) _usedIdentifiers.Add(catchClause.Variable);
+                    CollectIdentifiers(catchClause.Body);
+                }
                 if (tr.Finally is not null) CollectIdentifiers(tr.Finally);
                 break;
             case IRThrow th when th.Value is not null:

@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using SharpForge.Transpiler.IR;
 using SharpForge.Transpiler.Pipeline;
+using System.Globalization;
 
 namespace SharpForge.Transpiler.Frontend;
 
@@ -30,6 +31,7 @@ public sealed class IRLowering
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
+    private readonly List<INamedTypeSymbol> _knownExceptionTypes = new();
 
     public IRLowering(
         IEnumerable<string>? ignoredClasses = null,
@@ -64,6 +66,7 @@ public sealed class IRLowering
         _currentStructSelfFields = null;
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
+        _knownExceptionTypes.Clear();
         var compilationUnits = new List<(CompilationUnitSyntax Root, SemanticModel Model)>();
 
         foreach (var tree in compilation.SyntaxTrees)
@@ -133,6 +136,7 @@ public sealed class IRLowering
 
                 ValidateReservedIdentifiers(typeDecl);
                 ValidateStructRuntimeFeatures(typeDecl, symbol, model, cancellationToken);
+                RegisterExceptionType(symbol);
                 module.Types.Add(LowerType(typeDecl, symbol, model, cancellationToken));
             }
         }
@@ -1073,7 +1077,7 @@ public sealed class IRLowering
                 return LowerTry(ts, model, ct);
 
             case ThrowStatementSyntax throwStatement:
-                return new IRThrow(throwStatement.Expression is null ? null : LowerExpr(throwStatement.Expression, model));
+                return LowerThrow(throwStatement, model);
 
             case ExpressionStatementSyntax es when es.Expression is AssignmentExpressionSyntax ae:
                 return LowerAssignment(ae, model);
@@ -1207,24 +1211,33 @@ public sealed class IRLowering
 
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
     {
-        if (ts.Catches.Count > 1)
-        {
-            AddUnsupportedDiagnostic(ts.Catches[1], "catch");
-        }
-
         var tryBlock = new IRBlock();
         LowerBlock(ts.Block, tryBlock, model, ct);
 
-        IRBlock? catchBlock = null;
-        string? catchVariable = null;
-        if (ts.Catches.Count > 0)
+        var catches = new List<IRCatch>();
+        foreach (var catchClause in ts.Catches)
         {
-            var catchClause = ts.Catches[0];
-            catchVariable = catchClause.Declaration is null
+            var catchVariable = catchClause.Declaration is null
                 ? null
                 : DeclareLuaName(model.GetDeclaredSymbol(catchClause.Declaration), catchClause.Declaration.Identifier.ValueText);
-            catchBlock = new IRBlock();
+
+            var catchType = catchClause.Declaration is null
+                ? null
+                : model.GetTypeInfo(catchClause.Declaration.Type).Type as INamedTypeSymbol;
+            if (catchType is not null && catchClause.Declaration is not null && !DerivesFromSystemException(catchType))
+            {
+                AddUnsupportedDiagnostic(catchClause.Declaration.Type, "catch type");
+            }
+
+            var catchesAny = catchClause.Declaration is null;
+            var catchesAnySharpForgeException = catchType is not null && IsSystemException(catchType);
+            var headers = catchType is null || catchesAnySharpForgeException
+                ? Array.Empty<string>()
+                : GetExceptionHeadersAssignableTo(catchType).ToArray();
+
+            var catchBlock = new IRBlock();
             LowerBlock(catchClause.Block, catchBlock, model, ct);
+            catches.Add(new IRCatch(catchVariable, headers, catchesAnySharpForgeException, catchesAny, catchBlock));
         }
 
         IRBlock? finallyBlock = null;
@@ -1234,7 +1247,45 @@ public sealed class IRLowering
             LowerBlock(finallyClause.Block, finallyBlock, model, ct);
         }
 
-        return new IRTry(tryBlock, catchVariable, catchBlock, finallyBlock);
+        return new IRTry(tryBlock, catches, finallyBlock);
+    }
+
+    private IRStmt LowerThrow(ThrowStatementSyntax throwStatement, SemanticModel model)
+    {
+        if (throwStatement.Expression is null)
+        {
+            return new IRThrow(null);
+        }
+
+        var thrownType = model.GetTypeInfo(throwStatement.Expression).Type as INamedTypeSymbol;
+        if (thrownType is null || !DerivesFromSystemException(thrownType))
+        {
+            return new IRThrow(LowerExpr(throwStatement.Expression, model));
+        }
+
+        var header = GetExceptionHeader(thrownType);
+        var message = TryLowerExceptionMessage(throwStatement.Expression, model)
+            ?? LowerExpr(throwStatement.Expression, model);
+        return new IRThrow(new IRStringConcat(new IRExpr[]
+        {
+            new IRLiteral(header, IRLiteralKind.String),
+            message,
+        }));
+    }
+
+    private IRExpr? TryLowerExceptionMessage(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (expression is not ObjectCreationExpressionSyntax creation
+            || creation.ArgumentList is null
+            || creation.ArgumentList.Arguments.Count == 0)
+        {
+            return null;
+        }
+
+        var firstArgument = creation.ArgumentList.Arguments[0].Expression;
+        return model.GetTypeInfo(firstArgument).Type?.SpecialType == SpecialType.System_String
+            ? LowerExpr(firstArgument, model)
+            : null;
     }
 
     private IRStmt LowerAssignment(AssignmentExpressionSyntax ae, SemanticModel model)
@@ -4322,9 +4373,9 @@ public sealed class IRLowering
                 break;
             case IRTry tryStmt:
                 CollectTypeReferences(tryStmt.Try, dependencies);
-                if (tryStmt.Catch is not null)
+                foreach (var catchClause in tryStmt.Catches)
                 {
-                    CollectTypeReferences(tryStmt.Catch, dependencies);
+                    CollectTypeReferences(catchClause.Body, dependencies);
                 }
                 if (tryStmt.Finally is not null)
                 {
@@ -4623,6 +4674,67 @@ public sealed class IRLowering
         }
 
         return false;
+    }
+
+    private static bool IsSystemException(ITypeSymbol type)
+        => type.MetadataName == "Exception"
+           && type.ContainingNamespace?.ToDisplayString() == "System";
+
+    private void RegisterExceptionType(INamedTypeSymbol type)
+    {
+        if (!DerivesFromSystemException(type)
+            || _knownExceptionTypes.Any(existing => SymbolEqualityComparer.Default.Equals(existing, type)))
+        {
+            return;
+        }
+
+        _knownExceptionTypes.Add(type);
+    }
+
+    private string GetExceptionHeader(INamedTypeSymbol type)
+    {
+        RegisterExceptionType(type);
+        return "SF__" + GetExceptionId(type);
+    }
+
+    private IEnumerable<string> GetExceptionHeadersAssignableTo(INamedTypeSymbol catchType)
+    {
+        RegisterExceptionType(catchType);
+        foreach (var knownType in _knownExceptionTypes)
+        {
+            if (DerivesFrom(knownType, catchType))
+            {
+                yield return GetExceptionHeader(knownType);
+            }
+        }
+    }
+
+    private static bool DerivesFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
+    {
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, baseType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string GetExceptionId(INamedTypeSymbol type)
+    {
+        var name = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        const uint offset = 2166136261;
+        const uint prime = 16777619;
+        var hash = offset;
+        foreach (var ch in name)
+        {
+            hash ^= ch;
+            hash *= prime;
+        }
+
+        return "E" + hash.ToString("x8", CultureInfo.InvariantCulture);
     }
 
     private static bool IsStringExpression(ExpressionSyntax expression, SemanticModel model)

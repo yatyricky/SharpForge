@@ -7,7 +7,7 @@ namespace SharpForge.Transpiler.Tests;
 public class ExceptionsTests
 {
     [Fact]
-    public async Task Try_catch_finally_and_throw_emit_pcall_shape()
+    public async Task Try_catch_finally_and_throw_emit_typed_error_header()
     {
         var src = """
             using System;
@@ -37,11 +37,13 @@ public class ExceptionsTests
         var lua = await TranspilerTestHelper.TranspileAsync(src);
 
         Assert.Contains("local __sf_ok, __sf_err = pcall(function()", lua);
-        Assert.Contains("error(SF__.System.Exception.New__s(\"boom\"))", lua);
-        Assert.Contains("if not __sf_ok then", lua);
-        Assert.Contains("local ex = __sf_err", lua);
+        Assert.Matches("error\\(SF__\\.StrConcat__\\(\\\"SF__E[0-9a-f]{8}\\\", \\\"boom\\\"\\)\\)", lua);
+        Assert.Contains("local __sf_err_msg = tostring(__sf_err)", lua);
+        Assert.Contains("if string.sub(__sf_err_msg, 1, 4) == \"SF__\" then", lua);
+        Assert.Contains("local ex = __sf_err_msg", lua);
         Assert.Contains("value = 1", lua);
         Assert.Matches(@"value\s*=\s*\(?\s*value\s*\+\s*2\s*\)?", lua);
+        Assert.Contains("if not __sf_ok and not __sf_handled then error(__sf_err) end", lua);
     }
 
     [Fact]
@@ -66,27 +68,64 @@ public class ExceptionsTests
 
         var lua = await TranspilerTestHelper.TranspileAsync(src);
 
-        Assert.Contains("if not __sf_ok then error(__sf_err) end", lua);
         Assert.Contains("local cleanup = 1", lua);
+        Assert.Contains("if not __sf_ok and not __sf_handled then error(__sf_err) end", lua);
+        Assert.True(lua.IndexOf("local cleanup = 1", StringComparison.Ordinal) < lua.IndexOf("if not __sf_ok and not __sf_handled then error(__sf_err) end", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task Multiple_catches_return_pipeline_error_for_mvp()
+    public async Task Multiple_catches_match_compile_time_exception_headers()
     {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "MultiCatch.cs"),
-            "using System; public static class MultiCatch { public static void F() { try { } catch (InvalidOperationException) { } catch (Exception) { } } }");
+        var src = """
+            using System;
 
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
-            CheckOnly: true,
-            Verbose: false), CancellationToken.None);
+            public class SpellException : Exception
+            {
+                public SpellException(string message) : base(message)
+                {
+                }
+            }
 
-        Assert.Equal(1, exitCode);
+            public class FatalSpellException : SpellException
+            {
+                public FatalSpellException(string message) : base(message)
+                {
+                }
+            }
+
+            public static class MultiCatch
+            {
+                public static int Run()
+                {
+                    var value = 0;
+                    try
+                    {
+                        throw new FatalSpellException("fatal");
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        value = 1;
+                    }
+                    catch (SpellException ex)
+                    {
+                        value = 2;
+                    }
+                    catch (Exception)
+                    {
+                        value = 3;
+                    }
+                    return value;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        Assert.Matches("error\\(SF__\\.StrConcat__\\(\\\"SF__E[0-9a-f]{8}\\\", \\\"fatal\\\"\\)\\)", lua);
+        Assert.Matches("if string\\.sub\\(__sf_err_msg, 1, 13\\) == \\\"SF__E[0-9a-f]{8}\\\" then", lua);
+        Assert.Matches("elseif string\\.sub\\(__sf_err_msg, 1, 13\\) == \\\"SF__E[0-9a-f]{8}\\\" or string\\.sub\\(__sf_err_msg, 1, 13\\) == \\\"SF__E[0-9a-f]{8}\\\" then", lua);
+        Assert.Contains("local ex = __sf_err_msg", lua);
+        Assert.Contains("value = 2", lua);
+        Assert.Contains("elseif string.sub(__sf_err_msg, 1, 4) == \"SF__\" then", lua);
     }
 }
