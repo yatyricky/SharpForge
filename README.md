@@ -25,8 +25,7 @@ https://www.hiveworkshop.com/threads/wip-introducing-sharpforge-a-c-to-lua-toolc
 
 - [CLI](docs/cli.md) - man page for `sf-transpile`, `sf-build`, and `sf-jassgen`.
 - [GUI](docs/gui.md) - GUI wrapper behavior and fields.
-- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, root table contract, runtime bias, and build notes.
-- [Transpiler Lowering Design Notes](docs/lowering-design-notes.md) - detailed lowering architecture, scope, and representation notes.
+- [Generated Lua](docs/generated-lua.md) - emitted Lua shape, lowering stack vocabulary, root table contract, runtime bias, and build notes.
 
 ### Language Features
 
