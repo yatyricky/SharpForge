@@ -141,6 +141,14 @@ public partial class math : LuaObject
     public static float min(params float[] values) => throw null!;
 
     /// <summary>
+    /// Returns the argument with the minimum value, according to the Lua operator &lt;.
+    /// In Lua, this function accepts both integers and floats.
+    /// </summary>
+    /// <param name="values">The values to compare.</param>
+    /// <returns>The minimum value.</returns>
+    public static int min(params int[] values) => throw null!;
+
+    /// <summary>
     /// An integer with the minimum value for an integer.
     /// In Lua 5.3, this is <c>-2^63</c> (-9223372036854775808 for 64-bit integers).
     /// </summary>
@@ -239,4 +247,12 @@ public partial class math : LuaObject
     /// <param name="n">The second integer.</param>
     /// <returns><c>true</c> if m &lt; n when treated as unsigned.</returns>
     public static bool ult(int m, int n) => throw null!;
+
+    /// <summary>
+    /// Lowered to x ^ y in Lua, which computes x raised to the power of y.
+    /// </summary>
+    /// <param name="x"></param>
+    /// <param name="y"></param>
+    /// <returns></returns>
+    public static float pow(float x, float y) => throw null!;
 }
