@@ -3504,7 +3504,7 @@ public sealed class IRLowering
 
     private static bool IsTaskDelay(IMethodSymbol symbol)
         => symbol is { Name: "Delay", IsStatic: true, ContainingType: { Name: "Task", ContainingNamespace: { } ns } }
-           && (IsSFLibAsyncNamespace(ns) || ns.ToDisplayString() == "System.Threading.Tasks");
+           && ns.ToDisplayString() == "System.Threading.Tasks";
 
     private IRStmt? TryLowerLuaInteropStatement(ExpressionSyntax expression, SemanticModel model)
     {
@@ -3579,24 +3579,11 @@ public sealed class IRLowering
     private static bool IsSFLibType(INamedTypeSymbol symbol)
         => IsSFLibNamespace(symbol.ContainingNamespace);
 
-    private static bool IsSFLibTypeReference(IRTypeReference type)
-        => IsSFLibNamespaceName(string.Join('.', type.NamespaceSegments));
-
     private static bool IsSFLibNamespace(INamespaceSymbol ns)
-        => IsSFLibNamespaceName(ns.ToDisplayString());
-
-    private static bool IsSFLibAsyncNamespace(INamespaceSymbol ns)
-        => IsSFLibAsyncNamespaceName(ns.ToDisplayString());
+        => IsSFLibInteropNamespaceName(ns.ToDisplayString());
 
     private static bool IsSFLibInteropNamespace(INamespaceSymbol ns)
         => IsSFLibInteropNamespaceName(ns.ToDisplayString());
-
-    private static bool IsSFLibNamespaceName(string name)
-        => name == "SFLib.Async"
-           || name == "SFLib.Interop";
-
-    private static bool IsSFLibAsyncNamespaceName(string name)
-        => name == "SFLib.Async";
 
     private static bool IsSFLibInteropNamespaceName(string name)
         => name == "SFLib.Interop";

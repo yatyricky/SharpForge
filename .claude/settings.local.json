@@ -7,7 +7,9 @@
       "Bash(find assets/libs -type f -name *.cs)",
       "Bash(node:*)",
       "Bash(cd:*)",
-      "Bash(ls tests/Transpiler.Tests/*.cs)"
+      "Bash(ls tests/Transpiler.Tests/*.cs)",
+      "Bash(rm \"C:/Users/yatyr/workspace/SharpForge/assets/libs/SFLib/Async/Task.cs\")",
+      "Bash(rmdir \"C:/Users/yatyr/workspace/SharpForge/assets/libs/SFLib/Async\")"
     ]
   }
 }
