@@ -95,21 +95,9 @@ public class List<T> : IIpairs<T>
     public void Sort(Func<T, T, int>? comparison)
     {
         comparison ??= DefaultCompare;
-
-        for (var i = 1; i < Count; i++)
-        {
-            var value = LuaInterop.Get<T>(_items, i + 1);
-            var j = i - 1;
-            while (j >= 0)
-            {
-                var current = LuaInterop.Get<T>(_items, j + 1);
-                var cmp = comparison(value, current);
-                if (cmp >= 0) break;
-                LuaInterop.Set(_items, j + 2, current);
-                j--;
-            }
-            LuaInterop.Set(_items, j + 2, value);
-        }
+        var version = _version;
+        table.sort(_items, (a, b) => comparison((T)(object)a, (T)(object)b) < 0);
+        if (version != _version) throw new Exception("Collection was modified");
         _version++;
     }
 

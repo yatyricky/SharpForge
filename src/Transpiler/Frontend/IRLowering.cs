@@ -19,6 +19,8 @@ public sealed class IRLowering
     private readonly HashSet<string> _ignoredClasses;
     private readonly HashSet<string> _ignoredNamespaces;
     private IRModule? _module;
+    private IRType? _currentIrType;
+    private string? _currentIrTypeFullName;
     private readonly Dictionary<ISymbol, string> _luaNames = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<INamedTypeSymbol, string> _luaObjectModuleNames = new(SymbolEqualityComparer.Default);
     private readonly Stack<LuaModuleBlockContext> _luaModuleBlockContexts = new();
@@ -272,6 +274,9 @@ public sealed class IRLowering
         irType.Comments.AddRange(ExtractComments(typeDecl.GetLeadingTrivia()));
         irType.LuaRequires.AddRange(GetLuaAttributeValues(symbol, "Require"));
 
+        _currentIrType = irType;
+        _currentIrTypeFullName = irType.FullName;
+
         foreach (var iface in symbol.Interfaces.Where(i => !irType.IsStruct && !IsIgnoredClass(i)))
         {
             irType.Interfaces.Add(LowerTypeReference(iface));
@@ -415,6 +420,8 @@ public sealed class IRLowering
             });
         }
 
+        _currentIrType = null;
+        _currentIrTypeFullName = null;
         return irType;
     }
 
@@ -3599,6 +3606,8 @@ public sealed class IRLowering
             "CallMethod" when args.Count >= 2 => new IRLuaMethodInvocation(args[0], args[1], args.Skip(2).ToArray()),
             "CallGlobal" when args.Count >= 1 => new IRInvocation(new IRLuaGlobal(args[0]), args.Skip(1).ToArray()),
             "Eq" when args.Count == 2 => new IRBinary("==", args[0], args[1]),
+            "Eq" when symbol.TypeArguments is [INamedTypeSymbol structType] && CanFlattenStructType(structType) && GetFlattenableStructFields(structType).Any() =>
+                BuildOpEqualityCall(structType, args),
             "Lt" when args.Count == 2 => new IRBinary("<", args[0], args[1]),
             "Gt" when args.Count == 2 => new IRBinary(">", args[0], args[1]),
             _ => null,
@@ -4222,32 +4231,13 @@ public sealed class IRLowering
             || (m is IMethodSymbol { Name: "Equals", IsOverride: false, Parameters.Length: 1 } eq
                 && SymbolEqualityComparer.Default.Equals(eq.Parameters[0].Type, type)));
 
-    private IRFunction BuildOpEqualsFunction(INamedTypeSymbol structType, StructFieldSlot[] fields)
+    private static IRExpr BuildFieldComparison(StructFieldSlot[] fields, Func<int, IRExpr> leftSelector, Func<int, IRExpr> rightSelector)
     {
-        var func = new IRFunction
-        {
-            Name = "op_equals",
-            LuaName = "op_equals",
-            IsStatic = true,
-        };
-
-        // Parameters: aX, aY, bX, bY (all fields flattened)
-        for (var i = 0; i < fields.Length; i++)
-        {
-            func.Parameters.Add($"a__{fields[i].Name}");
-        }
-
-        for (var i = 0; i < fields.Length; i++)
-        {
-            func.Parameters.Add($"b__{fields[i].Name}");
-        }
-
-        // Body: field-by-field comparison
         IRExpr? combined = null;
         for (var i = 0; i < fields.Length; i++)
         {
-            var left = new IRIdentifier($"a__{fields[i].Name}");
-            var right = new IRIdentifier($"b__{fields[i].Name}");
+            var left = leftSelector(i);
+            var right = rightSelector(i);
             var isFloat = fields[i].Type.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
             var fieldEq = isFloat
                 ? new IRBinary("<",
@@ -4260,7 +4250,51 @@ public sealed class IRLowering
             combined = combined is null ? fieldEq : new IRBinary("and", combined, fieldEq);
         }
 
-        func.Body.Statements.Add(new IRReturn(combined ?? new IRLiteral(true, IRLiteralKind.Boolean)));
+        return combined ?? new IRLiteral(true, IRLiteralKind.Boolean);
+    }
+
+    private static IRFunction BuildOpEqualityFunction(StructFieldSlot[] fields)
+    {
+        var func = new IRFunction
+        {
+            Name = "op_Equality",
+            LuaName = "op_Equality",
+            IsStatic = true,
+        };
+
+        for (var i = 0; i < fields.Length; i++)
+        {
+            func.Parameters.Add($"a__{fields[i].Name}");
+        }
+
+        for (var i = 0; i < fields.Length; i++)
+        {
+            func.Parameters.Add($"b__{fields[i].Name}");
+        }
+
+        func.Body.Statements.Add(new IRReturn(BuildFieldComparison(
+            fields,
+            i => new IRIdentifier($"a__{fields[i].Name}"),
+            i => new IRIdentifier($"b__{fields[i].Name}"))));
+        return func;
+    }
+
+    private static IRFunction BuildOpEqPackFunction(StructFieldSlot[] fields)
+    {
+        var func = new IRFunction
+        {
+            Name = "opEqPack__",
+            LuaName = "opEqPack__",
+            IsStatic = true,
+        };
+
+        func.Parameters.Add("a");
+        func.Parameters.Add("b");
+
+        func.Body.Statements.Add(new IRReturn(BuildFieldComparison(
+            fields,
+            i => new IRMemberAccess(new IRIdentifier("a"), fields[i].Name),
+            i => new IRMemberAccess(new IRIdentifier("b"), fields[i].Name))));
         return func;
     }
 
@@ -4269,19 +4303,26 @@ public sealed class IRLowering
         var leftFields = LowerStructArgumentValues(leftExpr, structType, model);
         var rightFields = LowerStructArgumentValues(rightExpr, structType, model);
 
-        // Lazily generate op_equals on the struct type if not already present
-        EnsureOpEqualsGenerated(structType);
+        EnsureOpEqualityGenerated(structType);
 
         var nsSegments = GetTypeContainerSegments(structType);
         var typeRef = new IRTypeReference(nsSegments, structType.Name);
         var allArgs = leftFields.Concat(rightFields).ToArray();
 
         return new IRInvocation(
-            new IRMemberAccess(typeRef, "op_equals"),
+            new IRMemberAccess(typeRef, "op_Equality"),
             allArgs);
     }
 
-    private void EnsureOpEqualsGenerated(INamedTypeSymbol structType)
+    private IRExpr BuildOpEqualityCall(INamedTypeSymbol structType, IReadOnlyList<IRExpr> args)
+    {
+        EnsureOpEqualityGenerated(structType);
+        var nsSegments = GetTypeContainerSegments(structType);
+        var typeRef = new IRTypeReference(nsSegments, structType.Name);
+        return new IRInvocation(new IRMemberAccess(typeRef, "op_Equality"), args.ToArray());
+    }
+
+    private void EnsureOpEqualityGenerated(INamedTypeSymbol structType)
     {
         if (HasUserDefinedEquality(structType))
         {
@@ -4296,13 +4337,17 @@ public sealed class IRLowering
 
         var nsSegments = GetTypeContainerSegments(structType);
         var fullName = string.Join('.', nsSegments.Append(structType.Name));
-        var irType = _module?.Types.FirstOrDefault(t => t.FullName == fullName);
-        if (irType is null || irType.Methods.Any(m => m.LuaName == "op_equals"))
+
+        // Try _module.Types first, fall back to _currentIrType (not yet in module)
+        var irType = _module?.Types.FirstOrDefault(t => t.FullName == fullName)
+                     ?? (_currentIrTypeFullName == fullName ? _currentIrType : null);
+        if (irType is null || irType.Methods.Any(m => m.LuaName == "op_Equality"))
         {
             return;
         }
 
-        irType.Methods.Add(BuildOpEqualsFunction(structType, fields));
+        irType.Methods.Add(BuildOpEqualityFunction(fields));
+        irType.Methods.Add(BuildOpEqPackFunction(fields));
     }
 
     private static void SortTypesByInheritance(List<IRType> types)
