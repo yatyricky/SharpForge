@@ -40,7 +40,7 @@ internal static class TranspilerTestHelper
         string fileName = "Test.cs",
         string[]? preprocessorSymbols = null,
         string[]? ignoredClasses = null,
-        string[]? libraryFolders = null)
+        string[]? ignoredNamespaces = null)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         var file = Path.Combine(dir.FullName, fileName);
@@ -52,7 +52,7 @@ internal static class TranspilerTestHelper
             PreprocessorSymbols: preprocessorSymbols ?? Array.Empty<string>(),
             RootTable: TranspileOptions.DefaultRootTable,
             IgnoredClasses: ignoredClasses ?? new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: libraryFolders ?? new[] { TranspileOptions.DefaultLibraryFolder },
+            IgnoredNamespaces: ignoredNamespaces ?? new[] { TranspileOptions.DefaultIgnoredNamespace },
             CheckOnly: false,
             Verbose: false), CancellationToken.None);
 

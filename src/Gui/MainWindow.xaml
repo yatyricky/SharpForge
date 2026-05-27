@@ -17,7 +17,7 @@
             <TextBox x:Name="DefinesBox" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" />
             <TextBox x:Name="RootTableBox" Text="SF__" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" />
             <TextBox x:Name="IgnoreClassBox" Text="JASS" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" />
-            <TextBox x:Name="LibraryFolderBox" Text="libs" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" />
+            <TextBox x:Name="IgnoreNamespaceBox" Text="SFLib.Interop" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" />
             <TextBox x:Name="IncludeBox" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" />
         </StackPanel>
 

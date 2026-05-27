@@ -31,7 +31,7 @@ public sealed partial class MainWindow : Window
     private const string RunMarkerEndBuilder = RunMarkerPrefix + "END_BUILDER__";
     private const string DefaultRootTable = "SF__";
     private const string DefaultIgnoreClass = "JASS";
-    private const string DefaultLibraryFolder = "libs";
+    private const string DefaultIgnoredNamespace = "SFLib.Interop";
     private const string DefaultLuaFileName = "sharpforge.lua";
     private const string DefaultJassHostClass = "JASS";
 
@@ -114,7 +114,7 @@ public sealed partial class MainWindow : Window
             DefinesBox.Text = settings.Defines;
             RootTableBox.Text = string.IsNullOrWhiteSpace(settings.RootTable) ? DefaultRootTable : settings.RootTable;
             IgnoreClassBox.Text = string.IsNullOrWhiteSpace(settings.IgnoreClass) ? DefaultIgnoreClass : settings.IgnoreClass;
-            LibraryFolderBox.Text = string.IsNullOrWhiteSpace(settings.LibraryFolder) ? DefaultLibraryFolder : settings.LibraryFolder;
+            IgnoreNamespaceBox.Text = string.IsNullOrWhiteSpace(settings.IgnoredNamespaces) ? DefaultIgnoredNamespace : settings.IgnoredNamespaces;
             EnableTranspilerBox.IsChecked = settings.RunTranspiler;
             MainLuaBox.Text = settings.MainLua;
             BuilderOutputBox.Text = settings.BuilderOutput;
@@ -143,7 +143,7 @@ public sealed partial class MainWindow : Window
             DefinesBox.Clear();
             RootTableBox.Text = DefaultRootTable;
             IgnoreClassBox.Text = DefaultIgnoreClass;
-            LibraryFolderBox.Text = DefaultLibraryFolder;
+            IgnoreNamespaceBox.Text = DefaultIgnoredNamespace;
             EnableTranspilerBox.IsChecked = true;
             MainLuaBox.Clear();
             BuilderOutputBox.Clear();
@@ -212,7 +212,7 @@ public sealed partial class MainWindow : Window
                 Defines = DefinesBox.Text.Trim(),
                 RootTable = RootTableBox.Text.Trim(),
                 IgnoreClass = IgnoreClassBox.Text.Trim(),
-                LibraryFolder = LibraryFolderBox.Text.Trim(),
+                IgnoredNamespaces = IgnoreNamespaceBox.Text.Trim(),
                 RunTranspiler = EnableTranspilerBox.IsChecked == true,
                 MainLua = MainLuaBox.Text.Trim(),
                 BuilderOutput = BuilderOutputBox.Text.Trim(),
@@ -353,7 +353,7 @@ public sealed partial class MainWindow : Window
         AddOptional(args, "--root-table", RootTableBox.Text.Trim());
         AddSplitOptions(args, "--define", DefinesBox.Text);
         AddSplitOptions(args, "--ignore-class", IgnoreClassBox.Text);
-        AddSplitOptions(args, "--library-folder", LibraryFolderBox.Text);
+        AddSplitOptions(args, "--ignore-namespace", IgnoreNamespaceBox.Text);
         return args.ToArray();
     }
 
@@ -1203,7 +1203,7 @@ public sealed partial class MainWindow : Window
                 DialogField.Text("Defines", DefinesBox),
                 DialogField.Text("Root table", RootTableBox),
                 DialogField.Text("Ignore class", IgnoreClassBox),
-                DialogField.Text("Library folder", LibraryFolderBox),
+                DialogField.Text("Ignored namespaces", IgnoreNamespaceBox),
             ]))
         {
             FillDefaultsFromCSharpPath();
@@ -1522,7 +1522,7 @@ public sealed partial class MainWindow : Window
         public string Defines { get; set; } = string.Empty;
         public string RootTable { get; set; } = DefaultRootTable;
         public string IgnoreClass { get; set; } = DefaultIgnoreClass;
-        public string LibraryFolder { get; set; } = DefaultLibraryFolder;
+        public string IgnoredNamespaces { get; set; } = DefaultIgnoredNamespace;
         public bool RunTranspiler { get; set; } = true;
         public string MainLua { get; set; } = string.Empty;
         public string BuilderOutput { get; set; } = string.Empty;

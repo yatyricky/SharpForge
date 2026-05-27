@@ -6,7 +6,7 @@ public sealed record TranspileOptions(
     IReadOnlyList<string> PreprocessorSymbols,
     string RootTable,
     IReadOnlyList<string> IgnoredClasses,
-    IReadOnlyList<string> LibraryFolders,
+    IReadOnlyList<string> IgnoredNamespaces,
     bool CheckOnly,
     bool Verbose,
     bool InitOnly = false)
@@ -15,4 +15,5 @@ public sealed record TranspileOptions(
     public const string DefaultOutputFileName = "sharpforge.lua";
     public const string DefaultIgnoredClass = "JASS";
     public const string DefaultLibraryFolder = "libs";
+    public const string DefaultIgnoredNamespace = "SFLib.Interop";
 }

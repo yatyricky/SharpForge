@@ -308,7 +308,7 @@ public class ClassesTests
             PreprocessorSymbols: Array.Empty<string>(),
             RootTable: TranspileOptions.DefaultRootTable,
             IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            LibraryFolders: new[] { TranspileOptions.DefaultLibraryFolder },
+            IgnoredNamespaces: new[] { TranspileOptions.DefaultIgnoredNamespace },
             CheckOnly: true,
             Verbose: false), CancellationToken.None);
 

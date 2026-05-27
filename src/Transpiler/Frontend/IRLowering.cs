@@ -17,8 +17,7 @@ namespace SharpForge.Transpiler.Frontend;
 public sealed class IRLowering
 {
     private readonly HashSet<string> _ignoredClasses;
-    private readonly HashSet<string> _libraryFolderNames;
-    private readonly string? _sourceRoot;
+    private readonly HashSet<string> _ignoredNamespaces;
     private IRModule? _module;
     private readonly Dictionary<ISymbol, string> _luaNames = new(SymbolEqualityComparer.Default);
     private readonly Dictionary<INamedTypeSymbol, string> _luaObjectModuleNames = new(SymbolEqualityComparer.Default);
@@ -36,19 +35,14 @@ public sealed class IRLowering
     public IRLowering(
         IEnumerable<string>? ignoredClasses = null,
         DirectoryInfo? sourceRoot = null,
-        IEnumerable<string>? libraryFolders = null)
+        IEnumerable<string>? ignoredNamespaces = null)
     {
         _ignoredClasses = ignoredClasses is null
             ? new HashSet<string>(new[] { TranspileOptions.DefaultIgnoredClass }, StringComparer.Ordinal)
             : new HashSet<string>(ignoredClasses, StringComparer.Ordinal);
-        _libraryFolderNames = new HashSet<string>(
-            (libraryFolders ?? Array.Empty<string>())
-                .Select(NormalizeFolderName)
-                .Where(name => !string.IsNullOrWhiteSpace(name)),
-            StringComparer.OrdinalIgnoreCase);
-        _sourceRoot = sourceRoot is null
-            ? null
-            : Path.GetFullPath(sourceRoot.FullName);
+        _ignoredNamespaces = new HashSet<string>(
+            ignoredNamespaces ?? new[] { TranspileOptions.DefaultIgnoredNamespace },
+            StringComparer.Ordinal);
     }
 
     public IRModule Lower(CSharpCompilation compilation, CancellationToken cancellationToken)
@@ -72,10 +66,6 @@ public sealed class IRLowering
         foreach (var tree in compilation.SyntaxTrees)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsInLibraryFolder(tree))
-            {
-                continue;
-            }
 
             var model = compilation.GetSemanticModel(tree);
             var root = (CompilationUnitSyntax)tree.GetRoot(cancellationToken);
@@ -1298,6 +1288,28 @@ public sealed class IRLowering
             return new IRIf(new IRBinary("==", coalesceTarget, new IRLiteral(null, IRLiteralKind.Nil)), assignIfNil, null);
         }
 
+        // Tuple deconstruction: var (a, b) = expr;
+        if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            && ae.Left is DeclarationExpressionSyntax { Designation: ParenthesizedVariableDesignationSyntax parenDesignation })
+        {
+            var initType = model.GetTypeInfo(ae.Right).Type;
+            if (initType is INamedTypeSymbol tupleType && tupleType.IsTupleType)
+            {
+                var names = new List<string>();
+                foreach (var variable in parenDesignation.Variables)
+                {
+                    if (variable is SingleVariableDesignationSyntax sv)
+                    {
+                        var sym = model.GetDeclaredSymbol(sv);
+                        names.Add(DeclareLuaName(sym, sv.Identifier.ValueText));
+                    }
+                }
+
+                var values = LowerStructArgumentValues(ae.Right, tupleType, model);
+                return new IRMultiLocalDecl(names, values);
+            }
+        }
+
         if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression) && TryLowerStructAssignment(ae.Left, ae.Right, model) is { } structAssignment)
         {
             return structAssignment;
@@ -1523,6 +1535,15 @@ public sealed class IRLowering
             case ImplicitArrayCreationExpressionSyntax implicitArrayCreation:
                 return new IRArrayLiteral(implicitArrayCreation.Initializer.Expressions.Select(item => LowerExpr(item, model)).ToArray());
 
+            case TupleExpressionSyntax tupleExpr:
+                var tupleType = model.GetTypeInfo(tupleExpr).Type;
+                if (tupleType is INamedTypeSymbol tt && tt.IsTupleType)
+                {
+                    var tupleFields = tt.TupleElements.Select((e, i) => (e.Name, Value: LowerExpr(tupleExpr.Arguments[i].Expression, model))).ToArray();
+                    return new IRTableLiteralNew(tupleFields);
+                }
+                return new IRArrayLiteral(tupleExpr.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray());
+
             case AssignmentExpressionSyntax assignment when assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression):
                 return new IRCoalesceAssignment(LowerExpr(assignment.Left, model), LowerExpr(assignment.Right, model));
 
@@ -1663,6 +1684,23 @@ public sealed class IRLowering
 
         if (TryLowerLuaInteropInvocation(symbol, args) is { } luaInteropInvocation)
         {
+            // Struct read-from-list: decompose LuaInterop.Get<T> result into flattened fields
+            if (symbol is { Name: "Get", TypeArguments.Length: 1 }
+                && symbol.TypeArguments[0] is INamedTypeSymbol structType
+                && CanFlattenStructType(structType)
+                && GetFlattenableStructFields(structType).ToArray() is { Length: > 0 } fields
+                && luaInteropInvocation is IRLuaAccess access)
+            {
+                var tempName = AllocateLuaName("__struct_tmp");
+                var body = new IRBlock();
+                body.Statements.Add(new IRLocalDecl(tempName, access));
+                var tableFields = fields
+                    .Select(f => (f.Name, Value: (IRExpr)new IRMemberAccess(new IRIdentifier(tempName), f.Name)))
+                    .ToArray();
+                body.Statements.Add(new IRReturn(new IRTableLiteralNew(tableFields)));
+                return BuildImmediatelyInvokedExpression(body);
+            }
+
             return luaInteropInvocation;
         }
 
@@ -1745,6 +1783,12 @@ public sealed class IRLowering
 
             if (IsExternalLuaObjectType(symbol.ContainingType))
             {
+                // Special case: math.pow(x, y) → (x) ^ (y)
+                if (symbol.ContainingType.Name == "math" && symbol.Name == "pow" && callArgs.Count == 2)
+                {
+                    return new IRBinary("^", callArgs[0], callArgs[1]);
+                }
+
                 var member = GetLuaObjectMember(symbol);
                 return new IRInvocation(
                     new IRMemberAccess(GetLuaObjectTypeTarget(symbol.ContainingType), member.Name),
@@ -2059,6 +2103,11 @@ public sealed class IRLowering
             && TryGetStructFieldValues(creation, model, out _, out var creationValues))
         {
             return creationValues;
+        }
+
+        if (expression is TupleExpressionSyntax tupleExpr)
+        {
+            return tupleExpr.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
         }
 
         if (TryGetFlattenedStructValueExpressions(expression, structType, model, out var flattenedValues))
@@ -2890,7 +2939,15 @@ public sealed class IRLowering
     }
 
     private static IEnumerable<StructFieldSlot> GetFlattenableStructFields(INamedTypeSymbol type)
-        => type.GetMembers()
+    {
+        if (type.IsTupleType)
+        {
+            return type.TupleElements
+                .Select((e, i) => new StructFieldSlot(e.Name, e.Type, i))
+                .ToArray();
+        }
+
+        return type.GetMembers()
             .Where(m => m is IFieldSymbol { IsStatic: false, IsConst: false } || m is IPropertySymbol { IsStatic: false } property && IsAutoPropertySymbol(property))
             .Select(m => new StructFieldSlot(m.Name, m switch
             {
@@ -2900,6 +2957,7 @@ public sealed class IRLowering
             }, GetSyntaxSortKey(m)))
             .OrderBy(f => f.SortKey)
             .ThenBy(f => f.Name, StringComparer.Ordinal);
+    }
 
     private static int GetSyntaxSortKey(ISymbol symbol)
         => symbol.DeclaringSyntaxReferences.FirstOrDefault()?.Span.Start ?? int.MaxValue;
@@ -3524,7 +3582,7 @@ public sealed class IRLowering
         };
     }
 
-    private static IRExpr? TryLowerLuaInteropInvocation(IMethodSymbol symbol, IReadOnlyList<IRExpr> args)
+    private IRExpr? TryLowerLuaInteropInvocation(IMethodSymbol symbol, IReadOnlyList<IRExpr> args)
     {
         if (!IsLuaInteropMethod(symbol))
         {
@@ -3540,24 +3598,27 @@ public sealed class IRLowering
             "Call" when args.Count >= 2 => new IRInvocation(new IRLuaAccess(args[0], args[1]), args.Skip(2).ToArray()),
             "CallMethod" when args.Count >= 2 => new IRLuaMethodInvocation(args[0], args[1], args.Skip(2).ToArray()),
             "CallGlobal" when args.Count >= 1 => new IRInvocation(new IRLuaGlobal(args[0]), args.Skip(1).ToArray()),
+            "Eq" when args.Count == 2 => new IRBinary("==", args[0], args[1]),
+            "Lt" when args.Count == 2 => new IRBinary("<", args[0], args[1]),
+            "Gt" when args.Count == 2 => new IRBinary(">", args[0], args[1]),
             _ => null,
         };
     }
 
-    private static bool IsLuaInteropMethod(IMethodSymbol symbol)
+    private bool IsLuaInteropMethod(IMethodSymbol symbol)
         => symbol is { IsStatic: true, ContainingType: { Name: "LuaInterop", ContainingNamespace: { } ns } }
            && IsSFLibInteropNamespace(ns);
 
-    private static bool IsLuaObjectType(INamedTypeSymbol symbol)
+    private bool IsLuaObjectType(INamedTypeSymbol symbol)
         => InheritsFromLuaObject(symbol);
 
-    private static bool IsLuaImplementedClass(INamedTypeSymbol symbol)
+    private bool IsLuaImplementedClass(INamedTypeSymbol symbol)
         => GetLuaAttributeValue(symbol, "Class") is { Length: > 0 };
 
-    private static bool IsExternalLuaObjectType(INamedTypeSymbol symbol)
+    private bool IsExternalLuaObjectType(INamedTypeSymbol symbol)
         => IsLuaObjectType(symbol) && !IsLuaImplementedClass(symbol);
 
-    private static bool InheritsFromLuaObject(INamedTypeSymbol symbol)
+    private bool InheritsFromLuaObject(INamedTypeSymbol symbol)
     {
         for (var type = symbol; type is not null; type = type.BaseType)
         {
@@ -3576,37 +3637,11 @@ public sealed class IRLowering
             .Select(invocation => model.GetSymbolInfo(invocation).Symbol as IMethodSymbol)
             .Any(symbol => symbol is not null && IsTaskDelay(symbol));
 
-    private static bool IsSFLibType(INamedTypeSymbol symbol)
-        => IsSFLibNamespace(symbol.ContainingNamespace);
+    private bool IsSFLibType(INamedTypeSymbol symbol)
+        => _ignoredNamespaces.Contains(symbol.ContainingNamespace.ToDisplayString());
 
-    private static bool IsSFLibNamespace(INamespaceSymbol ns)
-        => IsSFLibInteropNamespaceName(ns.ToDisplayString());
-
-    private static bool IsSFLibInteropNamespace(INamespaceSymbol ns)
-        => IsSFLibInteropNamespaceName(ns.ToDisplayString());
-
-    private static bool IsSFLibInteropNamespaceName(string name)
-        => name == "SFLib.Interop";
-
-    private bool IsInLibraryFolder(SyntaxTree tree)
-    {
-        if (_sourceRoot is null || _libraryFolderNames.Count == 0 || string.IsNullOrWhiteSpace(tree.FilePath))
-        {
-            return false;
-        }
-
-        var relative = Path.GetRelativePath(_sourceRoot, Path.GetFullPath(tree.FilePath));
-        if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
-        {
-            return false;
-        }
-
-        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Take(Math.Max(0, segments.Length - 1)).Any(_libraryFolderNames.Contains);
-    }
-
-    private static string NormalizeFolderName(string folder)
-        => Path.GetFileName(Path.TrimEndingDirectorySeparator(folder.Trim()));
+    private bool IsSFLibInteropNamespace(INamespaceSymbol ns)
+        => _ignoredNamespaces.Contains(ns.ToDisplayString());
 
     private IRStmt? TryLowerAccessorAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {
@@ -3855,7 +3890,7 @@ public sealed class IRLowering
         }
     }
 
-    private static string GetLuaMethodName(IMethodSymbol method)
+    private string GetLuaMethodName(IMethodSymbol method)
     {
         if (GetLuaAttributeName(method) is { Length: > 0 } attributeName)
         {
@@ -3958,7 +3993,7 @@ public sealed class IRLowering
             _ => "op_Operator",
         };
 
-    private static string GetLuaConstructorInitName(IMethodSymbol method)
+    private string GetLuaConstructorInitName(IMethodSymbol method)
         => GetLuaMethodName(method).Replace("New", "__Init", StringComparison.Ordinal);
 
     private static IRTypeReference LowerTypeReference(INamedTypeSymbol type)
@@ -4068,12 +4103,12 @@ public sealed class IRLowering
         return block.Statements.Count;
     }
 
-    private static string GetLuaObjectConstructorName(IMethodSymbol ctor)
+    private string GetLuaObjectConstructorName(IMethodSymbol ctor)
         => GetLuaAttributeValue(ctor, "StaticMethod")
            ?? GetLuaAttributeValue(ctor, "Name")
            ?? "new";
 
-    private static (string Name, bool UseColon) GetLuaObjectMember(IMethodSymbol method)
+    private (string Name, bool UseColon) GetLuaObjectMember(IMethodSymbol method)
     {
         if (GetLuaAttributeValue(method, "StaticMethod") is { Length: > 0 } staticName)
         {
@@ -4088,18 +4123,18 @@ public sealed class IRLowering
         return (GetLuaAttributeValue(method, "Name") ?? method.Name, !method.IsStatic);
     }
 
-    private static string GetLuaObjectMemberName(ISymbol symbol)
+    private string GetLuaObjectMemberName(ISymbol symbol)
         => GetLuaAttributeValue(symbol, "Name") ?? symbol.Name;
 
-    private static string? GetLuaAttributeName(IMethodSymbol method)
+    private string? GetLuaAttributeName(IMethodSymbol method)
         => GetLuaAttributeValue(method, "StaticMethod")
            ?? GetLuaAttributeValue(method, "Method")
            ?? GetLuaAttributeValue(method, "Name");
 
-    private static string? GetLuaAttributeValue(ISymbol symbol, string name)
+    private string? GetLuaAttributeValue(ISymbol symbol, string name)
         => GetLuaAttributeValues(symbol, name).FirstOrDefault();
 
-    private static bool HasLuaTableLiteralAttribute(INamedTypeSymbol symbol)
+    private bool HasLuaTableLiteralAttribute(INamedTypeSymbol symbol)
     {
         foreach (var attribute in symbol.GetAttributes())
         {
@@ -4120,7 +4155,7 @@ public sealed class IRLowering
         return false;
     }
 
-    private static IEnumerable<string> GetLuaAttributeValues(ISymbol symbol, string name)
+    private IEnumerable<string> GetLuaAttributeValues(ISymbol symbol, string name)
     {
         foreach (var attribute in symbol.GetAttributes())
         {
@@ -4181,28 +4216,93 @@ public sealed class IRLowering
 
     private sealed record StructFieldSlot(string Name, ITypeSymbol Type, int SortKey);
 
-    private IRExpr BuildStructEqualityExpression(ExpressionSyntax leftExpr, ExpressionSyntax rightExpr, INamedTypeSymbol structType, SemanticModel model)
-    {
-        var leftFields = LowerStructArgumentValues(leftExpr, structType, model);
-        var rightFields = LowerStructArgumentValues(rightExpr, structType, model);
-        var fields = GetFlattenableStructFields(structType).ToArray();
+    private static bool HasUserDefinedEquality(INamedTypeSymbol type)
+        => type.GetMembers().Any(m =>
+            m is IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator, Name: "op_Equality" }
+            || (m is IMethodSymbol { Name: "Equals", IsOverride: false, Parameters.Length: 1 } eq
+                && SymbolEqualityComparer.Default.Equals(eq.Parameters[0].Type, type)));
 
+    private IRFunction BuildOpEqualsFunction(INamedTypeSymbol structType, StructFieldSlot[] fields)
+    {
+        var func = new IRFunction
+        {
+            Name = "op_equals",
+            LuaName = "op_equals",
+            IsStatic = true,
+        };
+
+        // Parameters: aX, aY, bX, bY (all fields flattened)
+        for (var i = 0; i < fields.Length; i++)
+        {
+            func.Parameters.Add($"a__{fields[i].Name}");
+        }
+
+        for (var i = 0; i < fields.Length; i++)
+        {
+            func.Parameters.Add($"b__{fields[i].Name}");
+        }
+
+        // Body: field-by-field comparison
         IRExpr? combined = null;
         for (var i = 0; i < fields.Length; i++)
         {
+            var left = new IRIdentifier($"a__{fields[i].Name}");
+            var right = new IRIdentifier($"b__{fields[i].Name}");
             var isFloat = fields[i].Type.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
             var fieldEq = isFloat
                 ? new IRBinary("<",
                     new IRInvocation(
                         new IRMemberAccess(new IRIdentifier("math"), "abs"),
-                        new[] { new IRBinary("-", leftFields[i], rightFields[i]) }),
+                        new[] { new IRBinary("-", left, right) }),
                     new IRLiteral(0.0001, IRLiteralKind.Real))
-                : new IRBinary("==", leftFields[i], rightFields[i]);
+                : new IRBinary("==", left, right);
 
             combined = combined is null ? fieldEq : new IRBinary("and", combined, fieldEq);
         }
 
-        return combined ?? new IRLiteral(true, IRLiteralKind.Boolean);
+        func.Body.Statements.Add(new IRReturn(combined ?? new IRLiteral(true, IRLiteralKind.Boolean)));
+        return func;
+    }
+
+    private IRExpr BuildStructEqualityExpression(ExpressionSyntax leftExpr, ExpressionSyntax rightExpr, INamedTypeSymbol structType, SemanticModel model)
+    {
+        var leftFields = LowerStructArgumentValues(leftExpr, structType, model);
+        var rightFields = LowerStructArgumentValues(rightExpr, structType, model);
+
+        // Lazily generate op_equals on the struct type if not already present
+        EnsureOpEqualsGenerated(structType);
+
+        var nsSegments = GetTypeContainerSegments(structType);
+        var typeRef = new IRTypeReference(nsSegments, structType.Name);
+        var allArgs = leftFields.Concat(rightFields).ToArray();
+
+        return new IRInvocation(
+            new IRMemberAccess(typeRef, "op_equals"),
+            allArgs);
+    }
+
+    private void EnsureOpEqualsGenerated(INamedTypeSymbol structType)
+    {
+        if (HasUserDefinedEquality(structType))
+        {
+            return;
+        }
+
+        var fields = GetFlattenableStructFields(structType).ToArray();
+        if (fields.Length == 0)
+        {
+            return;
+        }
+
+        var nsSegments = GetTypeContainerSegments(structType);
+        var fullName = string.Join('.', nsSegments.Append(structType.Name));
+        var irType = _module?.Types.FirstOrDefault(t => t.FullName == fullName);
+        if (irType is null || irType.Methods.Any(m => m.LuaName == "op_equals"))
+        {
+            return;
+        }
+
+        irType.Methods.Add(BuildOpEqualsFunction(structType, fields));
     }
 
     private static void SortTypesByInheritance(List<IRType> types)

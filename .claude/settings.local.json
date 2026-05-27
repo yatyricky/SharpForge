@@ -9,7 +9,11 @@
       "Bash(cd:*)",
       "Bash(ls tests/Transpiler.Tests/*.cs)",
       "Bash(rm \"C:/Users/yatyr/workspace/SharpForge/assets/libs/SFLib/Async/Task.cs\")",
-      "Bash(rmdir \"C:/Users/yatyr/workspace/SharpForge/assets/libs/SFLib/Async\")"
+      "Bash(rmdir \"C:/Users/yatyr/workspace/SharpForge/assets/libs/SFLib/Async\")",
+      "Bash(mkdir -p /tmp/sf-test-ns)",
+      "Bash(echo \"public static class Program { public static void Main\\(\\) { BJDebugMsg\\(\"\"hello\"\"\\); } }\")",
+      "Bash(dotnet run:*)",
+      "Read(//tmp/sf-test-ns/**)"
     ]
   }
 }
