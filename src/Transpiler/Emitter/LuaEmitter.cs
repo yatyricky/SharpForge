@@ -52,6 +52,19 @@ public sealed class LuaEmitter
 
         EnsureRootEmitted();
 
+        // Emit all LuaRequires at the top — before any type uses them (e.g., class() calls).
+        var emittedRequires = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var type in module.Types)
+        {
+            foreach (var moduleName in type.LuaRequires)
+            {
+                if (emittedRequires.Add(moduleName))
+                {
+                    WriteLine($"require(\"{EscapeLuaString(moduleName)}\")");
+                }
+            }
+        }
+
         foreach (var enumType in module.Enums)
         {
             EmitEnum(enumType);
@@ -290,10 +303,6 @@ public sealed class LuaEmitter
         // Type table.
         var typePath = path + "." + type.Name;
         WriteLine($"-- {type.FullName}");
-        foreach (var moduleName in type.LuaRequires)
-        {
-            WriteLine($"require(\"{EscapeLuaString(moduleName)}\")");
-        }
         if (type.LuaClass is { } luaClass)
         {
             EmitLuaClassDeclaration(typePath, luaClass);
@@ -851,7 +860,6 @@ public sealed class LuaEmitter
     private void EmitForEach(IRForEach f)
     {
         var collectionName = NewTemp("collection");
-        var indexName = NewTemp("i");
 
         WriteLine("do");
         _indent++;
@@ -859,8 +867,25 @@ public sealed class LuaEmitter
         _sb.Append("local ").Append(collectionName).Append(" = ");
         EmitExpr(f.Collection);
         _sb.Append('\n');
-        var iterator = $"ipairs({collectionName})";
-        WriteLine($"for {indexName}, {f.ItemName} in {iterator} do");
+
+        string indexVar;
+        string iterator;
+        if (f.Iterator is not null)
+        {
+            indexVar = "_";
+            var start = _sb.Length;
+            EmitExpr(f.Iterator);
+            var expr = _sb.ToString(start, _sb.Length - start);
+            _sb.Length = start;
+            iterator = $"({expr})({collectionName})";
+        }
+        else
+        {
+            indexVar = NewTemp("i");
+            iterator = $"ipairs({collectionName})";
+        }
+
+        WriteLine($"for {indexVar}, {f.ItemName} in {iterator} do");
         _indent++;
         EmitBlock(f.Body);
         _indent--;

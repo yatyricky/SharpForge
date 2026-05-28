@@ -8,6 +8,7 @@ namespace StdLib;
 /// Uses table.insert/table.remove for array operations.
 /// C# indexer (0-based) maps to Lua table (1-based) via get_Item/set_Item.
 /// </summary>
+[Lua(PackStruct = true)]
 public class List<T> : IIpairs<T>
 {
     private LuaObject _items;

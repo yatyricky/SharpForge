@@ -277,7 +277,7 @@ public sealed class IRLowering
         _currentIrType = irType;
         _currentIrTypeFullName = irType.FullName;
 
-        foreach (var iface in symbol.Interfaces.Where(i => !irType.IsStruct && !IsIgnoredClass(i)))
+        foreach (var iface in symbol.Interfaces.Where(i => !irType.IsStruct && !IsIgnoredClass(i) && !IsSFLibType(i)))
         {
             irType.Interfaces.Add(LowerTypeReference(iface));
         }
@@ -1088,6 +1088,9 @@ public sealed class IRLowering
             case ExpressionStatementSyntax es when IsIncrementOrDecrement(es.Expression):
                 return LowerIncrementOrDecrement(es.Expression, model);
 
+            case ExpressionStatementSyntax es when es.Expression is InvocationExpressionSyntax inv && LowerInvocationToStatements(inv, model) is { } invStatements:
+                return invStatements;
+
             case ExpressionStatementSyntax es:
                 return new IRExprStmt(LowerExpr(es.Expression, model));
 
@@ -1203,7 +1206,17 @@ public sealed class IRLowering
         var body = new IRBlock();
         var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
         LowerBlock(fe.Statement, body, model, ct);
-        return new IRForEach(itemName, collection, body);
+
+        // IIpairs: foreach on a type implementing IIpairs<T> uses IpairsNext
+        var collectionType = model.GetTypeInfo(fe.Expression).Type;
+        IRExpr? iterator = null;
+        if (collectionType is INamedTypeSymbol namedType && ImplementsIIpairs(namedType))
+        {
+            var typeRef = LowerTypeReference(namedType);
+            iterator = new IRMemberAccess(typeRef, "IpairsNext");
+        }
+
+        return new IRForEach(itemName, collection, body, iterator);
     }
 
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
@@ -1623,6 +1636,36 @@ public sealed class IRLowering
         }
     }
 
+    private IRStmt? LowerInvocationToStatements(InvocationExpressionSyntax inv, SemanticModel model)
+    {
+        var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
+        if (symbol is null)
+        {
+            return null;
+        }
+
+        var packStruct = IsPackStructType(symbol.ContainingType);
+        var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model, packStruct);
+        if (loweredArgs.PreludeStatements.Count == 0)
+        {
+            return null;
+        }
+
+        // Build call directly without IIFE — prelude will be separate statements
+        var callExpr = LowerInvocationCore(inv, symbol, loweredArgs.Arguments, model);
+
+        // PackStruct: unpack struct return values from table into flattened fields
+        if (TryUnpackPackStructReturn(callExpr, symbol) is { } unpacked)
+        {
+            callExpr = unpacked;
+        }
+
+        var stmts = new List<IRStmt>(loweredArgs.PreludeStatements.Count + 1);
+        stmts.AddRange(loweredArgs.PreludeStatements);
+        stmts.Add(new IRExprStmt(callExpr));
+        return new IRStatementList(stmts);
+    }
+
     private IRExpr LowerInvocation(InvocationExpressionSyntax inv, SemanticModel model)
     {
         var symbol = model.GetSymbolInfo(inv).Symbol as IMethodSymbol;
@@ -1632,8 +1675,17 @@ public sealed class IRLowering
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
         }
 
-        var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model);
-        return BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
+        var packStruct = IsPackStructType(symbol.ContainingType);
+        var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model, packStruct);
+        var callExpr = BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
+
+        // PackStruct: unpack struct return values from table into flattened fields
+        if (TryUnpackPackStructReturn(callExpr, symbol) is { } unpacked)
+        {
+            return unpacked;
+        }
+
+        return callExpr;
     }
 
     private IRStmt? TryLowerConditionalDelegateInvocationStatement(ExpressionSyntax expression, SemanticModel model)
@@ -1853,7 +1905,7 @@ public sealed class IRLowering
         }
     }
 
-    private LoweredCallArguments LowerCallArguments(IEnumerable<ExpressionSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
+    private LoweredCallArguments LowerCallArguments(IEnumerable<ExpressionSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model, bool packStruct = false)
     {
         var lowered = new List<IRExpr>();
         var prelude = new List<IRStmt>();
@@ -1872,9 +1924,31 @@ public sealed class IRLowering
 
             if (parameter?.Type is INamedTypeSymbol structType
                 && CanFlattenStructType(structType)
-                && GetFlattenableStructFields(structType).Any())
+                && GetFlattenableStructFields(structType).ToArray() is { Length: > 0 } fields)
             {
-                lowered.AddRange(LowerCallArgumentValues(argument, parameter, model, i < argumentList.Length - 1, prelude));
+                if (packStruct)
+                {
+                    var values = LowerStructArgumentValues(argument, structType, model);
+                    if (values.Count == fields.Length)
+                    {
+                        var tableFields = fields.Select((f, j) => (f.Name, values[j])).ToArray();
+                        lowered.Add(new IRTableLiteralNew(tableFields));
+                    }
+                    else
+                    {
+                        // Multi-return: capture into temp locals via prelude, then pack
+                        var tempNames = fields.Select(f => AllocateLuaName($"__pack_{f.Name}")).ToArray();
+                        prelude.Add(new IRMultiLocalDecl(tempNames, new[] { LowerExpr(argument, model) }));
+                        var tableFields = fields
+                            .Select((f, j) => (f.Name, Value: (IRExpr)new IRIdentifier(tempNames[j])))
+                            .ToArray();
+                        lowered.Add(new IRTableLiteralNew(tableFields));
+                    }
+                }
+                else
+                {
+                    lowered.AddRange(LowerCallArgumentValues(argument, parameter, model, i < argumentList.Length - 1, prelude));
+                }
                 continue;
             }
 
@@ -1890,11 +1964,11 @@ public sealed class IRLowering
         return new LoweredCallArguments(lowered, prelude);
     }
 
-    private LoweredCallArguments LowerCallArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IReadOnlyList<IParameterSymbol> parameters, SemanticModel model)
+    private LoweredCallArguments LowerCallArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IReadOnlyList<IParameterSymbol> parameters, SemanticModel model, bool packStruct = false)
     {
         if (!arguments.Any(argument => argument.NameColon is not null))
         {
-            return LowerCallArguments(arguments.Select(argument => argument.Expression), parameters, model);
+            return LowerCallArguments(arguments.Select(argument => argument.Expression), parameters, model, packStruct);
         }
 
         var prelude = new List<IRStmt>();
@@ -2245,6 +2319,13 @@ public sealed class IRLowering
                 && GetSymbolType(symbol) is INamedTypeSymbol symbolType
                 && CanFlattenStructType(symbolType))
             {
+                // PackStruct returns are tables, not flattened — can't decompose directly
+                if (IsPackStructType(symbol is IMethodSymbol m ? m.ContainingType : symbolType))
+                {
+                    values = Array.Empty<IRExpr>();
+                    return false;
+                }
+
                 values = [LowerExpr(expression, model)];
                 return true;
             }
@@ -2270,8 +2351,37 @@ public sealed class IRLowering
         if (localSymbol is null
             || statement.Declaration.Variables.Count != 1
             || variable.Initializer?.Value is not { } initializer
-            || !CanFlattenStructLocal(statement, localSymbol, model)
-            || !TryGetStructExpressionValues(initializer, model, out var fields, out var values))
+            || !CanFlattenStructLocal(statement, localSymbol, model))
+        {
+            return null;
+        }
+
+        // PackStruct return: two-statement unpack (temp + field extraction)
+        if (TryGetPackStructReturnType(initializer, model) is INamedTypeSymbol packStructType
+            && GetFlattenableStructFields(packStructType).ToArray() is { Length: > 0 } packFields)
+        {
+            var packBaseName = EscapeLuaKeyword(variable.Identifier.ValueText);
+            var packFieldLocals = new Dictionary<string, string>(StringComparer.Ordinal);
+            var packLocalNames = new List<string>(packFields.Length);
+            foreach (var field in packFields)
+            {
+                var localName = AllocateLuaName($"{packBaseName}__{field.Name}");
+                packFieldLocals[field.Name] = localName;
+                packLocalNames.Add(localName);
+            }
+
+            _flattenedStructLocals[localSymbol] = new FlattenedStructLocal(packFieldLocals);
+
+            var tmpName = AllocateLuaName("__unpack_tmp");
+            var tmpInit = new IRLocalDecl(tmpName, LowerExpr(initializer, model));
+            var fieldValues = packFields
+                .Select(f => (IRExpr)new IRMemberAccess(new IRIdentifier(tmpName), f.Name))
+                .ToArray();
+            var multiLocal = new IRMultiLocalDecl(packLocalNames, fieldValues);
+            return new IRStatementList([tmpInit, multiLocal]);
+        }
+
+        if (!TryGetStructExpressionValues(initializer, model, out var fields, out var values))
         {
             return null;
         }
@@ -4144,6 +4254,12 @@ public sealed class IRLowering
         => GetLuaAttributeValues(symbol, name).FirstOrDefault();
 
     private bool HasLuaTableLiteralAttribute(INamedTypeSymbol symbol)
+        => HasLuaBoolAttribute(symbol, "TableLiteral");
+
+    private bool IsPackStructType(ITypeSymbol? type)
+        => type is INamedTypeSymbol named && HasLuaBoolAttribute(named, "PackStruct");
+
+    private bool HasLuaBoolAttribute(INamedTypeSymbol symbol, string propertyName)
     {
         foreach (var attribute in symbol.GetAttributes())
         {
@@ -4155,7 +4271,7 @@ public sealed class IRLowering
 
             foreach (var arg in attribute.NamedArguments)
             {
-                if (arg.Key == "TableLiteral" && arg.Value.Value is true)
+                if (arg.Key == propertyName && arg.Value.Value is true)
                 {
                     return true;
                 }
@@ -4350,6 +4466,67 @@ public sealed class IRLowering
         irType.Methods.Add(BuildOpEqPackFunction(fields));
     }
 
+    private IRExpr? TryUnpackPackStructReturn(IRExpr call, IMethodSymbol method)
+    {
+        if (!IsPackStructType(method.ContainingType))
+        {
+            return null;
+        }
+
+        if (method.ReturnType is not INamedTypeSymbol returnType
+            || !CanFlattenStructType(returnType)
+            || GetFlattenableStructFields(returnType).ToArray() is not { Length: > 0 } fields)
+        {
+            return null;
+        }
+
+        var tempName = AllocateLuaName("__struct_tmp");
+        var body = new IRBlock();
+        body.Statements.Add(new IRLocalDecl(tempName, call));
+        var tableFields = fields
+            .Select(f => (f.Name, Value: (IRExpr)new IRMemberAccess(new IRIdentifier(tempName), f.Name)))
+            .ToArray();
+        body.Statements.Add(new IRReturn(new IRTableLiteralNew(tableFields)));
+        return BuildImmediatelyInvokedExpression(body);
+    }
+
+    private static bool ImplementsIIpairs(INamedTypeSymbol type)
+        => type.AllInterfaces.Any(i =>
+            i is { Name: "IIpairs", ContainingNamespace: { } ns }
+            && ns.ToDisplayString() == "SFLib.Interop");
+
+    private INamedTypeSymbol? TryGetPackStructReturnType(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (expression is not (InvocationExpressionSyntax or ElementAccessExpressionSyntax or MemberAccessExpressionSyntax))
+        {
+            return null;
+        }
+
+        var symbol = model.GetSymbolInfo(expression).Symbol;
+        INamedTypeSymbol? containingType = symbol switch
+        {
+            IMethodSymbol method => method.ContainingType,
+            IPropertySymbol property => property.ContainingType,
+            _ => null,
+        };
+
+        if (containingType is null || !IsPackStructType(containingType))
+        {
+            return null;
+        }
+
+        var returnType = symbol switch
+        {
+            IMethodSymbol method => method.ReturnType,
+            IPropertySymbol property => property.Type,
+            _ => null,
+        };
+
+        return returnType is INamedTypeSymbol named && CanFlattenStructType(named) && GetFlattenableStructFields(named).Any()
+            ? named
+            : null;
+    }
+
     private static void SortTypesByInheritance(List<IRType> types)
     {
         types.Sort((a, b) => string.CompareOrdinal(a.FullName, b.FullName));
@@ -4411,9 +4588,9 @@ public sealed class IRLowering
             CollectTypeReferences(field.Initializer!, dependencies);
         }
 
-        foreach (var staticConstructor in type.Methods.Where(m => m.IsStaticConstructor))
+        foreach (var method in type.Methods)
         {
-            CollectTypeReferences(staticConstructor.Body, dependencies);
+            CollectTypeReferences(method.Body, dependencies);
         }
 
         return dependencies;
