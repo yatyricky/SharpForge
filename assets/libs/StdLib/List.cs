@@ -102,7 +102,7 @@ public class List<T> : IIpairs<T>
         _version++;
     }
 
-    public Func<(int, T)> IpairsNext(LuaObject table)
+    public Func<(int, T)> IpairsNext()
     {
         var version = _version;
         var index = 0;
@@ -110,8 +110,8 @@ public class List<T> : IIpairs<T>
         {
             if (version != _version) throw new Exception("Collection was modified");
             index++;
-            var value = LuaInterop.Get<T>(table, index);
-            if (value == null) return (0, default!);
+            var value = LuaInterop.Get<T>(_items, index);
+            if (value == null) return default;
             return (index, value);
         };
     }

@@ -65,6 +65,19 @@ public sealed class LuaEmitter
             }
         }
 
+        // Pre-compute which type paths will use class() — skip {} emission for these.
+        var luaClassPaths = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in module.Types)
+        {
+            if (t.LuaClass is not null)
+            {
+                var tp = _rootTable;
+                foreach (var seg in t.NamespaceSegments) tp += "." + seg;
+                tp += "." + t.Name;
+                luaClassPaths.Add(tp);
+            }
+        }
+
         foreach (var enumType in module.Enums)
         {
             EmitEnum(enumType);
@@ -72,7 +85,7 @@ public sealed class LuaEmitter
 
         for (int i = 0; i < module.Types.Count; i++)
         {
-            EmitType(module.Types[i]);
+            EmitType(module.Types[i], luaClassPaths);
         }
 
         EmitEntryPointCall(module);
@@ -270,7 +283,7 @@ public sealed class LuaEmitter
         _sb.Append('\n');
     }
 
-    private void EmitType(IRType type)
+    private void EmitType(IRType type, HashSet<string> luaClassPaths)
     {
         if (type.IsTableLiteral)
         {
@@ -290,11 +303,12 @@ public sealed class LuaEmitter
         EmitComments(type.Comments);
 
         // Walk namespace segments and emit each level once.
+        // Skip paths that correspond to types with LuaClass — they'll be declared with class() later.
         var path = _rootTable;
         foreach (var seg in type.NamespaceSegments)
         {
             path = path + "." + seg;
-            if (_emittedTablePaths.Add(path))
+            if (_emittedTablePaths.Add(path) && !luaClassPaths.Contains(path))
             {
                 WriteLine($"{path} = {path} or {{}}");
             }

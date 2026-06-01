@@ -835,13 +835,20 @@ public sealed class IRLowering
                 IsInstance = !isStatic,
             };
 
-            foreach (var parameter in indexer.ParameterList.Parameters)
+            // Use the accessor method's parameter symbols (not the property's) so that
+            // GetSymbolInfo in the body resolves to the same symbols.
+            var accessorSymbol = model.GetDeclaredSymbol(accessor, ct) as IMethodSymbol;
+            var syntaxParams = indexer.ParameterList.Parameters;
+            for (var i = 0; i < syntaxParams.Count; i++)
             {
-                fn.Parameters.Add(DeclareLuaName(model.GetDeclaredSymbol(parameter, ct), parameter.Identifier.ValueText));
+                var paramSymbol = accessorSymbol is not null && i < accessorSymbol.Parameters.Length
+                    ? accessorSymbol.Parameters[i]
+                    : model.GetDeclaredSymbol(syntaxParams[i], ct);
+                fn.Parameters.Add(DeclareLuaName(paramSymbol, syntaxParams[i].Identifier.ValueText));
             }
-            if (!isGetter)
+            if (!isGetter && accessorSymbol is not null)
             {
-                fn.Parameters.Add(DeclareLuaName(indexerSymbol?.SetMethod?.Parameters.LastOrDefault(), "value"));
+                fn.Parameters.Add(DeclareLuaName(accessorSymbol.Parameters.LastOrDefault(), "value"));
             }
 
             LowerAccessorBody(accessor, fn.Body, model, ct);
@@ -2912,15 +2919,27 @@ public sealed class IRLowering
             return new IRMultiReturn(values);
         }
 
-        if (model.GetTypeInfo(expression).Type is INamedTypeSymbol type
-            && CanFlattenStructType(type)
-            && GetFlattenableStructFields(type).Any())
+        // `return default` for tuple types → bare `return` (nil in Lua, stops iterators).
+        if (IsDefaultExpression(expression) && model.GetTypeInfo(expression).Type is INamedTypeSymbol defType && defType.IsTupleType)
         {
-            return new IRMultiReturn(LowerStructArgumentValues(expression, type, model));
+            return new IRReturn(null);
+        }
+
+        if (model.GetTypeInfo(expression).Type is INamedTypeSymbol flatType
+            && CanFlattenStructType(flatType)
+            && GetFlattenableStructFields(flatType).Any())
+        {
+            return new IRMultiReturn(LowerStructArgumentValues(expression, flatType, model));
         }
 
         return null;
     }
+
+    private static bool IsDefaultExpression(ExpressionSyntax expression)
+        => expression is DefaultExpressionSyntax
+           || (expression is PostfixUnaryExpressionSyntax postfix
+               && postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression)
+               && postfix.Operand is DefaultExpressionSyntax);
 
     private IRStmt LowerReturnExpression(ExpressionSyntax expression, SemanticModel model)
         => TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model));
@@ -3165,14 +3184,14 @@ public sealed class IRLowering
 
     private void LowerExpressionAnonymousFunctionBody(ExpressionSyntax expressionBody, IRBlock body, SemanticModel model, AnonymousFunctionExpressionSyntax anonymousFunction)
     {
-        var expression = LowerExpr(expressionBody, model);
         if (AnonymousFunctionReturnsVoid(anonymousFunction, model))
         {
-            body.Statements.Add(new IRExprStmt(expression));
+            body.Statements.Add(new IRExprStmt(LowerExpr(expressionBody, model)));
             return;
         }
 
-        body.Statements.Add(new IRReturn(expression));
+        // Use LowerReturnExpression so tuple returns become IRMultiReturn (not IRTableLiteralNew).
+        body.Statements.Add(LowerReturnExpression(expressionBody, model));
     }
 
     private static bool AnonymousFunctionReturnsVoid(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
@@ -3955,6 +3974,7 @@ public sealed class IRLowering
         if (symbol is not null)
         {
             _luaNames[symbol] = luaName;
+            _luaNames[symbol.OriginalDefinition] = luaName;
         }
         return luaName;
     }
@@ -4540,8 +4560,18 @@ public sealed class IRLowering
             Visit(type);
         }
 
+        // Enforce nesting order: parent types must appear before their nested types.
+        // Topological sort may not resolve this when there are circular dependencies
+        // between parent and nested types (parent methods reference nested type).
+        var finalOrder = new List<IRType>(sorted.Count);
+        var placed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var type in sorted)
+        {
+            PlaceWithParents(type, sorted, byName, finalOrder, placed);
+        }
+
         types.Clear();
-        types.AddRange(sorted);
+        types.AddRange(finalOrder);
 
         void Visit(IRType type)
         {
@@ -4562,6 +4592,27 @@ public sealed class IRLowering
             visited.Add(type.FullName);
             sorted.Add(type);
         }
+    }
+
+    private static void PlaceWithParents(IRType type, List<IRType> sorted, Dictionary<string, IRType> byName, List<IRType> finalOrder, HashSet<string> placed)
+    {
+        if (placed.Contains(type.FullName))
+        {
+            return;
+        }
+
+        // If this type has namespace segments that match a parent type, place the parent first.
+        if (type.NamespaceSegments.Count > 0)
+        {
+            var parentPath = string.Join('.', type.NamespaceSegments);
+            if (byName.TryGetValue(parentPath, out var parent) && !placed.Contains(parentPath))
+            {
+                PlaceWithParents(parent, sorted, byName, finalOrder, placed);
+            }
+        }
+
+        placed.Add(type.FullName);
+        finalOrder.Add(type);
     }
 
     private static IEnumerable<string> GetTypeDependencies(IRType type)
