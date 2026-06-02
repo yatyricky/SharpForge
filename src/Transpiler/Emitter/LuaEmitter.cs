@@ -26,7 +26,6 @@ public sealed class LuaEmitter
     private bool _emitTypeHelpers;
     private bool _emitStringConcatHelper;
     private bool _emitCoroutineHelpers;
-    private bool _emitTernaryHelper;
 
     public LuaEmitter(string rootTable)
     {
@@ -46,7 +45,6 @@ public sealed class LuaEmitter
         _emitTypeHelpers = UsesTypeChecks(module);
         _emitStringConcatHelper = UsesStringConcat(module);
         _emitCoroutineHelpers = UsesCoroutineHelpers(module);
-        _emitTernaryHelper = UsesTernaryHelper(module);
         _usedIdentifiers.Clear();
         CollectIdentifiers(module);
 
@@ -112,21 +110,7 @@ public sealed class LuaEmitter
             {
                 WriteCoroutineHelpers();
             }
-            if (_emitTernaryHelper)
-            {
-                WriteTernaryHelper();
-            }
         }
-    }
-
-    private void WriteTernaryHelper()
-    {
-        WriteLine($"function {_rootTable}.Ternary__(cond, a, b)");
-        _indent++;
-        WriteLine("if cond then return a else return b end");
-        _indent--;
-        WriteLine("end");
-        _sb.Append('\n');
     }
 
     private void WriteRootTypeHelpers()
@@ -1119,13 +1103,13 @@ public sealed class LuaEmitter
                 _sb.Append(')');
                 break;
             case IRTernary ternary:
-                _sb.Append(_rootTable).Append(".Ternary__(");
+                _sb.Append("(function() if ");
                 EmitExpr(ternary.Condition);
-                _sb.Append(", ");
+                _sb.Append(" then return ");
                 EmitExpr(ternary.WhenTrue);
-                _sb.Append(", ");
+                _sb.Append(" else return ");
                 EmitExpr(ternary.WhenFalse);
-                _sb.Append(')');
+                _sb.Append(" end end)()");
                 break;
             case IRCoalesceAssignment coalesceAssignment:
                 _sb.Append("(function()\n");
@@ -1322,67 +1306,6 @@ public sealed class LuaEmitter
 
     private static bool UsesCoroutineHelpers(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => m.IsCoroutine || BlockUsesCoroutineHelpers(m.Body));
-
-    private static bool UsesTernaryHelper(IRModule module)
-        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesTernaryHelper(m.Body));
-
-    private static bool BlockUsesTernaryHelper(IRBlock block)
-        => block.Statements.Any(StmtUsesTernaryHelper);
-
-    private static bool StmtUsesTernaryHelper(IRStmt stmt)
-        => stmt switch
-        {
-            IRStatementList list => list.Statements.Any(StmtUsesTernaryHelper),
-            IRBlock block => BlockUsesTernaryHelper(block),
-            IRLocalDecl local => local.Initializer is not null && ExprUsesTernaryHelper(local.Initializer),
-            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesTernaryHelper),
-            IRAssign assign => ExprUsesTernaryHelper(assign.Target) || ExprUsesTernaryHelper(assign.Value),
-            IRMultiAssign assign => assign.Targets.Any(ExprUsesTernaryHelper) || assign.Values.Any(ExprUsesTernaryHelper),
-            IRExprStmt exprStmt => ExprUsesTernaryHelper(exprStmt.Expression),
-            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesTernaryHelper),
-            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesTernaryHelper),
-            IRReturn ret => ret.Value is not null && ExprUsesTernaryHelper(ret.Value),
-            IRMultiReturn ret => ret.Values.Any(ExprUsesTernaryHelper),
-            IRIf iff => ExprUsesTernaryHelper(iff.Condition) || BlockUsesTernaryHelper(iff.Then) || (iff.Else is not null && BlockUsesTernaryHelper(iff.Else)),
-            IRSwitch sw => ExprUsesTernaryHelper(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesTernaryHelper) || BlockUsesTernaryHelper(section.Body)),
-            IRWhile wh => ExprUsesTernaryHelper(wh.Condition) || BlockUsesTernaryHelper(wh.Body),
-            IRFor fr => (fr.Initializer is not null && StmtUsesTernaryHelper(fr.Initializer))
-                || (fr.Condition is not null && ExprUsesTernaryHelper(fr.Condition))
-                || fr.Incrementors.Any(StmtUsesTernaryHelper)
-                || BlockUsesTernaryHelper(fr.Body),
-            IRForEach fe => ExprUsesTernaryHelper(fe.Collection) || BlockUsesTernaryHelper(fe.Body),
-            IRTry tr => BlockUsesTernaryHelper(tr.Try)
-                || tr.Catches.Any(catchClause => BlockUsesTernaryHelper(catchClause.Body))
-                || (tr.Finally is not null && BlockUsesTernaryHelper(tr.Finally)),
-            IRThrow th => th.Value is not null && ExprUsesTernaryHelper(th.Value),
-            _ => false,
-        };
-
-    private static bool ExprUsesTernaryHelper(IRExpr expr)
-        => expr switch
-        {
-            IRTernary => true,
-            IRMemberAccess member => ExprUsesTernaryHelper(member.Target),
-            IRElementAccess element => ExprUsesTernaryHelper(element.Target) || ExprUsesTernaryHelper(element.Index),
-            IRLength length => ExprUsesTernaryHelper(length.Target),
-            IRInvocation invocation => ExprUsesTernaryHelper(invocation.Callee) || invocation.Arguments.Any(ExprUsesTernaryHelper),
-            IRFunctionExpression functionExpression => BlockUsesTernaryHelper(functionExpression.Body),
-            IRArrayLiteral array => array.Items.Any(ExprUsesTernaryHelper),
-            IRArrayNew arrayNew => ExprUsesTernaryHelper(arrayNew.Size),
-            IRStringConcat concat => concat.Parts.Any(ExprUsesTernaryHelper),
-            IRLuaRequire luaRequire => ExprUsesTernaryHelper(luaRequire.ModuleName),
-            IRLuaGlobal luaGlobal => ExprUsesTernaryHelper(luaGlobal.Name),
-            IRLuaAccess luaAccess => ExprUsesTernaryHelper(luaAccess.Target) || ExprUsesTernaryHelper(luaAccess.Name),
-            IRLuaMethodInvocation luaMethodInvocation => ExprUsesTernaryHelper(luaMethodInvocation.Target) || ExprUsesTernaryHelper(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesTernaryHelper),
-            IRRuntimeInvocation runtimeInvocation => runtimeInvocation.Arguments.Any(ExprUsesTernaryHelper),
-            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesTernaryHelper(f.Value)),
-            IRBinary binary => ExprUsesTernaryHelper(binary.Left) || ExprUsesTernaryHelper(binary.Right),
-            IRUnary unary => ExprUsesTernaryHelper(unary.Operand),
-            IRCoalesceAssignment coalesceAssignment => ExprUsesTernaryHelper(coalesceAssignment.Target) || ExprUsesTernaryHelper(coalesceAssignment.Value),
-            IRIs isExpr => ExprUsesTernaryHelper(isExpr.Value) || ExprUsesTernaryHelper(isExpr.Type),
-            IRAs asExpr => ExprUsesTernaryHelper(asExpr.Value) || ExprUsesTernaryHelper(asExpr.Type),
-            _ => false,
-        };
 
     private static bool BlockUsesTypeChecks(IRBlock block)
         => block.Statements.Any(StmtUsesTypeChecks);

@@ -35,3 +35,12 @@ When testing a feature that conditionally generates code (e.g., struct equality 
 ## Test on real code when possible
 
 For features that affect the user's project (like struct equality emission), verify against the actual project output at `C:\Users\yatyr\workspace\lua-maps\LuaProject\Main.lua` in addition to isolated tests.
+
+## Every bug fix must have a regression test
+
+When fixing a bug, you MUST add a test that reproduces the bug and verifies the fix. The test should:
+1. Fail before the fix (reproduces the bug)
+2. Pass after the fix (verifies correctness)
+3. Remain in the test suite permanently (prevents regression)
+
+Do not ship a bug fix without a corresponding test. This is non-negotiable.
