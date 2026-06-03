@@ -1,6 +1,6 @@
 ---
-description: "Use when writing, reviewing, or modifying transpiler tests."
-applyTo: "tests/Transpiler.Tests/**"
+description: "Test quality rules — always apply when writing, reviewing, or modifying tests."
+alwaysApply: true
 ---
 
 # Test Quality

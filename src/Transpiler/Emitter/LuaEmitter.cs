@@ -26,6 +26,7 @@ public sealed class LuaEmitter
     private bool _emitTypeHelpers;
     private bool _emitStringConcatHelper;
     private bool _emitCoroutineHelpers;
+    private bool _emitStrSplitHelper;
 
     public LuaEmitter(string rootTable)
     {
@@ -45,6 +46,7 @@ public sealed class LuaEmitter
         _emitTypeHelpers = UsesTypeChecks(module);
         _emitStringConcatHelper = UsesStringConcat(module);
         _emitCoroutineHelpers = UsesCoroutineHelpers(module);
+        _emitStrSplitHelper = UsesStrSplit(module);
         _usedIdentifiers.Clear();
         CollectIdentifiers(module);
 
@@ -109,6 +111,10 @@ public sealed class LuaEmitter
             if (_emitCoroutineHelpers)
             {
                 WriteCoroutineHelpers();
+            }
+            if (_emitStrSplitHelper)
+            {
+                WriteStrSplitHelper();
             }
         }
     }
@@ -228,6 +234,44 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end)");
         WriteLine("return coroutine.yield()");
+        _indent--;
+        WriteLine("end");
+        _sb.Append('\n');
+    }
+
+    private void WriteStrSplitHelper()
+    {
+        WriteLine($"function {_rootTable}.StrSplit__(str, sep)");
+        _indent++;
+        WriteLine("local result = {}");
+        WriteLine("if str == nil or str == \"\" then return result end");
+        WriteLine("if sep == nil or sep == \"\" then");
+        _indent++;
+        WriteLine("for i = 1, #str do");
+        _indent++;
+        WriteLine("result[i] = str:sub(i, i)");
+        _indent--;
+        WriteLine("end");
+        WriteLine("return result");
+        _indent--;
+        WriteLine("end");
+        // Use string.find with plain=true for literal separator matching.
+        // Handles multi-char separators, special chars, consecutive separators, and trailing separators.
+        WriteLine("local pos = 1");
+        WriteLine("while true do");
+        _indent++;
+        WriteLine("local start, finish = string.find(str, sep, pos, true)");
+        WriteLine("if start == nil then");
+        _indent++;
+        WriteLine("table.insert(result, string.sub(str, pos))");
+        WriteLine("break");
+        _indent--;
+        WriteLine("end");
+        WriteLine("table.insert(result, string.sub(str, pos, start - 1))");
+        WriteLine("pos = finish + 1");
+        _indent--;
+        WriteLine("end");
+        WriteLine("return result");
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
@@ -1306,6 +1350,67 @@ public sealed class LuaEmitter
 
     private static bool UsesCoroutineHelpers(IRModule module)
         => module.Types.SelectMany(t => t.Methods).Any(m => m.IsCoroutine || BlockUsesCoroutineHelpers(m.Body));
+
+    private static bool UsesStrSplit(IRModule module)
+        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesStrSplit(m.Body));
+
+    private static bool BlockUsesStrSplit(IRBlock block)
+        => block.Statements.Any(StmtUsesStrSplit);
+
+    private static bool StmtUsesStrSplit(IRStmt stmt)
+        => stmt switch
+        {
+            IRStatementList list => list.Statements.Any(StmtUsesStrSplit),
+            IRBlock block => BlockUsesStrSplit(block),
+            IRLocalDecl local => local.Initializer is not null && ExprUsesStrSplit(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesStrSplit),
+            IRAssign assign => ExprUsesStrSplit(assign.Target) || ExprUsesStrSplit(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesStrSplit) || assign.Values.Any(ExprUsesStrSplit),
+            IRExprStmt exprStmt => ExprUsesStrSplit(exprStmt.Expression),
+            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesStrSplit),
+            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesStrSplit),
+            IRReturn ret => ret.Value is not null && ExprUsesStrSplit(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesStrSplit),
+            IRIf iff => ExprUsesStrSplit(iff.Condition) || BlockUsesStrSplit(iff.Then) || (iff.Else is not null && BlockUsesStrSplit(iff.Else)),
+            IRSwitch sw => ExprUsesStrSplit(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesStrSplit) || BlockUsesStrSplit(section.Body)),
+            IRWhile wh => ExprUsesStrSplit(wh.Condition) || BlockUsesStrSplit(wh.Body),
+            IRFor fr => (fr.Initializer is not null && StmtUsesStrSplit(fr.Initializer))
+                || (fr.Condition is not null && ExprUsesStrSplit(fr.Condition))
+                || fr.Incrementors.Any(StmtUsesStrSplit)
+                || BlockUsesStrSplit(fr.Body),
+            IRForEach fe => ExprUsesStrSplit(fe.Collection) || BlockUsesStrSplit(fe.Body),
+            IRTry tr => BlockUsesStrSplit(tr.Try)
+                || tr.Catches.Any(catchClause => BlockUsesStrSplit(catchClause.Body))
+                || (tr.Finally is not null && BlockUsesStrSplit(tr.Finally)),
+            IRThrow th => th.Value is not null && ExprUsesStrSplit(th.Value),
+            _ => false,
+        };
+
+    private static bool ExprUsesStrSplit(IRExpr expr)
+        => expr switch
+        {
+            IRRuntimeInvocation inv => inv.Name == "StrSplit__" || inv.Arguments.Any(ExprUsesStrSplit),
+            IRMemberAccess member => ExprUsesStrSplit(member.Target),
+            IRElementAccess element => ExprUsesStrSplit(element.Target) || ExprUsesStrSplit(element.Index),
+            IRLength length => ExprUsesStrSplit(length.Target),
+            IRInvocation invocation => ExprUsesStrSplit(invocation.Callee) || invocation.Arguments.Any(ExprUsesStrSplit),
+            IRFunctionExpression functionExpression => BlockUsesStrSplit(functionExpression.Body),
+            IRArrayLiteral array => array.Items.Any(ExprUsesStrSplit),
+            IRArrayNew arrayNew => ExprUsesStrSplit(arrayNew.Size),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesStrSplit(f.Value)),
+            IRStringConcat concat => concat.Parts.Any(ExprUsesStrSplit),
+            IRLuaRequire luaRequire => ExprUsesStrSplit(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesStrSplit(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesStrSplit(luaAccess.Target) || ExprUsesStrSplit(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesStrSplit(luaMethodInvocation.Target) || ExprUsesStrSplit(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesStrSplit),
+            IRBinary binary => ExprUsesStrSplit(binary.Left) || ExprUsesStrSplit(binary.Right),
+            IRUnary unary => ExprUsesStrSplit(unary.Operand),
+            IRTernary ternary => ExprUsesStrSplit(ternary.Condition) || ExprUsesStrSplit(ternary.WhenTrue) || ExprUsesStrSplit(ternary.WhenFalse),
+            IRCoalesceAssignment coalesceAssignment => ExprUsesStrSplit(coalesceAssignment.Target) || ExprUsesStrSplit(coalesceAssignment.Value),
+            IRIs isExpr => ExprUsesStrSplit(isExpr.Value) || ExprUsesStrSplit(isExpr.Type),
+            IRAs asExpr => ExprUsesStrSplit(asExpr.Value) || ExprUsesStrSplit(asExpr.Type),
+            _ => false,
+        };
 
     private static bool BlockUsesTypeChecks(IRBlock block)
         => block.Statements.Any(StmtUsesTypeChecks);

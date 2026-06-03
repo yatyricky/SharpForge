@@ -108,14 +108,14 @@ public class RegressionTests
     [Fact]
     public async Task String_instance_methods_produce_diagnostic()
     {
-        // Bug: string.Split silently transpiled to name:Split__k2lg4(nil) — broken Lua.
-        // Fix: System.String instance methods produce diagnostic errors.
+        // string.Split is now lowered to StrSplit__ helper.
+        // Other unsupported string methods should produce diagnostics.
         var src = """
             public static class Demo
             {
-                public static string[] SplitPath(string name)
+                public static string DoReplace(string name)
                 {
-                    return name.Split('/');
+                    return name.Replace("a", "b");
                 }
             }
             """;
@@ -128,6 +128,64 @@ public class RegressionTests
             .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
         var module = new SharpForge.Transpiler.Frontend.IRLowering().Lower(compilation, CancellationToken.None);
 
-        Assert.Contains(module.Diagnostics, d => d.Contains("string.Split is not supported", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, d => d.Contains("string.Replace is not supported", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task String_split_lowers_to_helper()
+    {
+        // string.Split should be lowered to SF__.StrSplit__ helper
+        var src = """
+            public static class Demo
+            {
+                public static string[] SplitPath(string name)
+                {
+                    return name.Split('/');
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        Assert.Contains("SF__.StrSplit__(name, \"/\")", lua);
+        Assert.DoesNotContain("Split__k", lua);
+    }
+
+    [Fact]
+    public async Task Struct_local_used_as_initializer_is_flattened()
+    {
+        // Bug: var tarPos = globalPos; (local declaration) was not recognized
+        // as a supported struct use, so globalPos was not flattened.
+        // Fix: Added EqualsValueClause check in CanFlattenStructLocal.
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+                public Vector3(float x, float y, float z) { this.x = x; this.y = y; this.z = z; }
+            }
+
+            public static class P
+            {
+                public static void Run()
+                {
+                    var pos = new Vector3(1, 2, 3);
+                    var copy = pos;
+                    var a = copy.x;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // pos should be flattened into pos__x, pos__y, pos__z
+        Assert.Contains("pos__x", lua);
+        Assert.Contains("pos__y", lua);
+        Assert.Contains("pos__z", lua);
+        // copy should also be flattened (assigned from pos)
+        Assert.Contains("copy__x", lua);
+        Assert.Contains("copy__y", lua);
+        Assert.Contains("copy__z", lua);
     }
 }

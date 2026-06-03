@@ -1837,6 +1837,11 @@ public sealed class IRLowering
 
             if (symbol.ContainingType?.SpecialType == SpecialType.System_String)
             {
+                if (symbol.Name == "Split" && callArgs.Count == 1)
+                {
+                    return new IRRuntimeInvocation("StrSplit__", new[] { LowerExpr(memberAccess.Expression, model), callArgs[0] });
+                }
+
                 AddDiagnostic(inv.GetLocation(), $"string.{symbol.Name} is not supported; use SFLib.Interop.@string for Lua string operations");
                 return new IRLiteral(null, IRLiteralKind.Nil);
             }
@@ -2833,6 +2838,15 @@ public sealed class IRLowering
                 if (id.Parent is ReturnStatementSyntax returnStmt
                     && returnStmt.Expression == id
                     && IsStructExpression(id, model))
+                {
+                    continue;
+                }
+
+                // var other = structLocal; — local declaration using struct local as initializer
+                if (id.Parent is EqualsValueClauseSyntax eqClause
+                    && eqClause.Value == id
+                    && eqClause.Parent is VariableDeclaratorSyntax declarator
+                    && declarator.Parent?.Parent is LocalDeclarationStatementSyntax)
                 {
                     continue;
                 }
@@ -5136,6 +5150,7 @@ public sealed class IRLowering
                 _ => new IRLiteral(lit.Token.Value, IRLiteralKind.Real),
             },
             SyntaxKind.StringLiteralExpression => new IRLiteral(lit.Token.ValueText, IRLiteralKind.String),
+            SyntaxKind.CharacterLiteralExpression => new IRLiteral(lit.Token.ValueText, IRLiteralKind.String),
             _ => new IRLiteral(null, IRLiteralKind.Nil),
         };
     }
