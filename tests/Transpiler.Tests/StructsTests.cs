@@ -419,7 +419,7 @@ public class StructsTests
         Assert.Contains("local globalPos__x, globalPos__y, globalPos__z = self.gameObject.transform.position__x, self.gameObject.transform.position__y, self.gameObject.transform.position__z", lua);
         Assert.Contains("local globalRot__x, globalRot__y, globalRot__z, globalRot__w = self.gameObject.transform.rotation__x, self.gameObject.transform.rotation__y, self.gameObject.transform.rotation__z, self.gameObject.transform.rotation__w", lua);
         Assert.Contains("local globalScale__x, globalScale__y, globalScale__z = self.gameObject.transform.localScale__x, self.gameObject.transform.localScale__y, self.gameObject.transform.localScale__z", lua);
-        Assert.Contains("globalPos__x, globalPos__y, globalPos__z = SF__.Vector3.op_Addition(parent.position__x, parent.position__y, parent.position__z, SF__.Quaternion.op_Multiply__quaternionvector3(parent.rotation__x, parent.rotation__y, parent.rotation__z, parent.rotation__w, SF__.Vector3.Scale(parent.localScale__x, parent.localScale__y, parent.localScale__z, globalPos__x, globalPos__y, globalPos__z)))", lua);
+        Assert.Contains("globalPos__x, globalPos__y, globalPos__z = SF__.Vector3.op_Addition(parent.position__x, parent.position__y, parent.position__z, SF__.Quaternion.op_Multiply__iyiose(parent.rotation__x, parent.rotation__y, parent.rotation__z, parent.rotation__w, SF__.Vector3.Scale(parent.localScale__x, parent.localScale__y, parent.localScale__z, globalPos__x, globalPos__y, globalPos__z)))", lua);
         Assert.DoesNotContain(".position.x", lua);
         Assert.DoesNotContain(".rotation.x", lua);
         Assert.DoesNotContain(".localScale.x", lua);
@@ -775,7 +775,7 @@ public class StructsTests
 
         Assert.Matches(@"function SF__\.Vector2\.ClampMagnitude\(self__x\d*, self__y\d*, mag\)", lua);
         Assert.Matches(@"local value__x\d*, value__y\d* = SF__\.Vector2\.get_Normalized\(self__x\d*, self__y\d*\)", lua);
-        Assert.Matches(@"return SF__\.Vector2\.op_Multiply__vector2f\(value__x\d*, value__y\d*, mag\)", lua);
+        Assert.Matches(@"return SF__\.Vector2\.op_Multiply__ahdf\(value__x\d*, value__y\d*, mag\)", lua);
         Assert.DoesNotMatch(@"get_Normalized\(self__x\d*, self__y\d*\)\.x", lua);
         Assert.DoesNotMatch(@"get_Normalized\(self__x\d*, self__y\d*\)\.y", lua);
     }

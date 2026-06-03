@@ -173,12 +173,12 @@ public class ClassesTests
 
         Assert.Contains("function SF__.GameObject.__Init__s(self, name)", lua);
         Assert.Contains("self.Name = name", lua);
-        Assert.Matches(@"function SF__\.GameObject\.__Init__sgameobject\(self, name\d*, parent\)", lua);
+        Assert.Matches(@"function SF__\.GameObject\.__Init__sx13\(self, name\d*, parent\)", lua);
         Assert.Matches(@"SF__\.GameObject\.__Init__s\(self, name\d*\)", lua);
         Assert.Contains("self.Parent = parent", lua);
 
-        var secondCtorStart = lua.IndexOf("function SF__.GameObject.__Init__sgameobject", StringComparison.Ordinal);
-        var secondCtorEnd = lua.IndexOf("function SF__.GameObject.New__sgameobject", StringComparison.Ordinal);
+        var secondCtorStart = lua.IndexOf("function SF__.GameObject.__Init__sx13", StringComparison.Ordinal);
+        var secondCtorEnd = lua.IndexOf("function SF__.GameObject.New__sx13", StringComparison.Ordinal);
         var secondCtorBody = lua[secondCtorStart..secondCtorEnd];
         var chainedInitIndex = secondCtorBody.IndexOf("SF__.GameObject.__Init__s(self, name", StringComparison.Ordinal);
         var parentAssignmentIndex = secondCtorBody.IndexOf("self.Parent = parent", StringComparison.Ordinal);

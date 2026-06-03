@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using SharpForge.Transpiler.IR;
 using SharpForge.Transpiler.Pipeline;
 using System.Globalization;
+using System.Text;
 
 namespace SharpForge.Transpiler.Frontend;
 
@@ -4031,6 +4032,8 @@ public sealed class IRLowering
 
     private string GetLuaMethodName(IMethodSymbol method)
     {
+        method = method.OriginalDefinition;
+
         if (GetLuaAttributeName(method) is { Length: > 0 } attributeName)
         {
             return attributeName;
@@ -4091,7 +4094,7 @@ public sealed class IRLowering
 
         if (type.TypeKind == TypeKind.Enum)
         {
-            return SimplifyLuaSignatureTypeName(type.Name);
+            return TypeQualifiedNameHash(type);
         }
 
         return type.SpecialType switch
@@ -4105,19 +4108,29 @@ public sealed class IRLowering
             SpecialType.System_String => "s",
             SpecialType.System_Object => "o",
             _ => type is INamedTypeSymbol { TypeArguments.Length: > 0 } namedType
-                ? SimplifyLuaSignatureTypeName(namedType.Name) + string.Concat(namedType.TypeArguments.Select(GetLuaTypeSignature))
-                : SimplifyLuaSignatureTypeName(type.Name),
+                ? TypeQualifiedNameHash(namedType) + string.Concat(namedType.TypeArguments.Select(GetLuaTypeSignature))
+                : TypeQualifiedNameHash(type),
         };
     }
 
-    private static string SimplifyLuaSignatureTypeName(string name)
+    private static string TypeQualifiedNameHash(ITypeSymbol type)
     {
-        var simplified = new string(name
-            .Where(char.IsLetterOrDigit)
-            .Select(char.ToLowerInvariant)
-            .ToArray());
+        var qualifiedName = type.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        var hash = (uint)qualifiedName.Aggregate(2166136261, (h, c) => (h ^ c) * 16777619);
+        return Base36Encode(hash % 46656);
+    }
 
-        return simplified.Length == 0 ? "p" : simplified;
+    private static string Base36Encode(uint value)
+    {
+        const string chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+        if (value == 0) return "0";
+        var sb = new StringBuilder(3);
+        while (value > 0)
+        {
+            sb.Insert(0, chars[(int)(value % 36)]);
+            value /= 36;
+        }
+        return sb.ToString();
     }
 
     private static string GetLuaOperatorName(string op)

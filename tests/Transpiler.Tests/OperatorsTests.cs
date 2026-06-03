@@ -50,10 +50,10 @@ public class OperatorsTests
 
         var lua = await TranspilerTestHelper.TranspileAsync(src, "OperatorOverloads.cs");
 
-        Assert.Contains("function SF__.Vector3.op_Multiply__vector3f(v__x, v__y, v__z, f)", lua);
-        Assert.Contains("function SF__.Vector3.op_Multiply__fvector3(", lua);
-        Assert.Contains("SF__.Vector3.op_Multiply__fvector3(2,", lua);
-        Assert.Contains("SF__.Vector3.op_Multiply__vector3f(value__x", lua);
+        Assert.Contains("function SF__.Vector3.op_Multiply__osef(v__x, v__y, v__z, f)", lua);
+        Assert.Contains("function SF__.Vector3.op_Multiply__fose(", lua);
+        Assert.Contains("SF__.Vector3.op_Multiply__fose(2,", lua);
+        Assert.Contains("SF__.Vector3.op_Multiply__osef(value__x", lua);
     }
 
     [Fact]
