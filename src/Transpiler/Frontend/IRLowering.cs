@@ -1835,6 +1835,12 @@ public sealed class IRLowering
                     UseColon: member.UseColon);
             }
 
+            if (symbol.ContainingType?.SpecialType == SpecialType.System_String)
+            {
+                AddDiagnostic(inv.GetLocation(), $"string.{symbol.Name} is not supported; use SFLib.Interop.@string for Lua string operations");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
             return new IRInvocation(
                 new IRMemberAccess(LowerExpr(memberAccess.Expression, model), GetLuaMethodName(symbol)),
                 callArgs,

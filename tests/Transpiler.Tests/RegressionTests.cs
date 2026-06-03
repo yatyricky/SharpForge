@@ -104,4 +104,30 @@ public class RegressionTests
         // set_Item: parameter names must be consistent
         Assert.Contains("function SF__.Container:set_Item(key", lua);
     }
+
+    [Fact]
+    public async Task String_instance_methods_produce_diagnostic()
+    {
+        // Bug: string.Split silently transpiled to name:Split__k2lg4(nil) — broken Lua.
+        // Fix: System.String instance methods produce diagnostic errors.
+        var src = """
+            public static class Demo
+            {
+                public static string[] SplitPath(string name)
+                {
+                    return name.Split('/');
+                }
+            }
+            """;
+
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        var file = Path.Combine(dir.FullName, "Test.cs");
+        await File.WriteAllTextAsync(file, src);
+
+        var compilation = await new SharpForge.Transpiler.Frontend.RoslynFrontend(System.Array.Empty<string>())
+            .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
+        var module = new SharpForge.Transpiler.Frontend.IRLowering().Lower(compilation, CancellationToken.None);
+
+        Assert.Contains(module.Diagnostics, d => d.Contains("string.Split is not supported", StringComparison.Ordinal));
+    }
 }
