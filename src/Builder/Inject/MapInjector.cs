@@ -496,13 +496,8 @@ public sealed class MapInjector
     {
         var body = string.Join(newline,
             "function SF__BundleError__(m)",
-            "    local message = tostring(m)",
-            "    if debug ~= nil and debug.traceback ~= nil then",
-            "        message = debug.traceback(message, 2)",
-            "    end",
-            "    print(message)",
-            "    if BJDebugMsg ~= nil then BJDebugMsg(message) end",
-            "    return message",
+            "    print(tostring(m))",
+            "    return m",
             "end",
             string.Empty,
             $"function SF__Bundle(){newline}{bundle.TrimEnd()}{newline}end");

@@ -224,7 +224,7 @@ public sealed class LuaEmitter
         _indent++;
         WriteLine("local ok, err = coroutine.resume(thread)");
         WriteLine($"{_rootTable}.CorReleaseTimer__(timer)");
-        WriteLine("if not ok then error(err) end");
+        WriteLine("if not ok then print(tostring(err)) end");
         _indent--;
         WriteLine("end)");
         WriteLine("return coroutine.yield()");
