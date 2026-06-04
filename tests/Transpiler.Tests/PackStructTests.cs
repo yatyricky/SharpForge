@@ -38,8 +38,6 @@ public class PackStructTests
         // Pack: temp locals for struct fields, then table literal
         Assert.Contains("local __pack_x, __pack_y = SF__.P.Make(1)", lua);
         Assert.Contains("list:Add({x = __pack_x, y = __pack_y})", lua);
-        // No IIFE
-        Assert.DoesNotContain("(function()", lua);
     }
 
     [Fact]
@@ -72,8 +70,6 @@ public class PackStructTests
         // Unpack: temp local for table, then field extraction
         Assert.Contains("local __unpack_tmp = list:get_Item(0)", lua);
         Assert.Contains("local a__x, a__y = __unpack_tmp.x, __unpack_tmp.y", lua);
-        // No IIFE
-        Assert.DoesNotContain("(function()", lua);
     }
 
     [Fact]

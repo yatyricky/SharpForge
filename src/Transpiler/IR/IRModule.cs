@@ -85,6 +85,7 @@ public sealed class IRFunction
     public required string Name { get; init; }
     public required string LuaName { get; init; }
     public List<string> Parameters { get; } = new();
+    public List<string> OutParameters { get; } = new();
     public List<IRParameterDefault> ParameterDefaults { get; } = new();
     public IRBlock Body { get; init; } = new();
 

@@ -30,6 +30,7 @@ public sealed class IRLowering
     private readonly Dictionary<ISymbol, FlattenedStructMember> _flattenedStructMembers = new(SymbolEqualityComparer.Default);
     private INamedTypeSymbol? _currentStructSelfType;
     private IReadOnlyDictionary<string, string>? _currentStructSelfFields;
+    private IRFunction? _currentFunction;
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
@@ -576,17 +577,26 @@ public sealed class IRLowering
         };
         fn.Comments.AddRange(ExtractComments(c.GetLeadingTrivia()));
 
-        AddLoweredParameters(fn, c.ParameterList.Parameters, model, ct);
-        fn.ThisConstructorCall = LowerThisConstructorCall(c, model);
-        fn.BaseConstructorCall = LowerBaseConstructorCall(c, owner, model);
+        var previousFunction = _currentFunction;
+        _currentFunction = fn;
+        try
+        {
+            AddLoweredParameters(fn, c.ParameterList.Parameters, model, ct);
+            fn.ThisConstructorCall = LowerThisConstructorCall(c, model);
+            fn.BaseConstructorCall = LowerBaseConstructorCall(c, owner, model);
 
-        if (c.Body is { } body)
-        {
-            LowerBlock(body, fn.Body, model, ct);
+            if (c.Body is { } body)
+            {
+                LowerBlock(body, fn.Body, model, ct);
+            }
+            else if (c.ExpressionBody is { } arrow)
+            {
+                fn.Body.Statements.Add(new IRExprStmt(LowerExpr(arrow.Expression, model)));
+            }
         }
-        else if (c.ExpressionBody is { } arrow)
+        finally
         {
-            fn.Body.Statements.Add(new IRExprStmt(LowerExpr(arrow.Expression, model)));
+            _currentFunction = previousFunction;
         }
 
         return fn;
@@ -664,6 +674,9 @@ public sealed class IRLowering
             _currentStructSelfFields = AddFlattenedStructSelfParameters(fn, owner);
         }
 
+        var previousFunction = _currentFunction;
+        _currentFunction = fn;
+
         try
         {
             AddLoweredTypeParameters(fn, m.TypeParameterList?.Parameters ?? default, model, ct);
@@ -691,6 +704,7 @@ public sealed class IRLowering
         }
         finally
         {
+            _currentFunction = previousFunction;
             if (isStructInstanceMethod)
             {
                 _currentStructSelfType = previousStructSelfType;
@@ -807,9 +821,19 @@ public sealed class IRLowering
 
     private void LowerPropertyBody(IRFunction fn, INamedTypeSymbol owner, bool isStructInstanceProperty, Action lowerBody)
     {
+        var previousFunction = _currentFunction;
+        _currentFunction = fn;
+
         if (!isStructInstanceProperty)
         {
-            lowerBody();
+            try
+            {
+                lowerBody();
+            }
+            finally
+            {
+                _currentFunction = previousFunction;
+            }
             return;
         }
 
@@ -824,6 +848,7 @@ public sealed class IRLowering
         }
         finally
         {
+            _currentFunction = previousFunction;
             _currentStructSelfType = previousStructSelfType;
             _currentStructSelfFields = previousStructSelfFields;
         }
@@ -844,24 +869,33 @@ public sealed class IRLowering
                 IsInstance = !isStatic,
             };
 
-            // Use the accessor method's parameter symbols (not the property's) so that
-            // GetSymbolInfo in the body resolves to the same symbols.
-            var accessorSymbol = model.GetDeclaredSymbol(accessor, ct) as IMethodSymbol;
-            var syntaxParams = indexer.ParameterList.Parameters;
-            for (var i = 0; i < syntaxParams.Count; i++)
+            var previousFunction = _currentFunction;
+            _currentFunction = fn;
+            try
             {
-                var paramSymbol = accessorSymbol is not null && i < accessorSymbol.Parameters.Length
-                    ? accessorSymbol.Parameters[i]
-                    : model.GetDeclaredSymbol(syntaxParams[i], ct);
-                AddLoweredParameter(fn, paramSymbol, syntaxParams[i].Identifier.ValueText, paramSymbol?.Type);
-            }
-            if (!isGetter && accessorSymbol is not null)
-            {
-                var valueParam = accessorSymbol.Parameters.LastOrDefault();
-                AddLoweredParameter(fn, valueParam, "value", valueParam?.Type);
-            }
+                // Use the accessor method's parameter symbols (not the property's) so that
+                // GetSymbolInfo in the body resolves to the same symbols.
+                var accessorSymbol = model.GetDeclaredSymbol(accessor, ct) as IMethodSymbol;
+                var syntaxParams = indexer.ParameterList.Parameters;
+                for (var i = 0; i < syntaxParams.Count; i++)
+                {
+                    var paramSymbol = accessorSymbol is not null && i < accessorSymbol.Parameters.Length
+                        ? accessorSymbol.Parameters[i]
+                        : model.GetDeclaredSymbol(syntaxParams[i], ct);
+                    AddLoweredParameter(fn, paramSymbol, syntaxParams[i].Identifier.ValueText, paramSymbol?.Type);
+                }
+                if (!isGetter && accessorSymbol is not null)
+                {
+                    var valueParam = accessorSymbol.Parameters.LastOrDefault();
+                    AddLoweredParameter(fn, valueParam, "value", valueParam?.Type);
+                }
 
-            LowerAccessorBody(accessor, fn.Body, model, ct);
+                LowerAccessorBody(accessor, fn.Body, model, ct);
+            }
+            finally
+            {
+                _currentFunction = previousFunction;
+            }
             yield return fn;
         }
     }
@@ -891,15 +925,24 @@ public sealed class IRLowering
             IsInstance = false,
         };
 
-        AddLoweredParameters(fn, o.ParameterList.Parameters, model, ct);
+        var previousFunction = _currentFunction;
+        _currentFunction = fn;
+        try
+        {
+            AddLoweredParameters(fn, o.ParameterList.Parameters, model, ct);
 
-        if (o.Body is { } body)
-        {
-            LowerBlock(body, fn.Body, model, ct);
+            if (o.Body is { } body)
+            {
+                LowerBlock(body, fn.Body, model, ct);
+            }
+            else if (o.ExpressionBody is { } arrow)
+            {
+                fn.Body.Statements.Add(LowerReturnExpression(arrow.Expression, model));
+            }
         }
-        else if (o.ExpressionBody is { } arrow)
+        finally
         {
-            fn.Body.Statements.Add(LowerReturnExpression(arrow.Expression, model));
+            _currentFunction = previousFunction;
         }
 
         return fn;
@@ -915,6 +958,16 @@ public sealed class IRLowering
         {
             var symbol = model.GetDeclaredSymbol(parameter, ct);
             var type = symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type);
+
+            if (parameter.Modifiers.Any(SyntaxKind.OutKeyword))
+            {
+                // Out parameter: declare Lua name for body references, but don't add to fn.Parameters.
+                // Instead track it in fn.OutParameters so it becomes an additional return value.
+                var name = DeclareLuaName(symbol, parameter.Identifier.ValueText);
+                fn.OutParameters.Add(name);
+                continue;
+            }
+
             var names = AddLoweredParameter(fn, symbol, parameter.Identifier.ValueText, type);
             AddParameterDefaultInitializers(fn, names, parameter, symbol, type, model);
         }
@@ -1112,7 +1165,9 @@ public sealed class IRLowering
                 return new IRExprStmt(LowerExpr(es.Expression, model));
 
             case ReturnStatementSyntax rs:
-                return rs.Expression is null ? new IRReturn(null) : LowerReturnExpression(rs.Expression, model);
+                return rs.Expression is null
+                    ? AppendOutParameterValues(new IRReturn(null))
+                    : LowerReturnExpression(rs.Expression, model);
 
             case IfStatementSyntax ifs when TryLowerDeclarationPatternIf(ifs, model, ct) is { } patternIf:
                 return patternIf;
@@ -1293,6 +1348,24 @@ public sealed class IRLowering
         var header = GetExceptionHeader(thrownType);
         var message = TryLowerExceptionMessage(throwStatement.Expression, model)
             ?? LowerExpr(throwStatement.Expression, model);
+        return new IRThrow(new IRStringConcat(new IRExpr[]
+        {
+            new IRLiteral(header, IRLiteralKind.String),
+            message,
+        }));
+    }
+
+    private IRStmt LowerThrowExpression(ThrowExpressionSyntax throwExpr, SemanticModel model)
+    {
+        var thrownType = model.GetTypeInfo(throwExpr.Expression).Type as INamedTypeSymbol;
+        if (thrownType is null || !DerivesFromSystemException(thrownType))
+        {
+            return new IRThrow(LowerExpr(throwExpr.Expression, model));
+        }
+
+        var header = GetExceptionHeader(thrownType);
+        var message = TryLowerExceptionMessage(throwExpr.Expression, model)
+            ?? LowerExpr(throwExpr.Expression, model);
         return new IRThrow(new IRStringConcat(new IRExpr[]
         {
             new IRLiteral(header, IRLiteralKind.String),
@@ -1584,6 +1657,26 @@ public sealed class IRLowering
             case AssignmentExpressionSyntax assignment when assignment.IsKind(SyntaxKind.CoalesceAssignmentExpression):
                 return new IRCoalesceAssignment(LowerExpr(assignment.Left, model), LowerExpr(assignment.Right, model));
 
+            // x ?? throw new Exception("msg") — IIFE: local temp = x; if temp == nil then error("msg") end; return temp
+            case BinaryExpressionSyntax coalesceThrow when coalesceThrow.IsKind(SyntaxKind.CoalesceExpression)
+                && coalesceThrow.Right is ThrowExpressionSyntax throwExpr:
+            {
+                var tempName = AllocateLuaName("__coalesce");
+                var body = new IRBlock();
+                body.Statements.Add(new IRLocalDecl(tempName, LowerExpr(coalesceThrow.Left, model)));
+                var throwBlock = new IRBlock();
+                throwBlock.Statements.Add(LowerThrowExpression(throwExpr, model));
+                body.Statements.Add(new IRIf(
+                    new IRBinary("==", new IRIdentifier(tempName), new IRLiteral(null, IRLiteralKind.Nil)),
+                    throwBlock, null));
+                body.Statements.Add(new IRReturn(new IRIdentifier(tempName)));
+                return BuildImmediatelyInvokedExpression(body);
+            }
+
+            // x ?? fallback — lower to `x or fallback` in Lua
+            case BinaryExpressionSyntax coalesce when coalesce.IsKind(SyntaxKind.CoalesceExpression):
+                return new IRBinary("or", LowerExpr(coalesce.Left, model), LowerExpr(coalesce.Right, model));
+
             case BinaryExpressionSyntax bin:
                 if (bin.IsKind(SyntaxKind.IsExpression))
                 {
@@ -1663,7 +1756,7 @@ public sealed class IRLowering
 
         var packStruct = IsPackStructType(symbol.ContainingType);
         var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model, packStruct);
-        if (loweredArgs.PreludeStatements.Count == 0)
+        if (loweredArgs.PreludeStatements.Count == 0 && loweredArgs.OutTargets.Count == 0)
         {
             return null;
         }
@@ -1677,9 +1770,34 @@ public sealed class IRLowering
             callExpr = unpacked;
         }
 
-        var stmts = new List<IRStmt>(loweredArgs.PreludeStatements.Count + 1);
+        var stmts = new List<IRStmt>();
         stmts.AddRange(loweredArgs.PreludeStatements);
-        stmts.Add(new IRExprStmt(callExpr));
+
+        if (loweredArgs.OutTargets.Count > 0)
+        {
+            // Capture multi-return: main return value + out parameter values
+            var captureNames = new List<string> { AllocateLuaName("__ret") };
+            foreach (var outTarget in loweredArgs.OutTargets)
+            {
+                captureNames.Add(outTarget.NewLocalName ?? AllocateLuaName("__out"));
+            }
+
+            stmts.Add(new IRMultiLocalDecl(captureNames, new[] { callExpr }));
+
+            // For existing var targets, assign from the captured temp name
+            for (var i = 0; i < loweredArgs.OutTargets.Count; i++)
+            {
+                if (loweredArgs.OutTargets[i].ExistingTarget is { } target)
+                {
+                    stmts.Add(new IRAssign(target, new IRIdentifier(captureNames[i + 1])));
+                }
+            }
+        }
+        else
+        {
+            stmts.Add(new IRExprStmt(callExpr));
+        }
+
         return new IRStatementList(stmts);
     }
 
@@ -1694,6 +1812,36 @@ public sealed class IRLowering
 
         var packStruct = IsPackStructType(symbol.ContainingType);
         var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model, packStruct);
+
+        // Expression context with out parameters: wrap in IIFE to capture multi-return
+        if (loweredArgs.OutTargets.Count > 0)
+        {
+            var coreCallExpr = LowerInvocationCore(inv, symbol, loweredArgs.Arguments, model);
+            var body = new IRBlock();
+            body.Statements.AddRange(loweredArgs.PreludeStatements);
+
+            var retName = AllocateLuaName("__ret");
+            var captureNames = new List<string> { retName };
+            foreach (var outTarget in loweredArgs.OutTargets)
+            {
+                captureNames.Add(outTarget.NewLocalName ?? AllocateLuaName("__out"));
+            }
+
+            body.Statements.Add(new IRMultiLocalDecl(captureNames, new[] { coreCallExpr }));
+
+            // For existing var targets, assign from the captured temp name
+            for (var i = 0; i < loweredArgs.OutTargets.Count; i++)
+            {
+                if (loweredArgs.OutTargets[i].ExistingTarget is { } target)
+                {
+                    body.Statements.Add(new IRAssign(target, new IRIdentifier(captureNames[i + 1])));
+                }
+            }
+
+            body.Statements.Add(new IRReturn(new IRIdentifier(retName)));
+            return BuildImmediatelyInvokedExpression(body);
+        }
+
         var callExpr = BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
 
         // PackStruct: unpack struct return values from table into flattened fields
@@ -1899,7 +2047,28 @@ public sealed class IRLowering
         return new IRInvocation(LowerExpr(inv.Expression, model), callArgs);
     }
 
-    private sealed record LoweredCallArguments(IReadOnlyList<IRExpr> Arguments, IReadOnlyList<IRStmt> PreludeStatements);
+    private sealed record OutArgumentTarget(string? NewLocalName, IRExpr? ExistingTarget);
+
+    private sealed record LoweredCallArguments(IReadOnlyList<IRExpr> Arguments, IReadOnlyList<IRStmt> PreludeStatements)
+    {
+        public IReadOnlyList<OutArgumentTarget> OutTargets { get; init; } = Array.Empty<OutArgumentTarget>();
+    }
+
+    private OutArgumentTarget LowerOutArgumentTarget(ExpressionSyntax argument, IParameterSymbol parameter, SemanticModel model)
+    {
+        // `out var name` — declare a new local variable
+        if (argument is DeclarationExpressionSyntax { Designation: SingleVariableDesignationSyntax sv })
+        {
+            var sym = model.GetDeclaredSymbol(sv);
+            var luaName = DeclareLuaName(sym, sv.Identifier.ValueText);
+            return new OutArgumentTarget(luaName, null);
+        }
+
+        // `out existingVar` — assign to existing variable
+        var target = LowerExpr(argument, model);
+        var tempName = AllocateLuaName($"__out_{parameter.Name}");
+        return new OutArgumentTarget(tempName, target);
+    }
 
     private IRExpr BuildCallExpression(LoweredCallArguments loweredArgs, Func<IReadOnlyList<IRExpr>, IRExpr> buildCall)
     {
@@ -1937,6 +2106,7 @@ public sealed class IRLowering
     {
         var lowered = new List<IRExpr>();
         var prelude = new List<IRStmt>();
+        var outTargets = new List<OutArgumentTarget>();
         var argumentList = arguments.ToArray();
         var parameterList = parameters.ToArray();
 
@@ -1944,6 +2114,14 @@ public sealed class IRLowering
         {
             var argument = argumentList[i];
             var parameter = i < parameterList.Length ? parameterList[i] : null;
+
+            // Handle out parameters: strip from call args, track target
+            if (parameter?.RefKind == RefKind.Out)
+            {
+                outTargets.Add(LowerOutArgumentTarget(argument, parameter, model));
+                continue;
+            }
+
             if (TryLowerDelegateMethodGroupArgument(argument, parameter, model) is { } delegateMethodGroup)
             {
                 lowered.Add(delegateMethodGroup);
@@ -1989,7 +2167,7 @@ public sealed class IRLowering
             lowered.Add(LowerExpr(argument, model));
         }
 
-        return new LoweredCallArguments(lowered, prelude);
+        return new LoweredCallArguments(lowered, prelude) { OutTargets = outTargets };
     }
 
     private LoweredCallArguments LowerCallArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IReadOnlyList<IParameterSymbol> parameters, SemanticModel model, bool packStruct = false)
@@ -2000,6 +2178,8 @@ public sealed class IRLowering
         }
 
         var prelude = new List<IRStmt>();
+        var outTargets = new List<OutArgumentTarget>();
+        var outParamIndices = new HashSet<int>();
         var loweredByIndex = new Dictionary<int, IReadOnlyList<IRExpr>>();
         var mappedArguments = new List<(ArgumentSyntax Argument, IParameterSymbol Parameter, int Index)>();
         var maxIndex = -1;
@@ -2023,6 +2203,14 @@ public sealed class IRLowering
 
         foreach (var mappedArgument in mappedArguments)
         {
+            // Handle out parameters: strip from call args, track target
+            if (mappedArgument.Parameter.RefKind == RefKind.Out)
+            {
+                outParamIndices.Add(mappedArgument.Index);
+                outTargets.Add(LowerOutArgumentTarget(mappedArgument.Argument.Expression, mappedArgument.Parameter, model));
+                continue;
+            }
+
             loweredByIndex[mappedArgument.Index] = LowerCallArgumentValues(
                 mappedArgument.Argument.Expression,
                 mappedArgument.Parameter,
@@ -2034,6 +2222,11 @@ public sealed class IRLowering
         var lowered = new List<IRExpr>();
         for (var i = 0; i <= maxIndex; i++)
         {
+            if (outParamIndices.Contains(i))
+            {
+                continue;
+            }
+
             if (loweredByIndex.TryGetValue(i, out var values))
             {
                 lowered.AddRange(values);
@@ -2043,7 +2236,7 @@ public sealed class IRLowering
             lowered.AddRange(CreateNilArgumentPlaceholders(parameters[i]));
         }
 
-        return new LoweredCallArguments(lowered, prelude);
+        return new LoweredCallArguments(lowered, prelude) { OutTargets = outTargets };
     }
 
     private LoweredCallArguments LowerCallArguments(SeparatedSyntaxList<ArgumentSyntax> arguments, IEnumerable<IParameterSymbol> parameters, SemanticModel model)
@@ -3006,7 +3199,27 @@ public sealed class IRLowering
                && postfix.Operand is DefaultExpressionSyntax);
 
     private IRStmt LowerReturnExpression(ExpressionSyntax expression, SemanticModel model)
-        => TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model));
+        => AppendOutParameterValues(TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model)));
+
+    private IRStmt AppendOutParameterValues(IRStmt returnStmt)
+    {
+        if (_currentFunction is not { OutParameters.Count: > 0 })
+        {
+            return returnStmt;
+        }
+
+        var outExprs = _currentFunction.OutParameters
+            .Select(name => (IRExpr)new IRIdentifier(name))
+            .ToArray();
+
+        return returnStmt switch
+        {
+            IRReturn { Value: null } => new IRMultiReturn(outExprs),
+            IRReturn { Value: { } v } => new IRMultiReturn(new[] { v }.Concat(outExprs).ToArray()),
+            IRMultiReturn multi => new IRMultiReturn(multi.Values.Concat(outExprs).ToArray()),
+            _ => returnStmt,
+        };
+    }
 
     private bool TryGetStructExpressionValues(
         ExpressionSyntax expression,

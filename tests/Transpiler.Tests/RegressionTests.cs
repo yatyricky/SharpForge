@@ -188,4 +188,59 @@ public class RegressionTests
         Assert.Contains("copy__y", lua);
         Assert.Contains("copy__z", lua);
     }
+
+    [Fact]
+    public async Task Out_parameter_removed_from_signature_and_appended_to_return()
+    {
+        // out parameters should become additional return values in Lua
+        var src = """
+            public static class P
+            {
+                public static bool TryGet(int key, out int value)
+                {
+                    if (key > 0) { value = key * 2; return true; }
+                    value = 0;
+                    return false;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // out parameter removed from function signature
+        Assert.Contains("function SF__.P.TryGet(key)", lua);
+        // out value appended to return
+        Assert.Contains("return true, value", lua);
+        Assert.Contains("return false, value", lua);
+    }
+
+    [Fact]
+    public async Task Out_parameter_call_captures_multi_return()
+    {
+        // Calling a method with out argument should capture multi-return
+        var src = """
+            public static class P
+            {
+                public static bool TryGet(int key, out int value)
+                {
+                    if (key > 0) { value = key * 2; return true; }
+                    value = 0;
+                    return false;
+                }
+
+                public static void Run()
+                {
+                    int result;
+                    bool found = TryGet(5, out result);
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // Call site should capture out value via IIFE or multi-return
+        Assert.Contains("TryGet(5)", lua);
+        // C# 'out' keyword should not appear in Lua output
+        Assert.DoesNotContain(" out ", lua);
+    }
 }
