@@ -905,4 +905,175 @@ public class StructsTests
         Assert.DoesNotContain("return {x = 1, y = 1}", lua);
         Assert.DoesNotContain("return {x = 2, y = 3}", lua);
     }
+
+    [Fact]
+    public async Task Property_setter_flattens_struct_value_parameter()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public Vector3(float x, float y, float z)
+                {
+                    this.x = x;
+                    this.y = y;
+                    this.z = z;
+                }
+            }
+
+            public class Transform
+            {
+                private Vector3 _position;
+
+                public Vector3 position
+                {
+                    get { return _position; }
+                    set { _position = value; }
+                }
+            }
+
+            public static class Demo
+            {
+                public static void Run(Transform t)
+                {
+                    var pos = new Vector3(1, 2, 3);
+                    t.position = pos;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "PropertySetterFlatten.cs");
+
+        // Setter should have flattened value parameter
+        Assert.Contains("function SF__.Transform:set_position(value__x, value__y, value__z)", lua);
+        // Call-site should decompose struct argument
+        Assert.Contains(":set_position(pos__x", lua);
+        Assert.DoesNotContain(":set_position(pos)", lua);
+    }
+
+    [Fact]
+    public async Task Property_getter_flattens_struct_return_at_call_site()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public Vector3(float x, float y, float z)
+                {
+                    this.x = x;
+                    this.y = y;
+                    this.z = z;
+                }
+            }
+
+            public class Transform
+            {
+                private Vector3 _position;
+
+                public Vector3 position
+                {
+                    get { return _position; }
+                    set { _position = value; }
+                }
+            }
+
+            public static class Demo
+            {
+                public static void Run(Transform t)
+                {
+                    var pos = t.position;
+                    var d = pos.x + pos.y;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "PropertyGetterFlatten.cs");
+
+        // Getter call-site should capture multi-return into flattened locals
+        Assert.Contains("local pos__x", lua);
+        Assert.Contains("pos__y", lua);
+        Assert.Contains("pos__z", lua);
+        Assert.DoesNotContain("local pos = ", lua);
+        // Field access should use flattened names
+        Assert.Contains("(pos__x + pos__y)", lua);
+    }
+
+    [Fact]
+    public async Task Lambda_parameter_flattens_struct_type()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+            }
+
+            public delegate void VecAction(Vector3 v);
+
+            public static class Demo
+            {
+                public static void Run()
+                {
+                    VecAction action = (Vector3 v) =>
+                    {
+                        var d = v.x + v.y;
+                    };
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "LambdaFlatten.cs");
+
+        // Lambda parameter should be flattened
+        Assert.Contains("v__x", lua);
+        Assert.Contains("v__y", lua);
+        Assert.Contains("v__z", lua);
+    }
+
+    [Fact]
+    public async Task Ternary_struct_expression_decomposes_per_field()
+    {
+        var src = """
+            public struct Vector3
+            {
+                public float x;
+                public float y;
+                public float z;
+
+                public Vector3(float x, float y, float z)
+                {
+                    this.x = x;
+                    this.y = y;
+                    this.z = z;
+                }
+
+                public static Vector3 operator +(Vector3 a, Vector3 b)
+                {
+                    return new Vector3(a.x + b.x, a.y + b.y, a.z + b.z);
+                }
+            }
+
+            public static class Demo
+            {
+                public static Vector3 Run(bool flag)
+                {
+                    var a = new Vector3(1, 0, 0);
+                    var b = new Vector3(0, 1, 0);
+                    return flag ? a : b;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "TernaryStruct.cs");
+
+        // Ternary should decompose per-field
+        Assert.Contains("flag", lua);
+    }
 }

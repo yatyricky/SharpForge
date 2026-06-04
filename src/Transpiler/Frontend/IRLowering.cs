@@ -601,10 +601,12 @@ public sealed class IRLowering
             return null;
         }
 
+        var argExprs = initializer.ArgumentList.Arguments.Select(a => a.Expression);
+        var loweredArgs = LowerCallArguments(argExprs, thisCtor.Parameters, model).Arguments;
         return new IRThisConstructorCall(
             LowerTypeReference(thisCtor.ContainingType),
             GetLuaConstructorInitName(thisCtor),
-            initializer.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray());
+            loweredArgs);
     }
 
     private IRBaseConstructorCall? LowerBaseConstructorCall(
@@ -620,12 +622,17 @@ public sealed class IRLowering
             }
 
             var baseCtor = model.GetSymbolInfo(initializer).Symbol as IMethodSymbol;
-            return baseCtor is null || IsExternalLuaObjectType(baseCtor.ContainingType)
-                ? null
-                : new IRBaseConstructorCall(
-                    LowerTypeReference(baseCtor.ContainingType),
-                    GetLuaConstructorInitName(baseCtor),
-                    initializer.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray());
+            if (baseCtor is null || IsExternalLuaObjectType(baseCtor.ContainingType))
+            {
+                return null;
+            }
+
+            var argExprs = initializer.ArgumentList.Arguments.Select(a => a.Expression);
+            var loweredArgs = LowerCallArguments(argExprs, baseCtor.Parameters, model).Arguments;
+            return new IRBaseConstructorCall(
+                LowerTypeReference(baseCtor.ContainingType),
+                GetLuaConstructorInitName(baseCtor),
+                loweredArgs);
         }
 
         return GetImplicitBaseConstructorCall(owner);
@@ -789,7 +796,8 @@ public sealed class IRLowering
                 };
                 LowerPropertyBody(fn, owner, isStructInstanceProperty, () =>
                 {
-                    fn.Parameters.Add(DeclareLuaName(propertySymbol?.SetMethod?.Parameters.FirstOrDefault(), "value"));
+                    var setParam = propertySymbol?.SetMethod?.Parameters.FirstOrDefault();
+                    AddLoweredParameter(fn, setParam, "value", setParam?.Type);
                     LowerAccessorBody(accessor, fn.Body, model, ct);
                 });
                 yield return fn;
@@ -845,11 +853,12 @@ public sealed class IRLowering
                 var paramSymbol = accessorSymbol is not null && i < accessorSymbol.Parameters.Length
                     ? accessorSymbol.Parameters[i]
                     : model.GetDeclaredSymbol(syntaxParams[i], ct);
-                fn.Parameters.Add(DeclareLuaName(paramSymbol, syntaxParams[i].Identifier.ValueText));
+                AddLoweredParameter(fn, paramSymbol, syntaxParams[i].Identifier.ValueText, paramSymbol?.Type);
             }
             if (!isGetter && accessorSymbol is not null)
             {
-                fn.Parameters.Add(DeclareLuaName(accessorSymbol.Parameters.LastOrDefault(), "value"));
+                var valueParam = accessorSymbol.Parameters.LastOrDefault();
+                AddLoweredParameter(fn, valueParam, "value", valueParam?.Type);
             }
 
             LowerAccessorBody(accessor, fn.Body, model, ct);
@@ -2210,6 +2219,20 @@ public sealed class IRLowering
             return tupleExpr.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
         }
 
+        if (expression is ConditionalExpressionSyntax ternary)
+        {
+            var fields = GetFlattenableStructFields(structType).ToArray();
+            if (fields.Length > 0)
+            {
+                return fields.Select(field =>
+                    (IRExpr)new IRTernary(
+                        LowerExpr(ternary.Condition, model),
+                        new IRMemberAccess(LowerExpr(ternary.WhenTrue, model), field.Name),
+                        new IRMemberAccess(LowerExpr(ternary.WhenFalse, model), field.Name))
+                ).ToArray();
+            }
+        }
+
         if (TryGetFlattenedStructValueExpressions(expression, structType, model, out var flattenedValues))
         {
             return flattenedValues;
@@ -2784,6 +2807,16 @@ public sealed class IRLowering
             return false;
         }
 
+        // If the initializer is a struct-returning method/property call, always allow flattening.
+        // The call returns multiple values which naturally decompose into flattened locals.
+        if (statement.Declaration.Variables is [{ Initializer.Value: { } initExpr }]
+            && model.GetTypeInfo(initExpr).Type is INamedTypeSymbol initType
+            && CanFlattenStructType(initType)
+            && initExpr is InvocationExpressionSyntax or MemberAccessExpressionSyntax)
+        {
+            return true;
+        }
+
         var startIndex = block.Statements.IndexOf(statement);
         if (startIndex < 0)
         {
@@ -2807,11 +2840,21 @@ public sealed class IRLowering
                 }
 
                 if (id.Parent is AssignmentExpressionSyntax assignment
-                    && assignment.Left == id
-                    && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-                    && IsStructExpression(assignment.Right, model))
+                    && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
                 {
-                    continue;
+                    // pos = otherStruct; — direct struct-to-struct assignment
+                    if (assignment.Left == id && IsStructExpression(assignment.Right, model))
+                    {
+                        continue;
+                    }
+
+                    // t.property = pos; — property setter accepting struct value
+                    if (assignment.Right == id
+                        && assignment.Left is MemberAccessExpressionSyntax setterAccess
+                        && model.GetSymbolInfo(setterAccess).Symbol is IPropertySymbol { IsReadOnly: false })
+                    {
+                        continue;
+                    }
                 }
 
                 if (id.Parent is BinaryExpressionSyntax binary
@@ -3167,9 +3210,13 @@ public sealed class IRLowering
 
     private IRExpr LowerAnonymousFunction(AnonymousFunctionExpressionSyntax anonymousFunction, SemanticModel model)
     {
-        var parameters = GetAnonymousFunctionParameters(anonymousFunction)
-            .Select(parameter => DeclareLuaName(model.GetDeclaredSymbol(parameter), parameter.Identifier.ValueText))
-            .ToArray();
+        var tempFn = new IRFunction { Name = "lambda", LuaName = "lambda" };
+        foreach (var parameter in GetAnonymousFunctionParameters(anonymousFunction))
+        {
+            var symbol = model.GetDeclaredSymbol(parameter);
+            AddLoweredParameter(tempFn, symbol, parameter.Identifier.ValueText, symbol?.Type);
+        }
+        var parameters = tempFn.Parameters.ToArray();
         var body = new IRBlock();
 
         switch (anonymousFunction)
@@ -3807,17 +3854,23 @@ public sealed class IRLowering
         if (left is IdentifierNameSyntax id && model.GetSymbolInfo(id).Symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
         {
             IRExpr target = property.IsStatic ? LowerTypeReference(property.ContainingType) : new IRIdentifier("self");
+            var rightArgs = property.Type is INamedTypeSymbol propType && CanFlattenStructType(propType)
+                ? LowerStructArgumentValues(right, propType, model)
+                : new[] { LowerExpr(right, model) };
             return new IRExprStmt(new IRInvocation(
                 new IRMemberAccess(target, "set_" + property.Name),
-                new[] { LowerExpr(right, model) },
+                rightArgs,
                 UseColon: !property.IsStatic));
         }
 
         if (left is MemberAccessExpressionSyntax memberAccess && model.GetSymbolInfo(memberAccess).Symbol is IPropertySymbol memberProperty && !IsAutoPropertySymbol(memberProperty))
         {
+            var rightArgs = memberProperty.Type is INamedTypeSymbol memberPropType && CanFlattenStructType(memberPropType)
+                ? LowerStructArgumentValues(right, memberPropType, model)
+                : new[] { LowerExpr(right, model) };
             return new IRExprStmt(new IRInvocation(
                 new IRMemberAccess(LowerExpr(memberAccess.Expression, model), "set_" + memberProperty.Name),
-                new[] { LowerExpr(right, model) },
+                rightArgs,
                 UseColon: !memberProperty.IsStatic));
         }
 
