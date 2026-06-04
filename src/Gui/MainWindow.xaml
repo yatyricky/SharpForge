@@ -60,6 +60,8 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="16" />
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
 
                             <Border Grid.Column="0" Style="{StaticResource Card}">
@@ -147,6 +149,28 @@
                                             <TextBlock x:Name="BuilderStatusText" Text="Executing builder..." HorizontalAlignment="Center" Margin="0,12,0,0" FontWeight="SemiBold" />
                                         </StackPanel>
                                     </Border>
+                                </Grid>
+                            </Border>
+
+                            <Border Grid.Column="4" Style="{StaticResource Card}">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid Margin="0,0,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Test" Style="{StaticResource CardTitle}" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                            <CheckBox x:Name="EnableTestBox" Content="Enabled" IsChecked="True" VerticalAlignment="Center" Margin="0,0,12,0" Checked="PipelineOptionChanged" Unchecked="PipelineOptionChanged" ToolTip="Include the game launch command in Run." />
+                                        </StackPanel>
+                                    </Grid>
+                                    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                        <Button Content="Run" Click="RunTest" Style="{StaticResource PrimaryButton}" />
+                                    </StackPanel>
                                 </Grid>
                             </Border>
                         </Grid>

@@ -172,4 +172,25 @@ public class DelegatesTests
         Assert.Contains("bag:set_Item(0, fn(3))", lua);
         Assert.Contains("return (bag:get_Total() + bag:get_Item(0))", lua);
     }
+
+    [Fact]
+    public async Task Delegate_invoke_strips_dot_invoke()
+    {
+        var src = """
+            using System;
+            public static class P
+            {
+                public static void Run(Action action)
+                {
+                    action.Invoke();
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // action.Invoke() should become action(), not action:Invoke()
+        Assert.DoesNotContain("Invoke", lua);
+        Assert.DoesNotContain(":Invoke", lua);
+    }
 }

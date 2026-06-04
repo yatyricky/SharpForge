@@ -120,6 +120,7 @@ public sealed partial class MainWindow : Window
             BuilderOutputBox.Text = settings.BuilderOutput;
             IncludeBox.Text = settings.Include;
             EnableBuilderBox.IsChecked = settings.RunBuilder;
+            EnableTestBox.IsChecked = settings.RunTest;
             JassInputBox.Text = settings.JassInput;
             JassOutputBox.Text = settings.JassOutput;
             JassHostClassBox.Text = string.IsNullOrWhiteSpace(settings.JassHostClass) ? DefaultJassHostClass : settings.JassHostClass;
@@ -149,6 +150,7 @@ public sealed partial class MainWindow : Window
             BuilderOutputBox.Clear();
             IncludeBox.Clear();
             EnableBuilderBox.IsChecked = true;
+            EnableTestBox.IsChecked = true;
             FillDefaultsFromMap();
         }
         finally
@@ -218,6 +220,7 @@ public sealed partial class MainWindow : Window
                 BuilderOutput = BuilderOutputBox.Text.Trim(),
                 Include = IncludeBox.Text.Trim(),
                 RunBuilder = EnableBuilderBox.IsChecked == true,
+                RunTest = EnableTestBox.IsChecked == true,
                 JassInput = JassInputBox.Text.Trim(),
                 JassOutput = JassOutputBox.Text.Trim(),
                 JassHostClass = JassHostClassBox.Text.Trim(),
@@ -318,6 +321,26 @@ public sealed partial class MainWindow : Window
         _logBuffer.Clear();
         await RunPreviewCommandsAsync();
         ShowLogDialog();
+    }
+
+    private void RunTest(object sender, RoutedEventArgs e)
+    {
+        SaveSettingsFromFields();
+        var launchMap = LaunchMapPath();
+        if (string.IsNullOrWhiteSpace(launchMap))
+        {
+            MessageBox.Show("No map path set.", "Test", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var exe = WarcraftExePath();
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            MessageBox.Show("Warcraft path not configured.", "Test", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        StartDetached(exe, ["-launch", "-window", "-loadfile", launchMap]);
     }
 
     private void RunWarcraftReplay(object sender, RoutedEventArgs e)
@@ -641,10 +664,13 @@ public sealed partial class MainWindow : Window
                 lines.Add(FormatCommand(ResolveTool("sf-build"), BuildBuildArguments(mainLua, output)));
             }
 
-            var launchMap = LaunchMapPath();
-            if (!string.IsNullOrWhiteSpace(launchMap))
+            if (EnableTestBox.IsChecked == true)
             {
-                lines.Add(FormatCommand(WarcraftExePath(), ["-launch", "-window", "-loadfile", launchMap]));
+                var launchMap = LaunchMapPath();
+                if (!string.IsNullOrWhiteSpace(launchMap))
+                {
+                    lines.Add(FormatCommand(WarcraftExePath(), ["-launch", "-window", "-loadfile", launchMap]));
+                }
             }
 
             RunCommandsBox.Text = string.Join(Environment.NewLine, lines);
@@ -1528,6 +1554,7 @@ public sealed partial class MainWindow : Window
         public string BuilderOutput { get; set; } = string.Empty;
         public string Include { get; set; } = string.Empty;
         public bool RunBuilder { get; set; } = true;
+        public bool RunTest { get; set; } = true;
         public string JassInput { get; set; } = string.Empty;
         public string JassOutput { get; set; } = string.Empty;
         public string JassHostClass { get; set; } = DefaultJassHostClass;

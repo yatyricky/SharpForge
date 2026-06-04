@@ -238,9 +238,134 @@ public class RegressionTests
 
         var lua = await TranspilerTestHelper.TranspileAsync(src);
 
-        // Call site should capture out value via IIFE or multi-return
+        // Call site should capture out value via multi-return (no IIFE)
         Assert.Contains("TryGet(5)", lua);
-        // C# 'out' keyword should not appear in Lua output
         Assert.DoesNotContain(" out ", lua);
+        // Out variable should be a local in the surrounding scope, not inside IIFE
+        Assert.DoesNotContain("(function()", lua);
+    }
+
+    [Fact]
+    public async Task Out_parameter_in_if_condition_no_iife()
+    {
+        // Regression: out parameter in if-condition was wrapped in IIFE,
+        // trapping the out variable inside the function scope.
+        var src = """
+            public static class P
+            {
+                public static bool TryGet(int key, out int value)
+                {
+                    if (key > 0) { value = key * 2; return true; }
+                    value = 0;
+                    return false;
+                }
+
+                public static void Run()
+                {
+                    int value;
+                    if (TryGet(5, out value))
+                    {
+                        var x = value;
+                    }
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // Multi-return capture should be a separate statement, not inside IIFE
+        Assert.DoesNotContain("(function()", lua);
+        // The out variable should be accessible after the call
+        Assert.Contains("__ret", lua);
+    }
+
+    [Fact]
+    public async Task Out_var_name_is_consistent_between_declaration_and_usage()
+    {
+        // Regression: out var lastHitTime generated lastHitTime7 in declaration
+        // but lastHitTime4 in body — different variables for the same symbol.
+        var src = """
+            public static class P
+            {
+                public static bool TryGet(int key, out int value)
+                {
+                    if (key > 0) { value = key * 2; return true; }
+                    value = 0;
+                    return false;
+                }
+
+                public static void Run()
+                {
+                    if (TryGet(5, out var lastHitTime))
+                    {
+                        var x = lastHitTime;
+                    }
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // Find the out variable name in the declaration
+        var match = System.Text.RegularExpressions.Regex.Match(lua, @"__ret\w*,\s*(\w+)\s*=\s*SF__\.P\.TryGet");
+        Assert.True(match.Success, "Multi-return capture not found");
+        var outVarName = match.Groups[1].Value;
+
+        // The same name must appear in the if body
+        Assert.Contains(outVarName, lua);
+        // No IIFE
+        Assert.DoesNotContain("(function()", lua);
+    }
+
+    [Fact]
+    public async Task Out_existing_var_assigns_to_surrounding_scope()
+    {
+        // out existingVar should assign to the existing variable, not create a new one
+        var src = """
+            public static class P
+            {
+                public static bool TryGet(int key, out int value)
+                {
+                    if (key > 0) { value = key * 2; return true; }
+                    value = 0;
+                    return false;
+                }
+
+                public static void Run()
+                {
+                    int result = 0;
+                    TryGet(5, out result);
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // Should not use IIFE
+        Assert.DoesNotContain("(function()", lua);
+        // The existing variable 'result' should be assigned from the out capture
+        Assert.Contains("__ret", lua);
+    }
+
+    [Fact]
+    public async Task Null_coalesce_throw_produces_nil_guard()
+    {
+        var src = """
+            public static class P
+            {
+                public static int Get(object x)
+                {
+                    return (int)(x ?? throw new System.Exception("null"));
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        // Should produce: if x == nil then error(...) end
+        Assert.Contains("== nil", lua);
+        Assert.Contains("error(", lua);
+        // Should NOT produce raw ?? operator
+        Assert.DoesNotContain("??", lua);
     }
 }

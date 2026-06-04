@@ -31,6 +31,8 @@ public sealed class IRLowering
     private INamedTypeSymbol? _currentStructSelfType;
     private IReadOnlyDictionary<string, string>? _currentStructSelfFields;
     private IRFunction? _currentFunction;
+    private readonly List<IRStmt> _pendingStatements = new();
+    private readonly Dictionary<string, string> _outVarNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
@@ -1080,6 +1082,10 @@ public sealed class IRLowering
         {
             var s = statements[i];
             ct.ThrowIfCancellationRequested();
+
+            // Flush pending statements from expression-level out-parameter lowering
+            FlushPendingStatements(target);
+
             foreach (var comment in ExtractComments(s.GetLeadingTrivia()))
             {
                 target.Statements.Add(new IRRawComment(comment));
@@ -1093,7 +1099,9 @@ public sealed class IRLowering
             }
             try
             {
-                target.Statements.Add(LowerStatement(s, model, ct));
+                var lowered = LowerStatement(s, model, ct);
+                FlushPendingStatements(target);
+                target.Statements.Add(lowered);
             }
             finally
             {
@@ -1108,6 +1116,15 @@ public sealed class IRLowering
                 target.Statements.Add(new IRRawComment(comment));
             }
 
+        }
+    }
+
+    private void FlushPendingStatements(IRBlock target)
+    {
+        while (_pendingStatements.Count > 0)
+        {
+            target.Statements.Add(_pendingStatements[0]);
+            _pendingStatements.RemoveAt(0);
         }
     }
 
@@ -1173,6 +1190,34 @@ public sealed class IRLowering
                 return patternIf;
 
             case IfStatementSyntax ifs:
+                // Lower condition first — it may populate _pendingStatements for out var declarations
+                var ifCondition = LowerExpr(ifs.Condition, model);
+
+                // Flush pending statements (from out var) to the OUTER block before lowering body
+                // LowerBlock calls LowerStatements which flushes pending — but that sends them
+                // into the if-body block. We need them in the enclosing block.
+                if (_pendingStatements.Count > 0)
+                {
+                    // Save and clear pending — they'll be emitted before the IRIf
+                    var pendingCopy = new List<IRStmt>(_pendingStatements);
+                    _pendingStatements.Clear();
+
+                    var thenBlk2 = new IRBlock();
+                    LowerBlock(ifs.Statement, thenBlk2, model, ct);
+                    IRBlock? elseBlk2 = null;
+                    if (ifs.Else is { } elseClause)
+                    {
+                        elseBlk2 = new IRBlock();
+                        LowerBlock(elseClause.Statement, elseBlk2, model, ct);
+                    }
+
+                    var stmts = new List<IRStmt>(pendingCopy)
+                    {
+                        new IRIf(ifCondition, thenBlk2, elseBlk2)
+                    };
+                    return new IRStatementList(stmts);
+                }
+
                 var thenBlk = new IRBlock();
                 LowerBlock(ifs.Statement, thenBlk, model, ct);
                 IRBlock? elseBlk = null;
@@ -1181,7 +1226,7 @@ public sealed class IRLowering
                     elseBlk = new IRBlock();
                     LowerBlock(el.Statement, elseBlk, model, ct);
                 }
-                return new IRIf(LowerExpr(ifs.Condition, model), thenBlk, elseBlk);
+                return new IRIf(ifCondition, thenBlk, elseBlk);
 
             case SwitchStatementSyntax switchStatement:
                 return LowerSwitch(switchStatement, model, ct);
@@ -1813,33 +1858,34 @@ public sealed class IRLowering
         var packStruct = IsPackStructType(symbol.ContainingType);
         var loweredArgs = LowerCallArguments(inv.ArgumentList.Arguments, symbol.Parameters, model, packStruct);
 
-        // Expression context with out parameters: wrap in IIFE to capture multi-return
+        // Expression context with out parameters: emit as pending statements (no IIFE)
         if (loweredArgs.OutTargets.Count > 0)
         {
             var coreCallExpr = LowerInvocationCore(inv, symbol, loweredArgs.Arguments, model);
-            var body = new IRBlock();
-            body.Statements.AddRange(loweredArgs.PreludeStatements);
 
+            // Add prelude to pending
+            _pendingStatements.AddRange(loweredArgs.PreludeStatements);
+
+            // Multi-return capture
             var retName = AllocateLuaName("__ret");
             var captureNames = new List<string> { retName };
             foreach (var outTarget in loweredArgs.OutTargets)
             {
                 captureNames.Add(outTarget.NewLocalName ?? AllocateLuaName("__out"));
             }
+            _pendingStatements.Add(new IRMultiLocalDecl(captureNames, new[] { coreCallExpr }));
 
-            body.Statements.Add(new IRMultiLocalDecl(captureNames, new[] { coreCallExpr }));
-
-            // For existing var targets, assign from the captured temp name
+            // For existing var targets, assign from captured temp
             for (var i = 0; i < loweredArgs.OutTargets.Count; i++)
             {
                 if (loweredArgs.OutTargets[i].ExistingTarget is { } target)
                 {
-                    body.Statements.Add(new IRAssign(target, new IRIdentifier(captureNames[i + 1])));
+                    _pendingStatements.Add(new IRAssign(target, new IRIdentifier(captureNames[i + 1])));
                 }
             }
 
-            body.Statements.Add(new IRReturn(new IRIdentifier(retName)));
-            return BuildImmediatelyInvokedExpression(body);
+            // Return just the main return value
+            return new IRIdentifier(retName);
         }
 
         var callExpr = BuildCallExpression(loweredArgs, args => LowerInvocationCore(inv, symbol, args, model));
@@ -1893,7 +1939,11 @@ public sealed class IRLowering
     {
         if (symbol is { MethodKind: MethodKind.DelegateInvoke })
         {
-            return new IRInvocation(LowerExpr(inv.Expression, model), args);
+            // Strip .Invoke from action.Invoke() — lower to just action()
+            var receiver = inv.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "Invoke" } ma
+                ? ma.Expression
+                : inv.Expression;
+            return new IRInvocation(LowerExpr(receiver, model), args);
         }
 
         if (IsTaskDelay(symbol))
@@ -2061,6 +2111,9 @@ public sealed class IRLowering
         {
             var sym = model.GetDeclaredSymbol(sv);
             var luaName = DeclareLuaName(sym, sv.Identifier.ValueText);
+            // Store name-based fallback for body references where GetSymbolInfo
+            // returns a different symbol instance than GetDeclaredSymbol.
+            _outVarNames[sv.Identifier.ValueText] = luaName;
             return new OutArgumentTarget(luaName, null);
         }
 
@@ -4276,6 +4329,14 @@ public sealed class IRLowering
         if (_luaNames.TryGetValue(symbol, out var name))
         {
             return name;
+        }
+
+        // Fallback: check out-var name mapping (for out var declarations where
+        // GetDeclaredSymbol and GetSymbolInfo return different symbol instances)
+        if (_outVarNames.TryGetValue(fallback, out var outName))
+        {
+            _luaNames[symbol] = outName;
+            return outName;
         }
 
         var allocatedName = AllocateLuaName(fallback);
