@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using WpfComboBox = System.Windows.Controls.ComboBox;
 using WpfControl = System.Windows.Controls.Control;
@@ -69,6 +70,22 @@ public sealed partial class MainWindow : Window
         MapBuilderView.Visibility = NavigationList.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         JassGenView.Visibility = NavigationList.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         SettingsView.Visibility = NavigationList.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void TabConsole_Click(object sender, MouseButtonEventArgs e)
+    {
+        ConsoleBox.Visibility = Visibility.Visible;
+        RunCommandsBox.Visibility = Visibility.Collapsed;
+        TabConsole.Opacity = 1;
+        TabPreview.Opacity = 0.4;
+    }
+
+    private void TabPreview_Click(object sender, MouseButtonEventArgs e)
+    {
+        ConsoleBox.Visibility = Visibility.Collapsed;
+        RunCommandsBox.Visibility = Visibility.Visible;
+        TabConsole.Opacity = 0.4;
+        TabPreview.Opacity = 1;
     }
 
     private void LoadSettingsIntoFields()
@@ -245,8 +262,8 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
+        ConsoleBox.Clear();
         await RunTranspilerStepAsync([CSharpPathBox.Text.Trim(), "--init"]);
-        ShowLogDialog();
     }
 
     private async void RunTranspileCheck(object sender, RoutedEventArgs e)
@@ -258,8 +275,8 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
+        ConsoleBox.Clear();
         await RunTranspilerStepAsync(BuildTranspileArguments(checkOnly: true));
-        ShowLogDialog();
     }
 
     private async void RunTranspile(object sender, RoutedEventArgs e)
@@ -271,8 +288,8 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
+        ConsoleBox.Clear();
         await RunTranspilerStepAsync(BuildTranspileArguments(checkOnly: false));
-        ShowLogDialog();
     }
 
     private async void RunBuild(object sender, RoutedEventArgs e)
@@ -287,8 +304,8 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
+        ConsoleBox.Clear();
         await RunBuilderStepAsync();
-        ShowLogDialog();
     }
 
     private async void RunJassGen(object sender, RoutedEventArgs e)
@@ -306,8 +323,8 @@ public sealed partial class MainWindow : Window
         AddOptional(args, "-o", JassOutputBox.Text.Trim());
         AddOptional(args, "--host-class", JassHostClassBox.Text.Trim());
         _logBuffer.Clear();
+        ConsoleBox.Clear();
         await RunToolAsync("sf-jassgen", args.ToArray());
-        ShowLogDialog();
     }
 
     private async void RunWarcraft(object sender, RoutedEventArgs e)
@@ -319,8 +336,8 @@ public sealed partial class MainWindow : Window
         }
 
         _logBuffer.Clear();
+        ConsoleBox.Clear();
         await RunPreviewCommandsAsync();
-        ShowLogDialog();
     }
 
     private void RunTest(object sender, RoutedEventArgs e)
@@ -1175,48 +1192,8 @@ public sealed partial class MainWindow : Window
 
         var line = text.TrimEnd() + Environment.NewLine;
         _logBuffer.Append(line);
-    }
-
-    private void ShowLogDialog()
-    {
-        var textBox = new WpfTextBox
-        {
-            Text = _logBuffer.ToString(),
-            IsReadOnly = true,
-            TextWrapping = TextWrapping.NoWrap,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-            VerticalContentAlignment = VerticalAlignment.Top,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono, Consolas"),
-            FontSize = 12,
-            MinWidth = 720,
-            MinHeight = 420,
-        };
-
-        var closeButton = new Button
-        {
-            Content = "Close",
-            HorizontalAlignment = HorizontalAlignment.Right,
-            MinWidth = 88,
-        };
-
-        var panel = new DockPanel { Margin = new Thickness(16) };
-        closeButton.Click += (_, _) => Window.GetWindow(closeButton)?.Close();
-        DockPanel.SetDock(closeButton, Dock.Bottom);
-        panel.Children.Add(closeButton);
-        panel.Children.Add(textBox);
-
-        var dialog = new Window
-        {
-            Title = "SharpForge Log",
-            Owner = this,
-            Content = panel,
-            Width = 780,
-            Height = 540,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-        };
-        dialog.ShowDialog();
+        ConsoleBox.AppendText(line);
+        ConsoleBox.ScrollToEnd();
     }
 
     private void EditTranspiler(object sender, RoutedEventArgs e)

@@ -176,15 +176,22 @@
                         </Grid>
 
                         <Border Style="{StaticResource Card}" Margin="0,8,0,0">
-                            <StackPanel>
-                                <Grid Margin="0,0,0,14">
-                                    <TextBlock Text="Run" Style="{StaticResource CardTitle}" />
-                                </Grid>
-                                <TextBox x:Name="RunCommandsBox" MinHeight="150" AcceptsReturn="True" TextWrapping="Wrap" HorizontalContentAlignment="Left" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" TextChanged="RunCommandsChanged" LostFocus="AnyFieldLostFocus" ToolTip="Commands executed by Run, one per line. Any field change regenerates this preview." />
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                    <TextBlock x:Name="TabConsole" Text="Console" Style="{StaticResource TabHeader}" Opacity="1" MouseLeftButtonDown="TabConsole_Click" />
+                                    <TextBlock x:Name="TabPreview" Text="Preview" Style="{StaticResource TabHeader}" MouseLeftButtonDown="TabPreview_Click" />
+                                </StackPanel>
+                                <TextBox x:Name="ConsoleBox" Grid.Row="1" Style="{StaticResource LogTextBox}" MinHeight="200" TextWrapping="Wrap" HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Left" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" Visibility="Visible" />
+                                <TextBox x:Name="RunCommandsBox" Grid.Row="1" MinHeight="200" AcceptsReturn="True" TextWrapping="Wrap" HorizontalContentAlignment="Left" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" TextChanged="RunCommandsChanged" LostFocus="AnyFieldLostFocus" ToolTip="Commands executed by Run, one per line. Any field change regenerates this preview." Visibility="Collapsed" />
+                                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
                                     <Button Content="Run" Click="RunWarcraft" Style="{StaticResource PrimaryButton}" />
                                 </StackPanel>
-                            </StackPanel>
+                            </Grid>
                         </Border>
                     </StackPanel>
 
