@@ -100,6 +100,54 @@ public class InheritanceTests
     }
 
     [Fact]
+    public async Task LuaClass_subclass_with_base_arguments_passes_args_to_new()
+    {
+        var src = """
+            using System;
+            using SFLib.Interop;
+
+            namespace SFLib.Interop
+            {
+                public class LuaObject { }
+
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class LuaAttribute : Attribute
+                {
+                    public string? Class { get; set; }
+                    public string? Module { get; set; }
+                    public bool TableLiteral { get; set; }
+                }
+            }
+
+            [Lua(Module = "Objects.BuffBase")]
+            public class BuffBase : LuaObject
+            {
+                public object caster;
+                public object target;
+                public BuffBase(object caster, object target, float duration) => throw null!;
+            }
+
+            [Lua(Class = "MyDebuff")]
+            public class MyDebuff : BuffBase
+            {
+                private float _spec;
+                public MyDebuff(object caster, object target, float duration) : base(caster, target, duration)
+                {
+                    _spec = 15;
+                }
+            }
+            """;
+
+        var (lua, _, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["MyDebuff.cs"] = src });
+
+        // .new() must pass base constructor arguments
+        Assert.Contains("SF__.MyDebuff.New(caster, target, duration)", lua);
+        Assert.Contains("SF__.MyDebuff.new(caster, target, duration)", lua);
+        Assert.DoesNotContain("SF__.MyDebuff.new()", lua);
+    }
+
+    [Fact]
     public async Task LuaObject_subclass_without_attribute_produces_warning()
     {
         var src = """

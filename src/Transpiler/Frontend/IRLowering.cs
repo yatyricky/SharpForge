@@ -643,7 +643,7 @@ public sealed class IRLowering
             }
 
             var baseCtor = model.GetSymbolInfo(initializer).Symbol as IMethodSymbol;
-            if (baseCtor is null || IsExternalLuaObjectType(baseCtor.ContainingType))
+            if (baseCtor is null)
             {
                 return null;
             }

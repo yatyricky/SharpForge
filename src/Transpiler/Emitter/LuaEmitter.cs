@@ -532,6 +532,18 @@ public sealed class LuaEmitter
         {
             WriteLine($"local self = setmetatable({{}}, {{ __index = {typePath} }})");
         }
+        else if (m.BaseConstructorCall is { Arguments.Count: > 0 } baseCall)
+        {
+            WriteIndent();
+            _sb.Append("local self = ").Append(typePath).Append(".new(");
+            for (var i = 0; i < baseCall.Arguments.Count; i++)
+            {
+                if (i > 0) _sb.Append(", ");
+                EmitExpr(baseCall.Arguments[i]);
+            }
+
+            _sb.Append(")\n");
+        }
         else
         {
             WriteLine($"local self = {typePath}.new()");
