@@ -9,6 +9,7 @@ public sealed class IRModule
     public List<IREnum> Enums { get; } = new();
     public List<IRType> Types { get; } = new();
     public List<string> Diagnostics { get; } = new();
+    public List<string> Warnings { get; } = new();
 }
 
 public sealed class IREnum

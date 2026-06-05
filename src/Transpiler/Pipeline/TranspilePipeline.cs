@@ -75,6 +75,11 @@ public sealed class TranspilePipeline
         // 2. Lower compilation to custom IR.
         var lowering = new IRLowering(options.IgnoredClasses, options.InputDirectory, options.IgnoredNamespaces);
         var module = lowering.Lower(compilation, cancellationToken);
+        foreach (var warning in module.Warnings)
+        {
+            await Console.Error.WriteLineAsync("warning: " + warning);
+        }
+
         if (module.Diagnostics.Count > 0)
         {
             foreach (var diagnostic in module.Diagnostics)

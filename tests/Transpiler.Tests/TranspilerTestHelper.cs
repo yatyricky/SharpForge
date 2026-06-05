@@ -12,6 +12,13 @@ internal static class TranspilerTestHelper
 
     public static async Task<string> TranspileSourcesAsync(IReadOnlyDictionary<string, string> sources)
     {
+        var (lua, _, _) = await TranspileSourcesWithDiagnosticsAsync(sources);
+        return lua;
+    }
+
+    public static async Task<(string Lua, IReadOnlyList<string> Diagnostics, IReadOnlyList<string> Warnings)> TranspileSourcesWithDiagnosticsAsync(
+        IReadOnlyDictionary<string, string> sources)
+    {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         var files = new List<FileInfo>(sources.Count);
         foreach (var (fileName, source) in sources)
@@ -32,7 +39,8 @@ internal static class TranspilerTestHelper
         }
 
         var module = new IRLowering().Lower(compilation, CancellationToken.None);
-        return new LuaEmitter(TranspileOptions.DefaultRootTable).Emit(module);
+        var lua = new LuaEmitter(TranspileOptions.DefaultRootTable).Emit(module);
+        return (lua, module.Diagnostics, module.Warnings);
     }
 
     public static async Task<(int ExitCode, string Lua, string TempDir)> TranspileViaPipelineAsync(

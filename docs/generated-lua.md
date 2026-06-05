@@ -122,6 +122,30 @@ Common C# constructs lower to direct Lua patterns:
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding with typed SharpForge exception headers |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
+
+## Lua Interop Classes
+
+Classes that inherit (directly or transitively) from `LuaObject` are treated as **external Lua types** by default — they are not transpiled and are expected to exist in the Lua runtime.
+
+If you define a **user class** that inherits from `LuaObject` and want it to be transpiled, you must add the `[Lua(Class = "ClassName")]` attribute:
+
+```csharp
+using SFLib.Interop;
+
+[Lua(Class = "MyBuff")]
+public class MyBuff : LuaObject
+{
+    public float duration;
+    public MyBuff(float duration) { this.duration = duration; }
+    public void Activate() { }
+}
+```
+
+This generates the class definition in Lua with proper inheritance (`setmetatable` / `__sf_base`).
+
+Types with `[Lua(Module = "path")]` are also valid — they bind to an existing Lua module via `require`. Types with `[Lua(TableLiteral = true)]` are emitted as plain Lua tables.
+
+Only **direct** subclasses of `LuaObject` are treated as external types. Indirect subclasses (e.g., inheriting from `BuffBase` which inherits from `LuaObject`) are transpiled normally.
 | `List<T>`, `Dictionary<K,V>` | Library Surface Layer APIs backed by explicit Lua/interoperability behavior |
 
 C# line comments, block comments, and XML doc comments on lowered types, members, fields, and statements are emitted as Lua `--` comments near the corresponding generated code.

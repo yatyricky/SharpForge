@@ -127,6 +127,15 @@ public sealed class IRLowering
 
                 if (IsExternalLuaObjectType(symbol))
                 {
+                    if (!IsSFLibType(symbol)
+                        && GetLuaAttributeValue(symbol, "Class") is not { Length: > 0 }
+                        && GetLuaAttributeValue(symbol, "Module") is not { Length: > 0 }
+                        && !HasLuaTableLiteralAttribute(symbol))
+                    {
+                        var span = typeDecl.GetLocation().GetLineSpan();
+                        _module?.Warnings.Add($"{span.Path}({span.StartLinePosition.Line + 1}): Type '{symbol.Name}' inherits from LuaObject but has no [Lua(Class|Module|TableLiteral)] attribute and will be skipped.");
+                    }
+
                     continue;
                 }
 

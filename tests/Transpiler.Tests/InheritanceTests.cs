@@ -55,4 +55,86 @@ public class InheritanceTests
         Assert.Contains("function SF__.Game.Hero:Label()", lua);
         Assert.Contains("SF__.Game.Unit.Label(self)", lua);
     }
+
+    [Fact]
+    public async Task LuaObject_subclass_with_class_attribute_is_transpiled()
+    {
+        var src = """
+            using System;
+            using SFLib.Interop;
+
+            namespace SFLib.Interop
+            {
+                public class LuaObject { }
+
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class LuaAttribute : Attribute
+                {
+                    public string? Class { get; set; }
+                    public string? Module { get; set; }
+                }
+            }
+
+            [Lua(Class = "MyBuff")]
+            public class MyBuff : LuaObject
+            {
+                public float duration;
+
+                public MyBuff(float duration)
+                {
+                    this.duration = duration;
+                }
+
+                public void Activate() { }
+            }
+            """;
+
+        var (lua, diagnostics, warnings) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["MyBuff.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Empty(warnings);
+        Assert.Contains("SF__.MyBuff", lua);
+        Assert.Contains("function SF__.MyBuff.New(duration)", lua);
+        Assert.Contains("function SF__.MyBuff:Activate()", lua);
+    }
+
+    [Fact]
+    public async Task LuaObject_subclass_without_attribute_produces_warning()
+    {
+        var src = """
+            using System;
+            using SFLib.Interop;
+
+            namespace SFLib.Interop
+            {
+                public class LuaObject { }
+
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class LuaAttribute : Attribute
+                {
+                    public string? Class { get; set; }
+                    public string? Module { get; set; }
+                    public bool TableLiteral { get; set; }
+                }
+            }
+
+            public class MissingAttr : LuaObject
+            {
+                public float value;
+
+                public MissingAttr(float v)
+                {
+                    value = v;
+                }
+            }
+            """;
+
+        var (lua, diagnostics, warnings) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["MissingAttr.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains(warnings, w => w.Contains("MissingAttr"));
+        Assert.DoesNotContain("SF__.MissingAttr", lua);
+    }
 }
