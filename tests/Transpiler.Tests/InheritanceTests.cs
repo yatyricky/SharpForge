@@ -185,4 +185,54 @@ public class InheritanceTests
         Assert.Contains(warnings, w => w.Contains("MissingAttr"));
         Assert.DoesNotContain("SF__.MissingAttr", lua);
     }
+
+    [Fact]
+    public async Task External_LuaObject_base_ctor_not_emitted_in_init()
+    {
+        var src = """
+            using System;
+            using SFLib.Interop;
+
+            namespace SFLib.Interop
+            {
+                public class LuaObject { }
+
+                [AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+                public sealed class LuaAttribute : Attribute
+                {
+                    public string? Class { get; set; }
+                    public string? Module { get; set; }
+                }
+            }
+
+            [Lua(Module = "Objects.BuffBase")]
+            public class BuffBase : LuaObject
+            {
+                public object caster;
+                public object target;
+                public BuffBase(object caster, object target, float duration) => throw null!;
+            }
+
+            [Lua(Class = "MyDebuff")]
+            public class MyDebuff : BuffBase
+            {
+                private float _spec;
+                public MyDebuff(object caster, object target, float duration) : base(caster, target, duration)
+                {
+                    _spec = 15;
+                }
+            }
+            """;
+
+        var (lua, diagnostics, warnings) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["MyDebuff.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Empty(warnings);
+
+        // External Lua object types are initialized by class() runtime via clone(super) + ctor.
+        // The transpiler must NOT emit an explicit base constructor call in __Init.
+        Assert.DoesNotContain("BuffBase.new(", lua);
+        Assert.DoesNotContain("BuffBase.ctor(", lua);
+    }
 }

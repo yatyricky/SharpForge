@@ -500,7 +500,7 @@ public sealed class LuaEmitter
         }
         else
         {
-            if (m.BaseConstructorCall is not null)
+            if (m.BaseConstructorCall is { SkipEmit: false })
             {
                 EmitStmt(m.BaseConstructorCall);
             }

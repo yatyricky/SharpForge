@@ -17,7 +17,15 @@ public sealed record IRMultiLocalDecl(IReadOnlyList<string> Names, IReadOnlyList
 public sealed record IRAssign(IRExpr Target, IRExpr Value) : IRStmt;
 public sealed record IRMultiAssign(IReadOnlyList<IRExpr> Targets, IReadOnlyList<IRExpr> Values) : IRStmt;
 public sealed record IRExprStmt(IRExpr Expression) : IRStmt;
-public sealed record IRBaseConstructorCall(IRTypeReference BaseType, string InitLuaName, IReadOnlyList<IRExpr> Arguments) : IRStmt;
+public sealed record IRBaseConstructorCall(IRTypeReference BaseType, string InitLuaName, IReadOnlyList<IRExpr> Arguments) : IRStmt
+{
+    /// <summary>
+    /// When true, the base type is an external Lua object type whose initialization
+    /// is handled by the Lua class() runtime. The call should not be emitted in __Init,
+    /// but the arguments are still used by the New factory method.
+    /// </summary>
+    public bool SkipEmit { get; init; }
+}
 public sealed record IRThisConstructorCall(IRTypeReference Type, string InitLuaName, IReadOnlyList<IRExpr> Arguments) : IRStmt;
 public sealed record IRReturn(IRExpr? Value) : IRStmt;
 public sealed record IRMultiReturn(IReadOnlyList<IRExpr> Values) : IRStmt;

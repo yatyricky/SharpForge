@@ -653,7 +653,12 @@ public sealed class IRLowering
             return new IRBaseConstructorCall(
                 LowerTypeReference(baseCtor.ContainingType),
                 GetLuaConstructorInitName(baseCtor),
-                loweredArgs);
+                loweredArgs)
+            {
+                // External Lua object types are initialized by the Lua class() runtime
+                // via clone(super) + instance:ctor(). Skip emission in __Init.
+                SkipEmit = IsExternalLuaObjectType(baseCtor.ContainingType),
+            };
         }
 
         return GetImplicitBaseConstructorCall(owner);
