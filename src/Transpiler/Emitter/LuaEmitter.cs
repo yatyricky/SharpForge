@@ -715,8 +715,11 @@ public sealed class LuaEmitter
                 EmitExpr(w.Condition);
                 _sb.Append(" do\n");
                 _indent++;
+                WriteLine("repeat");
+                _indent++;
                 EmitBlock(w.Body);
-                WriteLine("::continue::");
+                _indent--;
+                WriteLine("until true");
                 _indent--;
                 WriteLine("end");
                 break;
@@ -746,7 +749,7 @@ public sealed class LuaEmitter
                 WriteLine("break");
                 break;
             case IRContinue:
-                WriteLine("goto continue"); // Lua 5.3 has no `continue`
+                WriteLine("break"); // exits repeat...until true wrapper
                 break;
             case IRRawComment c:
                 EmitComment(c.Text);
@@ -898,8 +901,11 @@ public sealed class LuaEmitter
         _sb.Append(" do\n");
 
         _indent++;
+        WriteLine("repeat");
+        _indent++;
         EmitBlock(f.Body);
-        WriteLine("::continue::");
+        _indent--;
+        WriteLine("until true");
         foreach (var incrementor in f.Incrementors)
         {
             EmitStmt(incrementor);
@@ -941,7 +947,11 @@ public sealed class LuaEmitter
 
         WriteLine($"for {indexVar}, {f.ItemName} in {iterator} do");
         _indent++;
+        WriteLine("repeat");
+        _indent++;
         EmitBlock(f.Body);
+        _indent--;
+        WriteLine("until true");
         _indent--;
         WriteLine("end");
         _indent--;

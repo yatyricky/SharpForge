@@ -35,7 +35,39 @@ public class ControlFlowTests
         Assert.Contains("local i = 0", lua);
         Assert.Matches(@"while\s+\(?\s*i\s*<\s*limit\s*\)?\s+do", lua);
         Assert.Contains("elseif (i == 3) then", lua);
-        Assert.Contains("::continue::", lua);
+        Assert.Contains("repeat", lua);
+        Assert.Contains("until true", lua);
         Assert.Matches(@"i\s*=\s*\(?\s*i\s*\+\s*1\s*\)?", lua);
+    }
+
+    [Fact]
+    public async Task Continue_in_for_loop_uses_repeat_until_true()
+    {
+        var src = """
+            public static class Loop
+            {
+                public static void Run()
+                {
+                    for (int i = 0; i < 10; i++)
+                    {
+                        if (i == 5) continue;
+                        DoSomething(i);
+                    }
+                }
+
+                public static void DoSomething(int x) { }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "Loop.cs");
+
+        // No goto
+        Assert.DoesNotContain("goto", lua);
+        Assert.DoesNotContain("::continue::", lua);
+
+        // Uses repeat...until true + break
+        Assert.Contains("repeat", lua);
+        Assert.Contains("until true", lua);
+        Assert.Contains("break", lua);
     }
 }
