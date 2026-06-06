@@ -1779,6 +1779,26 @@ public sealed class IRLowering
 
                 return new IRBinary(MapBinaryOp(bin.OperatorToken.ValueText), LowerExpr(bin.Left, model), LowerExpr(bin.Right, model));
 
+            case PostfixUnaryExpressionSyntax post when post.IsKind(SyntaxKind.PostIncrementExpression)
+                                                         || post.IsKind(SyntaxKind.PostDecrementExpression):
+            {
+                var postTarget = LowerExpr(post.Operand, model);
+                var tempName = AllocateLuaName("__inc");
+                var postOp = post.IsKind(SyntaxKind.PostDecrementExpression) ? "-" : "+";
+                _pendingStatements.Add(new IRLocalDecl(tempName, postTarget));
+                _pendingStatements.Add(new IRAssign(postTarget, new IRBinary(postOp, postTarget, new IRLiteral(1, IRLiteralKind.Integer))));
+                return new IRIdentifier(tempName);
+            }
+
+            case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.PreIncrementExpression)
+                                                       || pre.IsKind(SyntaxKind.PreDecrementExpression):
+            {
+                var preTarget = LowerExpr(pre.Operand, model);
+                var preOp = pre.IsKind(SyntaxKind.PreDecrementExpression) ? "-" : "+";
+                _pendingStatements.Add(new IRAssign(preTarget, new IRBinary(preOp, preTarget, new IRLiteral(1, IRLiteralKind.Integer))));
+                return preTarget;
+            }
+
             case PrefixUnaryExpressionSyntax pre:
                 return new IRUnary(pre.OperatorToken.ValueText, LowerExpr(pre.Operand, model));
 

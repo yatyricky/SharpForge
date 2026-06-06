@@ -96,4 +96,48 @@ public class OperatorsTests
         Assert.Contains("local both = (eq and neq)", lua);
         Assert.Contains("local either = (lt or gt)", lua);
     }
+
+    [Fact]
+    public async Task PostIncrement_expression_uses_value_then_increments()
+    {
+        var src = """
+            public class Counter
+            {
+                public int n;
+
+                public string Next()
+                {
+                    return $"Item_{n++}";
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "Counter.cs");
+
+        // Post-increment: use value first, then increment
+        Assert.Matches(@"local __inc\d* = self\.n", lua);
+        Assert.Contains("self.n = (self.n + 1)", lua);
+    }
+
+    [Fact]
+    public async Task PreIncrement_expression_increments_then_uses_value()
+    {
+        var src = """
+            public class Counter
+            {
+                public int n;
+
+                public string Next()
+                {
+                    return $"Item_{++n}";
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "Counter.cs");
+
+        // Pre-increment: increment first, then use value (no temp needed)
+        Assert.Contains("self.n = (self.n + 1)", lua);
+        Assert.DoesNotContain("__inc", lua);
+    }
 }
