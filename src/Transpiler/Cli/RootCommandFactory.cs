@@ -11,9 +11,12 @@ internal static class RootCommandFactory
 {
     public static RootCommand Create()
     {
-        var inputArg = new Argument<DirectoryInfo>(
+        var inputArg = new Argument<DirectoryInfo?>(
             name: "input",
-            description: "Directory containing C# source files (recursively scanned for *.cs).");
+            description: "Directory containing C# source files (recursively scanned for *.cs). Required unless --list-jass is used.")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+        };
 
         var outputOpt = new Option<FileInfo?>(
             aliases: ["--output", "-o"],
@@ -59,6 +62,14 @@ internal static class RootCommandFactory
             aliases: ["--verbose", "-v"],
             description: "Verbose diagnostics.");
 
+        var jassVersionOpt = new Option<string>(
+            aliases: ["--jass-version"],
+            description: "JASS bindings baseline version deployed into <input>/libs (e.g. 3.0.0). Defaults to the latest bundled version.");
+
+        var listJassOpt = new Option<bool>(
+            aliases: ["--list-jass"],
+            description: "Print the bundled JASS bindings versions (oldest first) and exit.");
+
         var root = new RootCommand("SharpForge Transpiler — C# to Lua compiler for Warcraft III: Reforged maps.")
         {
             inputArg,
@@ -70,11 +81,31 @@ internal static class RootCommandFactory
             ignoreClassOpt,
             ignoredNamespaceOpt,
             verboseOpt,
+            jassVersionOpt,
+            listJassOpt,
         };
 
         root.SetHandler(async (context) =>
         {
             var input = context.ParseResult.GetValueForArgument(inputArg);
+
+            if (context.ParseResult.GetValueForOption(listJassOpt))
+            {
+                foreach (var version in LibraryAssetCopier.GetBundledJassVersions())
+                {
+                    await Console.Out.WriteLineAsync(version);
+                }
+                context.ExitCode = 0;
+                return;
+            }
+
+            if (input is null)
+            {
+                await Console.Error.WriteLineAsync("Input directory is required.");
+                context.ExitCode = 2;
+                return;
+            }
+
             var output = context.ParseResult.GetValueForOption(outputOpt)
                 ?? new FileInfo(Path.Combine(input.FullName, TranspileOptions.DefaultOutputFileName));
 
@@ -87,7 +118,8 @@ internal static class RootCommandFactory
                 IgnoredNamespaces: context.ParseResult.GetValueForOption(ignoredNamespaceOpt) ?? Array.Empty<string>(),
                 CheckOnly: context.ParseResult.GetValueForOption(checkOpt),
                 Verbose: context.ParseResult.GetValueForOption(verboseOpt),
-                InitOnly: context.ParseResult.GetValueForOption(initOpt));
+                InitOnly: context.ParseResult.GetValueForOption(initOpt),
+                JassVersion: context.ParseResult.GetValueForOption(jassVersionOpt) ?? string.Empty);
 
             var pipeline = new TranspilePipeline();
             context.ExitCode = await pipeline.RunAsync(options, context.GetCancellationToken());

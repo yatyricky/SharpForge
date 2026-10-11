@@ -9,7 +9,8 @@ public sealed record TranspileOptions(
     IReadOnlyList<string> IgnoredNamespaces,
     bool CheckOnly,
     bool Verbose,
-    bool InitOnly = false)
+    bool InitOnly = false,
+    string JassVersion = "")
 {
     public const string DefaultRootTable = "SF__";
     public const string DefaultOutputFileName = "sharpforge.lua";

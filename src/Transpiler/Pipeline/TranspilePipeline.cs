@@ -19,7 +19,16 @@ public sealed class TranspilePipeline
             return 2;
         }
 
-        await LibraryAssetCopier.CopyBundledAssetsAsync(options.InputDirectory, cancellationToken);
+        var availableJassVersions = LibraryAssetCopier.GetBundledJassVersions();
+        var jassVersion = ResolveJassVersion(options.JassVersion, availableJassVersions);
+        if (jassVersion is null)
+        {
+            await Console.Error.WriteLineAsync(
+                $"Unknown JASS bindings version '{options.JassVersion}'. Available: {string.Join(", ", availableJassVersions)}");
+            return 2;
+        }
+
+        await LibraryAssetCopier.CopyBundledAssetsAsync(options.InputDirectory, jassVersion, options.Verbose, cancellationToken);
 
         if (options.InitOnly)
         {
@@ -115,6 +124,16 @@ public sealed class TranspilePipeline
         }
 
         return 0;
+    }
+
+    private static string? ResolveJassVersion(string requested, IReadOnlyList<string> availableVersions)
+    {
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            return availableVersions.Count > 0 ? availableVersions[^1] : string.Empty;
+        }
+
+        return availableVersions.FirstOrDefault(v => string.Equals(v, requested, StringComparison.OrdinalIgnoreCase));
     }
 
     private static IEnumerable<FileInfo> EnumerateSourceFiles(DirectoryInfo inputDirectory)

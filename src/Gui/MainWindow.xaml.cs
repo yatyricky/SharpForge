@@ -53,6 +53,7 @@ public sealed partial class MainWindow : Window
         NavigationList.SelectedIndex = 0;
         _settings = AppSettings.Load();
         LoadSettingsIntoFields();
+        FillDefaultJassVersionAsync();
     }
 
     private void Window_SourceInitialized(object? sender, EventArgs e)
@@ -141,6 +142,7 @@ public sealed partial class MainWindow : Window
             JassInputBox.Text = settings.JassInput;
             JassOutputBox.Text = settings.JassOutput;
             JassHostClassBox.Text = string.IsNullOrWhiteSpace(settings.JassHostClass) ? DefaultJassHostClass : settings.JassHostClass;
+            JassVersionBox.Text = settings.JassVersion;
             FillMissingDefaults();
         }
         finally
@@ -168,7 +170,9 @@ public sealed partial class MainWindow : Window
             IncludeBox.Clear();
             EnableBuilderBox.IsChecked = true;
             EnableTestBox.IsChecked = true;
+            JassVersionBox.Clear();
             FillDefaultsFromMap();
+            FillDefaultJassVersionAsync();
         }
         finally
         {
@@ -241,6 +245,7 @@ public sealed partial class MainWindow : Window
                 JassInput = JassInputBox.Text.Trim(),
                 JassOutput = JassOutputBox.Text.Trim(),
                 JassHostClass = JassHostClassBox.Text.Trim(),
+                JassVersion = JassVersionBox.Text.Trim(),
             };
             if (!MapPathBox.Items.Cast<string>().Contains(map, StringComparer.OrdinalIgnoreCase))
             {
@@ -263,7 +268,9 @@ public sealed partial class MainWindow : Window
 
         _logBuffer.Clear();
         ConsoleBox.Clear();
-        await RunTranspilerStepAsync([CSharpPathBox.Text.Trim(), "--init"]);
+        var initArgs = new List<string> { CSharpPathBox.Text.Trim(), "--init" };
+        AddOptional(initArgs, "--jass-version", JassVersionBox.Text.Trim());
+        await RunTranspilerStepAsync(initArgs.ToArray());
     }
 
     private async void RunTranspileCheck(object sender, RoutedEventArgs e)
@@ -391,6 +398,7 @@ public sealed partial class MainWindow : Window
             AddOptional(args, "-o", TranspileOutputBox.Text.Trim());
         }
         AddOptional(args, "--root-table", RootTableBox.Text.Trim());
+        AddOptional(args, "--jass-version", JassVersionBox.Text.Trim());
         AddSplitOptions(args, "--define", DefinesBox.Text);
         AddSplitOptions(args, "--ignore-class", IgnoreClassBox.Text);
         AddSplitOptions(args, "--ignore-namespace", IgnoreNamespaceBox.Text);
@@ -899,6 +907,67 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Shows the latest bundled JASS bindings version on the card when the map has no explicit choice.
+    /// Runs fire-and-forget; an empty box already means "latest" to sf-transpile.
+    /// </summary>
+    private async void FillDefaultJassVersionAsync()
+    {
+        if (JassVersionBox.Text.Trim().Length > 0)
+        {
+            return;
+        }
+
+        var versions = await QueryJassVersionsAsync();
+        if (versions.Count > 0 && JassVersionBox.Text.Trim().Length == 0)
+        {
+            JassVersionBox.Text = versions[^1];
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> QueryJassVersionsAsync()
+    {
+        try
+        {
+            var exe = ResolveTool("sf-transpile");
+            if (!File.Exists(exe))
+            {
+                return [];
+            }
+
+            var output = await QueryToolAsync(exe, "--list-jass");
+            return output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        }
+        catch (Win32Exception)
+        {
+            return [];
+        }
+        catch (InvalidOperationException)
+        {
+            return [];
+        }
+    }
+
+    private async Task<string> QueryToolAsync(string exe, params string[] args)
+    {
+        var start = new ProcessStartInfo(exe)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (var arg in args.Where(arg => !string.IsNullOrWhiteSpace(arg)))
+        {
+            start.ArgumentList.Add(arg);
+        }
+
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Failed to start process.");
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0 ? stdout : string.Empty;
+    }
+
     private static string ResolveTool(string toolName)
     {
         var exeName = toolName + ".exe";
@@ -1196,8 +1265,9 @@ public sealed partial class MainWindow : Window
         ConsoleBox.ScrollToEnd();
     }
 
-    private void EditTranspiler(object sender, RoutedEventArgs e)
+    private async void EditTranspiler(object sender, RoutedEventArgs e)
     {
+        var jassVersions = await QueryJassVersionsAsync();
         if (ShowSettingsDialog(
             "Transpiler Settings",
             [
@@ -1207,6 +1277,7 @@ public sealed partial class MainWindow : Window
                 DialogField.Text("Root table", RootTableBox),
                 DialogField.Text("Ignore class", IgnoreClassBox),
                 DialogField.Text("Ignored namespaces", IgnoreNamespaceBox),
+                DialogField.Choice("JASS bindings version", JassVersionBox, jassVersions),
             ]))
         {
             FillDefaultsFromCSharpPath();
@@ -1251,13 +1322,36 @@ public sealed partial class MainWindow : Window
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var editors = new List<(DialogField Field, WpfTextBox Editor)>();
+        var editors = new List<(DialogField Field, WpfControl Editor)>();
         for (var index = 0; index < fields.Count; index++)
         {
             form.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var field = fields[index];
             var label = new TextBlock { Text = field.Label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 12) };
-            var editor = new WpfTextBox { Text = field.Target.Text, Margin = new Thickness(0, 0, 8, 12), MinWidth = 420 };
+            WpfControl editor;
+            if (field.Choices.Count > 0)
+            {
+                var current = field.Target.Text.Trim();
+                var combo = new WpfComboBox
+                {
+                    IsEditable = true,
+                    Margin = new Thickness(0, 0, 8, 12),
+                    MinWidth = 420,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+                foreach (var choice in field.Choices)
+                {
+                    combo.Items.Add(choice);
+                }
+
+                combo.Text = current.Length > 0 ? current : field.Choices[^1];
+                editor = combo;
+            }
+            else
+            {
+                editor = new WpfTextBox { Text = field.Target.Text, Margin = new Thickness(0, 0, 8, 12), MinWidth = 420 };
+            }
+
             Grid.SetRow(label, index);
             Grid.SetRow(editor, index);
             Grid.SetColumn(editor, 1);
@@ -1265,10 +1359,10 @@ public sealed partial class MainWindow : Window
             form.Children.Add(editor);
             editors.Add((field, editor));
 
-            if (field.BrowseKind != BrowseKind.None)
+            if (field.BrowseKind != BrowseKind.None && editor is WpfTextBox textBoxEditor)
             {
                 var browse = new Button { Content = "Browse", Margin = new Thickness(0, 0, 0, 12), MinWidth = 88 };
-                browse.Click += (_, _) => BrowseDialogField(field, editor);
+                browse.Click += (_, _) => BrowseDialogField(field, textBoxEditor);
                 Grid.SetRow(browse, index);
                 Grid.SetColumn(browse, 2);
                 form.Children.Add(browse);
@@ -1300,7 +1394,13 @@ public sealed partial class MainWindow : Window
         {
             foreach (var (field, editor) in editors)
             {
-                field.Target.Text = editor.Text.Trim();
+                var value = editor switch
+                {
+                    WpfComboBox combo => combo.Text,
+                    WpfTextBox textBox => textBox.Text,
+                    _ => field.Target.Text,
+                };
+                field.Target.Text = value.Trim();
             }
             saved = true;
             dialog.Close();
@@ -1465,22 +1565,25 @@ public sealed partial class MainWindow : Window
         MultiOpenFile,
     }
 
-    private sealed record DialogField(string Label, WpfTextBox Target, BrowseKind BrowseKind, string Filter)
+    private sealed record DialogField(string Label, WpfTextBox Target, BrowseKind BrowseKind, string Filter, IReadOnlyList<string> Choices)
     {
         public static DialogField Text(string label, WpfTextBox target)
-            => new(label, target, BrowseKind.None, string.Empty);
+            => new(label, target, BrowseKind.None, string.Empty, []);
 
         public static DialogField Folder(string label, WpfTextBox target)
-            => new(label, target, BrowseKind.Folder, string.Empty);
+            => new(label, target, BrowseKind.Folder, string.Empty, []);
 
         public static DialogField OpenFile(string label, WpfTextBox target, string filter)
-            => new(label, target, BrowseKind.OpenFile, filter);
+            => new(label, target, BrowseKind.OpenFile, filter, []);
 
         public static DialogField SaveFile(string label, WpfTextBox target, string filter)
-            => new(label, target, BrowseKind.SaveFile, filter);
+            => new(label, target, BrowseKind.SaveFile, filter, []);
 
         public static DialogField MultiOpenFile(string label, WpfTextBox target, string filter)
-            => new(label, target, BrowseKind.MultiOpenFile, filter);
+            => new(label, target, BrowseKind.MultiOpenFile, filter, []);
+
+        public static DialogField Choice(string label, WpfTextBox target, IReadOnlyList<string> choices)
+            => new(label, target, BrowseKind.None, string.Empty, choices);
     }
 
     private sealed class AppSettings
@@ -1535,5 +1638,6 @@ public sealed partial class MainWindow : Window
         public string JassInput { get; set; } = string.Empty;
         public string JassOutput { get; set; } = string.Empty;
         public string JassHostClass { get; set; } = DefaultJassHostClass;
+        public string JassVersion { get; set; } = string.Empty;
     }
 }

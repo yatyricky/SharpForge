@@ -94,6 +94,14 @@
                                             <TextBlock Text="Output Lua" Style="{StaticResource FieldLabel}" />
                                             <TextBox x:Name="TranspileOutputBox" Grid.Column="1" IsReadOnly="True" TextChanged="TranspileOutputChanged" LostFocus="AnyFieldLostFocus" ToolTip="Lua file written by sf-transpile." />
                                         </Grid>
+                                        <Grid Style="{StaticResource FieldGrid}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="JASS bindings" Style="{StaticResource FieldLabel}" />
+                                            <TextBox x:Name="JassVersionBox" Grid.Column="1" IsReadOnly="True" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" ToolTip="Bundled JASS bindings version sf-transpile deploys into the C# project's libs folder. Empty uses the latest bundled version. Pick one via Edit." />
+                                        </Grid>
                                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,46,0,0">
                                             <Button Content="Init" Click="RunTranspileInit" />
                                             <Button Content="Check" Click="RunTranspileCheck" Margin="8,0,0,0" />
@@ -209,6 +217,7 @@
                                         <Button Content="Generate" Click="RunJassGen" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" />
                                     </StackPanel>
                                 </Grid>
+                                <TextBlock Text="Development tool — production maps do not need this page or its settings. sf-transpile deploys the bundled JASS bindings version selected on the Transpiler card." Style="{StaticResource FieldLabel}" TextWrapping="Wrap" Margin="0,0,0,14" />
                                 <Grid Style="{StaticResource FieldGrid}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="150" />

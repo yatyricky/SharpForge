@@ -28,6 +28,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Transpiler.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="..\..\assets\libs\**\*.cs">
       <LogicalName>SharpForge.Transpiler.Assets.libs/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>

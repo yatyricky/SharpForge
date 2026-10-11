@@ -12,7 +12,7 @@ sf-transpile <input-dir> [options]
 
 Arguments:
 
-- `<input-dir>`: directory containing C# source files. Files are scanned recursively, excluding build output directories.
+- `<input-dir>`: directory containing C# source files. Files are scanned recursively, excluding build output directories. Optional when `--list-jass` is used.
 
 Options:
 
@@ -23,6 +23,8 @@ Options:
 - `-r, --root-table <name>`: Lua root table for generated C# types. Default: `SF__`.
 - `-i, --ignore-class <name>`: class names compiled for symbols but skipped during Lua emit. Default: `JASS`. Repeatable.
 - `--library-folder <name>`: folder names containing C# library or extern stubs to compile for symbols but skip during Lua lowering. Default: `libs`. Repeatable.
+- `--jass-version <VERSION>`: bundled JASS bindings baseline deployed to `<input-dir>/libs/Jass-<VERSION>` (e.g. `3.0.0`). Defaults to the latest bundled version. Other bundled baseline folders left in `libs` from earlier runs are removed so two binding sets never coexist.
+- `--list-jass`: print the bundled JASS bindings versions (oldest first) and exit.
 - `-v, --verbose`: print verbose diagnostics.
 
 Examples:
@@ -31,11 +33,13 @@ Examples:
 sf-transpile .\CSProject -o .\LuaProject\Main.lua --root-table SF__ --ignore-class JASS --library-folder libs
 sf-transpile .\CSProject --check -d MAP_NAME_twistedmeadows
 sf-transpile .\CSProject --init
+sf-transpile .\CSProject --jass-version 3.0.0
+sf-transpile --list-jass
 ```
 
 Initialization behavior:
 
-- Every run copies bundled C# stubs under `<input-dir>/libs`.
+- Every run deploys bundled C# stubs under `<input-dir>/libs`: the JASS bindings version selected by `--jass-version` (default: latest bundled) plus the tool-owned `SFLib` and `StdLib` support stubs.
 - If `<input-dir>/<FolderName>.csproj` is missing, the bundled IntelliSense project template is copied.
 - `--init` performs only this setup and does not transpile.
 
@@ -113,8 +117,11 @@ Examples:
 
 ```powershell
 sf-jassgen .\assets\jass\v2.0.4 -o .\assets\libs\Jass-2.0.4
+sf-jassgen .\assets\jass\v3.0.0 -o .\assets\libs\Jass-3.0.0
 sf-jassgen .\jass --host-class JASS
 ```
+
+Development workflow note: `sf-jassgen` is only needed to regenerate binding baselines shipped inside `sf-transpile`; production maps get their bindings from the transpiler's `--jass-version` option.
 
 Generated files:
 

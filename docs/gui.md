@@ -25,6 +25,7 @@ Transpiler fields:
 - Enabled toggle
 - C# project path
 - Output Lua path
+- JASS bindings version (shown on the card; empty resolves to the latest bundled version). Pick from the dropdown in the card's Edit dialog, which lists the versions reported by `sf-transpile --list-jass`.
 - Preprocessor symbols
 - Root table
 - Ignore class list
@@ -48,6 +49,8 @@ Run fields:
 When fields change, the command preview is regenerated. Manual edits are honored until the next regeneration.
 
 ## JassGen Tab
+
+The tab is a development tool: production maps do not need it or its settings — the Transpiler card's JASS bindings version selects the bindings that `sf-transpile` deploys. A hint on the page states this.
 
 Fields:
 

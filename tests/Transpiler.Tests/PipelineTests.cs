@@ -163,8 +163,9 @@ public class PipelineTests
             Verbose: false), CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "Natives.g.cs")));
-        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "Jass-2.0.4", "GlobalUsings.g.cs")));
+        var latestJass = LibraryAssetCopier.GetBundledJassVersions()[^1];
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", $"Jass-{latestJass}", "Natives.g.cs")));
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", $"Jass-{latestJass}", "GlobalUsings.g.cs")));
         var luaInterop = await File.ReadAllTextAsync(Path.Combine(dir.FullName, "libs", "SFLib", "Interop", "LuaInterop.cs"));
         Assert.Contains("namespace SFLib.Interop", luaInterop);
         Assert.Contains("public static class LuaInterop", luaInterop);
@@ -173,6 +174,103 @@ public class PipelineTests
         var lua = await File.ReadAllTextAsync(output.FullName);
         Assert.Contains("BJDebugMsg(\"hello\")", lua);
         Assert.DoesNotContain("-- JASS", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_deploys_only_the_selected_jass_version_and_removes_stale_baselines()
+    {
+        var versions = LibraryAssetCopier.GetBundledJassVersions();
+        Assert.True(versions.Count >= 2, "test requires at least two bundled JASS baselines");
+        var selected = versions[^1];
+        var stale = versions[0];
+
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static void Main()
+                {
+                    BJDebugMsg("hello");
+                }
+            }
+            """);
+
+        // Stale baseline left in the project by an earlier run pinned to a different version;
+        // its content is intentionally invalid C# to prove it never reaches the compiler.
+        var staleDir = Directory.CreateDirectory(Path.Combine(dir.FullName, "libs", $"Jass-{stale}"));
+        await File.WriteAllTextAsync(Path.Combine(staleDir.FullName, "Natives.g.cs"), "not valid c#");
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            IgnoredNamespaces: new[] { TranspileOptions.DefaultIgnoredNamespace },
+            CheckOnly: false,
+            Verbose: false,
+            JassVersion: selected), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", $"Jass-{selected}", "Natives.g.cs")));
+        Assert.False(Directory.Exists(Path.Combine(dir.FullName, "libs", $"Jass-{stale}")));
+        Assert.True(File.Exists(Path.Combine(dir.FullName, "libs", "SFLib", "Interop", "LuaInterop.cs")));
+        var lua = await File.ReadAllTextAsync(Path.Combine(dir.FullName, "out.lua"));
+        Assert.Contains("BJDebugMsg(\"hello\")", lua);
+    }
+
+    [Fact]
+    public async Task Pipeline_defaults_to_the_latest_bundled_jass_version()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"), """
+            public static class Program
+            {
+                public static void Main()
+                {
+                    BJDebugMsg("hello");
+                }
+            }
+            """);
+
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            IgnoredNamespaces: new[] { TranspileOptions.DefaultIgnoredNamespace },
+            CheckOnly: false,
+            Verbose: false), CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        var latest = LibraryAssetCopier.GetBundledJassVersions()[^1];
+        var jassDirs = Directory.GetDirectories(Path.Combine(dir.FullName, "libs"), "Jass-*");
+        var jassDir = Assert.Single(jassDirs);
+        Assert.Equal(Path.Combine(dir.FullName, "libs", $"Jass-{latest}"), jassDir);
+    }
+
+    [Fact]
+    public async Task Pipeline_rejects_unknown_jass_version()
+    {
+        var dir = Directory.CreateTempSubdirectory("sf-test-");
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "Program.cs"),
+            "public static class Program { public static void Main() { } }");
+
+        var output = new FileInfo(Path.Combine(dir.FullName, "out.lua"));
+        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
+            InputDirectory: dir,
+            OutputFile: output,
+            PreprocessorSymbols: Array.Empty<string>(),
+            RootTable: TranspileOptions.DefaultRootTable,
+            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
+            IgnoredNamespaces: new[] { TranspileOptions.DefaultIgnoredNamespace },
+            CheckOnly: false,
+            Verbose: false,
+            JassVersion: "0.0.0-no-such-baseline"), CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.False(File.Exists(output.FullName));
     }
 
     [Fact]

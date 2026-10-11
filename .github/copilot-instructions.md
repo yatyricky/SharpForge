@@ -41,6 +41,6 @@ Use the existing System.CommandLine beta style in CLI factories. Context-based h
 
 ## Pitfalls
 - Do not edit `bin/`, `obj/`, or `publish/` outputs unless explicitly asked.
-- Avoid hand-editing generated `*.g.cs` stubs in `assets/libs/Jass-2.0.4/` unless the task is specifically about the checked-in generated baseline; normally regenerate with `sf-jassgen`.
+- Avoid hand-editing generated `*.g.cs` stubs in `assets/libs/Jass-*/` unless the task is specifically about the checked-in generated baseline; normally regenerate with `sf-jassgen`. `sf-transpile` embeds every `assets/libs/Jass-*` baseline and deploys only the one picked by `--jass-version` (default: latest), removing other bundled baselines from the target `libs`.
 - `Basic.Reference.Assemblies.Net100` is used for Roslyn references; avoid `typeof(object).Assembly.Location` because single-file publish triggers IL3000.
 - Keep changes surgical. The repo has intentionally separate tools, so avoid cross-project abstractions unless tests or repeated local patterns justify them.
