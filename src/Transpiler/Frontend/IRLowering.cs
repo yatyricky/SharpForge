@@ -3941,6 +3941,11 @@ public sealed class IRLowering
 
     private IRStmt LowerObjectInitializerAssignment(IRExpr objectRef, AssignmentExpressionSyntax assignment, SemanticModel model)
     {
+        if (TryLowerFlattenedStructMemberInitializer(objectRef, assignment, model) is { } flattenedAssign)
+        {
+            return flattenedAssign;
+        }
+
         var target = LowerObjectInitializerTarget(objectRef, assignment.Left, model);
         if (model.GetSymbolInfo(assignment.Left).Symbol is IPropertySymbol property && !IsAutoPropertySymbol(property))
         {
@@ -3952,6 +3957,39 @@ public sealed class IRLowering
         }
 
         return new IRAssign(target, LowerExpr(assignment.Right, model));
+    }
+
+    /// <summary>
+    /// Object initializer assignments to a flattened struct member must write the
+    /// same <c>member__field</c> slots that member reads and <c>__Init</c> use;
+    /// a plain table assignment would leave every slot at its default.
+    /// </summary>
+    private IRStmt? TryLowerFlattenedStructMemberInitializer(IRExpr objectRef, AssignmentExpressionSyntax assignment, SemanticModel model)
+    {
+        if (assignment.Left is not IdentifierNameSyntax
+            || model.GetSymbolInfo(assignment.Left).Symbol is not { } memberSymbol
+            || !_flattenedStructMembers.TryGetValue(memberSymbol, out var flattenedMember))
+        {
+            return null;
+        }
+
+        if (!TryGetStructExpressionValues(assignment.Right, model, out var fields, out var values))
+        {
+            return null;
+        }
+
+        var targets = new List<IRExpr>(fields.Count);
+        foreach (var field in fields)
+        {
+            if (!flattenedMember.FieldMembers.TryGetValue(field.Name, out var memberName))
+            {
+                return null;
+            }
+
+            targets.Add(new IRMemberAccess(objectRef, memberName));
+        }
+
+        return new IRMultiAssign(targets, values);
     }
 
     private IRExpr LowerObjectInitializerTarget(IRExpr objectRef, ExpressionSyntax target, SemanticModel model)

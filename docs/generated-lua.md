@@ -73,6 +73,8 @@ When struct instance receivers are flattened, apply the same receiver expansion 
 
 Flattened struct assignment should resolve the Roslyn symbol before choosing a receiver: check flattened locals first, then flattened members. Class fields and auto-properties use backing members such as `self.position__x`; explicit receivers such as `trs.position` lower to `trs.position__x`; a same-named local must never default to `self`.
 
+Object initializer assignments to flattened struct members must write the same `member__field` slots as plain assignments and `__Init` defaults. Lower them through the shared struct value machinery instead of emitting a table assignment, so initializer writes stay consistent with flattened member reads.
+
 Register flattened struct member metadata before lowering method and property bodies across the compilation. Cross-file accesses such as `gameObject.transform.position.x` must flatten by symbol regardless of declaration order.
 
 When a method or property returns a flattenable struct and is itself used as a struct argument, forward the call as the flattened value instead of projecting `.Field` from it. Multi-return struct calls are not Lua tables.

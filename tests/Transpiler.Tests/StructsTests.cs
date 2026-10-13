@@ -330,6 +330,50 @@ public class StructsTests
     }
 
     [Fact]
+    public async Task Object_initializer_assignments_to_flattened_struct_members_expand_to_field_assignments()
+    {
+        var src = """
+            public struct Args
+            {
+                public int amount;
+                public string name;
+            }
+
+            public class Damage
+            {
+                public Args args;
+                public int simple;
+
+                public int Amount()
+                {
+                    return args.amount;
+                }
+            }
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    var dmg = new Damage
+                    {
+                        args = new Args { amount = 10, name = "attack" },
+                        simple = 5,
+                    };
+                    dmg.Amount();
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "ObjectInitializerStructMember.cs");
+
+        Assert.Matches(@"obj\w*\.args__amount, obj\w*\.args__name = 10, ""attack""", lua);
+        Assert.Matches(@"obj\w*\.simple = 5", lua);
+        Assert.Contains("return self.args__amount", lua);
+        Assert.DoesNotContain(".args = {", lua);
+        Assert.DoesNotContain("obj.args =", lua);
+    }
+
+    [Fact]
     public async Task Nested_flattened_struct_members_expand_across_files_regardless_of_type_order()
     {
         var lua = await TranspilerTestHelper.TranspileSourcesAsync(new Dictionary<string, string>
