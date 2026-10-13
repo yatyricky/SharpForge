@@ -34,6 +34,7 @@ public sealed class IRLowering
     private readonly List<IRStmt> _pendingStatements = new();
     private readonly Dictionary<string, string> _outVarNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
+    private readonly HashSet<ExpressionSyntax> _reportedInstanceMethodGroups = new();
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
     private readonly List<INamedTypeSymbol> _knownExceptionTypes = new();
@@ -2412,7 +2413,7 @@ public sealed class IRLowering
     private IRExpr? TryLowerDelegateMethodGroupArgument(ExpressionSyntax argument, IParameterSymbol? parameter, SemanticModel model)
     {
         if (argument is AnonymousFunctionExpressionSyntax
-            || parameter?.Type is not INamedTypeSymbol { DelegateInvokeMethod: { } invokeMethod })
+            || parameter?.Type is not INamedTypeSymbol { DelegateInvokeMethod: not null })
         {
             return null;
         }
@@ -2423,23 +2424,29 @@ public sealed class IRLowering
             return null;
         }
 
-        var parameterNames = invokeMethod.Parameters
-            .Select((invokeParameter, index) => AllocateLuaName(string.IsNullOrWhiteSpace(invokeParameter.Name) ? $"arg{index}" : invokeParameter.Name))
-            .ToArray();
-        var parameterReferences = parameterNames.Select(name => (IRExpr)new IRIdentifier(name)).ToArray();
-        var call = LowerMethodGroupInvocation(argument, method, parameterReferences, model);
-        var body = new IRBlock();
+        // Static method groups pass the function reference itself so register/
+        // unregister see the original handle; instance method groups would need a
+        // self-capturing closure, so they are rejected instead of guessed.
+        if (method.IsStatic)
+        {
+            if (IsIgnoredClass(method.ContainingType))
+            {
+                return new IRIdentifier(method.Name);
+            }
 
-        if (invokeMethod.ReturnsVoid)
-        {
-            body.Statements.Add(new IRExprStmt(call));
-        }
-        else
-        {
-            body.Statements.Add(new IRReturn(call));
+            return new IRMemberAccess(LowerTypeReferenceForAccess(method.ContainingType), GetLuaMethodName(method));
         }
 
-        return new IRFunctionExpression(parameterNames, body);
+        // Invocation statements can be lowered twice (statement-form probe, then
+        // the expression path); report each offending argument only once.
+        if (_reportedInstanceMethodGroups.Add(argument))
+        {
+            AddDiagnostic(
+                argument.GetLocation(),
+                $"cannot pass instance method '{method.ContainingType?.ToDisplayString()}.{method.Name}' as a value; it must be wrapped in a self-capturing closure, so the passed handle is not the original function and cannot be matched on unregister; use a static method");
+        }
+
+        return new IRLiteral(null, IRLiteralKind.Nil);
     }
 
     private static IMethodSymbol? GetMethodGroupSymbol(ExpressionSyntax argument, SemanticModel model)
@@ -2447,43 +2454,6 @@ public sealed class IRLowering
         var symbolInfo = model.GetSymbolInfo(argument);
         return symbolInfo.Symbol as IMethodSymbol
             ?? symbolInfo.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
-    }
-
-    private IRExpr LowerMethodGroupInvocation(ExpressionSyntax argument, IMethodSymbol method, IReadOnlyList<IRExpr> args, SemanticModel model)
-    {
-        if (argument is MemberAccessExpressionSyntax memberAccessExpression && method is { IsStatic: false })
-        {
-            if (IsExternalLuaObjectType(method.ContainingType))
-            {
-                var member = GetLuaObjectMember(method);
-                return new IRInvocation(
-                    new IRMemberAccess(LowerExpr(memberAccessExpression.Expression, model), member.Name),
-                    args,
-                    UseColon: member.UseColon);
-            }
-
-            return new IRInvocation(
-                new IRMemberAccess(LowerExpr(memberAccessExpression.Expression, model), GetLuaMethodName(method)),
-                args,
-                UseColon: true);
-        }
-
-        if (argument is IdentifierNameSyntax && method is { IsStatic: false })
-        {
-            return new IRInvocation(
-                new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(method)),
-                args,
-                UseColon: true);
-        }
-
-        if (method.IsStatic && IsIgnoredClass(method.ContainingType))
-        {
-            return new IRInvocation(new IRIdentifier(method.Name), args);
-        }
-
-        return new IRInvocation(
-            new IRMemberAccess(LowerTypeReferenceForAccess(method.ContainingType), GetLuaMethodName(method)),
-            args);
     }
 
     private IReadOnlyList<IRExpr> LowerStructArgumentValues(ExpressionSyntax expression, INamedTypeSymbol structType, SemanticModel model)

@@ -10,7 +10,7 @@ SharpForge uses the **SharpForge Lowering Stack**: C# input starts as an ergonom
 | --- | --- | --- |
 | 4 | Authoring Layer | Map and gameplay code written by project authors. | Game systems, triggers, abilities, project-specific helpers |
 | 3 | Library Surface Layer | Reusable C#-shaped APIs that user code can reference without turning SharpForge into a .NET compatibility layer. | `List<T>`, `Dictionary<K,V>`, `Vector3`, `SpellEvent`, interop stubs |
-| 2 | Canonicalization Layer | Roslyn-aware lowering that turns rich C# shapes into simpler SharpForge IR shapes before Lua emission. | Method groups become lambdas, `async`/`await` becomes coroutine flow, exceptions become typed headers, structs become flattened fields and multi-return values |
+| 2 | Canonicalization Layer | Roslyn-aware lowering that turns rich C# shapes into simpler SharpForge IR shapes before Lua emission. | Static method groups become function references, `async`/`await` becomes coroutine flow, exceptions become typed headers, structs become flattened fields and multi-return values |
 | 1 | Lua Emission Layer | The final lowered representation is printed as direct Lua with the smallest practical helper surface. | Root-table functions, tables, nil guards, coroutine helpers only when needed |
 
 Use these terms when discussing lowering behavior:
@@ -48,6 +48,8 @@ When designing a lowering feature, compare viable strategies in this order:
 When implementing syntax conveniences or target-typed forms, canonicalize into the existing semantic lowering path wherever practical. Shared lowering helpers should be keyed by Roslyn symbols, receiver shape, and supported API semantics rather than by prompt-shaped special cases.
 
 Null-conditional delegate invocation must preserve C# short-circuiting. Lower `handler?.Invoke(args)` with a temporary and nil guard or another lazy form so the receiver is evaluated once and the arguments are evaluated only when the delegate is non-nil.
+
+Method groups passed as delegate arguments must preserve function identity so register/unregister-style matching works: static method groups lower to the direct function reference (`SF__.Type.Method`, including overload suffix names), and instance method groups are rejected with a diagnostic because passing them would require a self-capturing closure whose handle is never the original function.
 
 Optional parameters should use callee-side nil guards, such as `if arg == nil then arg = default end`, so omitted Lua arguments, named-argument gaps, and explicit false or zero defaults share one representation.
 

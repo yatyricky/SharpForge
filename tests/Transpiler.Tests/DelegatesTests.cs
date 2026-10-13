@@ -60,7 +60,78 @@ public class DelegatesTests
     }
 
     [Fact]
-    public async Task Bound_instance_method_groups_passed_to_action_parameters_lower_through_receiver_capturing_lambdas()
+    public async Task Static_method_groups_passed_to_delegate_parameters_emit_direct_function_references()
+    {
+        var src = """
+            using System;
+
+            public static class Bus
+            {
+                public static void Register(Action<int> callback) { }
+                public static void Unregister(Action<int> callback) { }
+            }
+
+            public static class Program
+            {
+                private static int counter = 0;
+
+                private static void DamageEventFunc(int damage)
+                {
+                    counter++;
+                }
+
+                public static void Main()
+                {
+                    Bus.Register(DamageEventFunc);
+                    Bus.Unregister(DamageEventFunc);
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["StaticMethodGroup.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains("SF__.Bus.Register(SF__.Program.DamageEventFunc)", lua);
+        Assert.Contains("SF__.Bus.Unregister(SF__.Program.DamageEventFunc)", lua);
+        Assert.DoesNotContain("Register(function", lua);
+        Assert.DoesNotContain("Unregister(function", lua);
+    }
+
+    [Fact]
+    public async Task Overloaded_static_method_groups_emit_suffixed_function_references()
+    {
+        var src = """
+            using System;
+
+            public static class Bus
+            {
+                public static void Register(Action<int> callback) { }
+            }
+
+            public static class Program
+            {
+                private static void Handler(int x) { }
+                private static void Handler(string s) { }
+
+                public static void Main()
+                {
+                    Bus.Register(Handler);
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["OverloadedMethodGroup.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains("function SF__.Program.Handler__i(x)", lua);
+        Assert.Matches(@"SF__\.Bus\.Register\(SF__\.Program\.Handler__\w+\)", lua);
+        Assert.DoesNotContain("Register(function", lua);
+    }
+
+    [Fact]
+    public async Task Instance_method_groups_passed_to_delegate_parameters_report_diagnostics()
     {
         var src = """
             using System;
@@ -83,21 +154,26 @@ public class DelegatesTests
             {
                 private readonly UnitStore _units = new();
 
+                private void OnUnit(unit value) { }
+
                 public void Init()
                 {
                     JASS.ExTriggerRegisterNewUnit(_units.Add);
                     JASS.ExTriggerRegisterReady(_units.Clear);
+                    JASS.ExTriggerRegisterNewUnit(OnUnit);
                 }
             }
             """;
 
-        var lua = await TranspilerTestHelper.TranspileAsync(src, "BoundMethodGroupAction.cs");
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["InstanceMethodGroup.cs"] = src });
 
-        Assert.Contains("ExTriggerRegisterNewUnit(function", lua);
-        Assert.Matches(@"function\((\w+)\)\s+self\._units:Add\(\1\)\s+end", lua);
-        Assert.Contains("ExTriggerRegisterReady(function()", lua);
-        Assert.Matches(@"function\(\)\s+self\._units:Clear\(\)\s+end", lua);
-        Assert.DoesNotContain("ExTriggerRegisterNewUnit(self._units.Add)", lua);
+        Assert.Contains(diagnostics, d => d.Contains("cannot pass instance method 'UnitStore.Add' as a value", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, d => d.Contains("cannot pass instance method 'UnitStore.Clear' as a value", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, d => d.Contains("cannot pass instance method 'Program.OnUnit' as a value", StringComparison.Ordinal));
+        Assert.Single(diagnostics, d => d.Contains("cannot pass instance method 'UnitStore.Add'", StringComparison.Ordinal));
+        Assert.DoesNotContain("ExTriggerRegisterNewUnit(function", lua);
+        Assert.DoesNotContain("ExTriggerRegisterReady(function", lua);
     }
 
     [Fact]
