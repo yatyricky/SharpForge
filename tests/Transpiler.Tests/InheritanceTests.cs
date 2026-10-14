@@ -235,4 +235,141 @@ public class InheritanceTests
         Assert.DoesNotContain("BuffBase.new(", lua);
         Assert.DoesNotContain("BuffBase.ctor(", lua);
     }
+
+    [Fact]
+    public async Task Chain_hidden_methods_with_different_signatures_get_signature_suffixes()
+    {
+        var src = """
+            using System;
+
+            public class SpellEventData
+            {
+                public int AbilityId;
+            }
+
+            public class EventBase<T>
+            {
+                protected Action<T> _callback;
+
+                protected void ResponseCall(T data)
+                {
+                    _callback(data);
+                }
+
+                public void Register(Action<T> callback)
+                {
+                    _callback = callback;
+                }
+            }
+
+            public class SpellEventBase : EventBase<SpellEventData>
+            {
+                protected void ResponseCall(int abilityId, SpellEventData data)
+                {
+                }
+
+                public void Register(int abilityId, Action<SpellEventData> callback)
+                {
+                }
+            }
+
+            public class SpellChannelEvent : SpellEventBase
+            {
+                public void Fire(SpellEventData s)
+                {
+                    ResponseCall(s);
+                    ResponseCall(s.AbilityId, s);
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["ChainHiding.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Matches(@"function SF__\.EventBase:ResponseCall__\w+\(data\)", lua);
+        Assert.Matches(@"function SF__\.EventBase:Register__\w+\(callback\)", lua);
+        Assert.Matches(@"function SF__\.SpellEventBase:ResponseCall__i\w+\(abilityId, data\d*\)", lua);
+        Assert.Matches(@"function SF__\.SpellEventBase:Register__i\w+\(abilityId\d*, callback\d*\)", lua);
+        Assert.Matches(@"self:ResponseCall__\w+\(s\d*\)", lua);
+        Assert.Matches(@"self:ResponseCall__i\w+\(s\d*\.AbilityId, s\d*\)", lua);
+        Assert.DoesNotContain(":ResponseCall(data)", lua);
+        Assert.DoesNotContain(":Register(callback)", lua);
+    }
+
+    [Fact]
+    public async Task Mixed_override_and_hiding_families_suffix_all_variants()
+    {
+        var src = """
+            public class Base
+            {
+                public virtual int Foo(int v) => v;
+
+                public static void Go(int v) { }
+            }
+
+            public class Middle : Base
+            {
+                public override int Foo(int v) => v + 1;
+            }
+
+            public class Leaf : Middle
+            {
+                public int Foo(string s) => s.Length;
+
+                public static void Go(string s) { }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["MixedFamily.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        // The override pair keeps ONE shared suffixed name so metatable dispatch still works.
+        Assert.Contains("function SF__.Base:Foo__i(v)", lua);
+        Assert.Contains("function SF__.Middle:Foo__i(v", lua);
+        // The hiding variant gets its own signature suffix.
+        Assert.Contains("function SF__.Leaf:Foo__s(s", lua);
+        // Statics are type-qualified, never shadowed through metatables: stay plain.
+        Assert.Contains("function SF__.Base.Go(v", lua);
+        Assert.Contains("function SF__.Leaf.Go(s", lua);
+        Assert.DoesNotContain(":Foo(v", lua);
+    }
+
+    [Fact]
+    public async Task Chain_shadowing_composes_with_generic_struct_specialization()
+    {
+        var src = """
+            public struct VecY
+            {
+                public int x;
+            }
+
+            public class GenBase<T>
+            {
+                protected void Emit(T data) { }
+            }
+
+            public class GenDerived : GenBase<VecY>
+            {
+                protected void Emit(int extra, VecY data) { }
+
+                public void Fire(VecY v)
+                {
+                    Emit(v);
+                    Emit(3, v);
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["ChainSpecialization.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Matches(@"function SF__\.GenBase:Emit__\w+\(data\)", lua);
+        Assert.Matches(@"function SF__\.GenBase:Emit__\w+__VecY\(data__x\w*\)", lua);
+        Assert.Matches(@"function SF__\.GenDerived:Emit__i\w+\(extra, data__x\)", lua);
+        Assert.Matches(@"self:Emit__\w+__VecY\(v__x\)", lua);
+        Assert.Matches(@"self:Emit__i\w+\(3, v__x\)", lua);
+    }
 }

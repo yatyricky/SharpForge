@@ -39,6 +39,7 @@ public sealed class IRLowering
     private IAssemblySymbol? _compilationAssembly;
     private readonly List<INamedTypeSymbol> _knownExceptionTypes = new();
     private readonly Dictionary<IMethodSymbol, List<GenericStructSpecialization>> _genericStructSpecializations = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<INamedTypeSymbol, HashSet<string>> _chainShadowedMethodNames = new(SymbolEqualityComparer.Default);
     private IReadOnlyDictionary<ITypeParameterSymbol, INamedTypeSymbol>? _typeParameterSubstitution;
     private CSharpCompilation? _compilation;
 
@@ -72,6 +73,7 @@ public sealed class IRLowering
         _luaNameCounter = 0;
         _knownExceptionTypes.Clear();
         _genericStructSpecializations.Clear();
+        _chainShadowedMethodNames.Clear();
         _typeParameterSubstitution = null;
         _compilation = compilation;
         var compilationUnits = new List<(CompilationUnitSyntax Root, SemanticModel Model)>();
@@ -85,6 +87,7 @@ public sealed class IRLowering
             compilationUnits.Add((root, model));
 
             RegisterFlattenedStructMembers(root, model, cancellationToken);
+            RegisterChainShadowedMethodNames(root, model, cancellationToken);
         }
 
         foreach (var (root, model) in compilationUnits)
@@ -202,6 +205,84 @@ public sealed class IRLowering
             }
         }
     }
+
+    /// <summary>
+    /// A method name reused across an inheritance chain with different parameter lists
+    /// (method hiding) would collide in Lua: each type has a single plain-name entry and
+    /// the derived table shadows the base entry, so base-bound calls hit the wrong body.
+    /// Mark every involved type so those names carry parameter-signature suffixes. Families
+    /// whose signatures are all identical (pure overrides) stay plain: they must keep one
+    /// shared name for metatable dispatch. Signature comparison uses the CONSTRUCTED base
+    /// members so a generic `virtual Foo(T)` overridden as `Foo(Concrete)` stays plain.
+    /// </summary>
+    private void RegisterChainShadowedMethodNames(CompilationUnitSyntax root, SemanticModel model, CancellationToken ct)
+    {
+        foreach (var typeDecl in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+        {
+            var symbol = model.GetDeclaredSymbol(typeDecl, ct);
+            if (symbol is null
+                || _ignoredClasses.Contains(symbol.Name)
+                || IsSFLibType(symbol)
+                || InheritsFromHandle(symbol)
+                || IsExternalLuaObjectType(symbol))
+            {
+                continue;
+            }
+
+            foreach (var method in symbol.GetMembers().OfType<IMethodSymbol>()
+                         .Where(m => m.MethodKind == MethodKind.Ordinary && !m.IsStatic))
+            {
+                foreach (var ancestor in EnumerateBaseChain(symbol))
+                {
+                    var hidden = ancestor.GetMembers(method.Name).OfType<IMethodSymbol>()
+                        .Where(m => m.MethodKind == MethodKind.Ordinary && !m.IsStatic)
+                        .ToList();
+                    if (hidden.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var signatures = hidden
+                        .Select(h => GetLuaParameterSignature(h.Parameters))
+                        .Append(GetLuaParameterSignature(method.Parameters))
+                        .ToHashSet(StringComparer.Ordinal);
+                    if (signatures.Count <= 1)
+                    {
+                        continue;
+                    }
+
+                    MarkChainShadowedMethodName(symbol, method.Name);
+                    MarkChainShadowedMethodName(ancestor.OriginalDefinition, method.Name);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<INamedTypeSymbol> EnumerateBaseChain(INamedTypeSymbol type)
+    {
+        for (var current = type.BaseType; current is not null; current = current.BaseType)
+        {
+            yield return current;
+        }
+    }
+
+    private void MarkChainShadowedMethodName(INamedTypeSymbol type, string methodName)
+    {
+        if (!_chainShadowedMethodNames.TryGetValue(type, out var names))
+        {
+            names = new HashSet<string>(StringComparer.Ordinal);
+            _chainShadowedMethodNames[type] = names;
+        }
+
+        names.Add(methodName);
+    }
+
+    private bool IsChainShadowedMethodName(IMethodSymbol method)
+        => method.MethodKind == MethodKind.Ordinary
+           && !method.IsStatic
+           && method.ContainingType is not null
+           && _chainShadowedMethodNames.TryGetValue(method.ContainingType, out var names)
+           && names.Contains(method.Name);
 
     private void RegisterFlattenedStructMember(ISymbol? memberSymbol, string memberName, ITypeSymbol? memberType, bool isStatic)
     {
@@ -4696,7 +4777,7 @@ public sealed class IRLowering
                 : "New";
         }
 
-        return HasOverloadSiblings(method, MethodKind.Ordinary)
+        return HasOverloadSiblings(method, MethodKind.Ordinary) || IsChainShadowedMethodName(method)
             ? AppendLuaParameterSignature(method.Name, method.Parameters)
             : method.Name;
     }

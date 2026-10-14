@@ -55,6 +55,8 @@ Optional parameters should use callee-side nil guards, such as `if arg == nil th
 
 Overloaded methods, constructors, and operators should canonicalize to unique Lua names at the semantic boundary using the same signature function for declarations and call sites. Count-only suffixes are not enough for same-arity overloads.
 
+A method name reused across an inheritance chain with different parameter lists (method hiding) must also carry signature suffixes on every involved declaration: a plain name on both the base and derived tables would make the derived entry shadow the base entry in the metatable chain, so base-bound calls would execute the derived body with mismatched arguments. Families whose signatures are all identical (pure overrides) stay plain — they rely on one shared name for metatable dispatch — and the signature comparison uses constructed base members so `virtual Foo(T)` overridden as `Foo(Concrete)` stays plain. Static methods never need this: they are always type-qualified, so no metatable lookup can shadow them.
+
 Generic lowering should add hidden runtime type arguments only on ordinary SharpForge method call emission after special API lowerings have consumed source-shaped arguments. Hidden arguments must not leak into Lua interop, Regex, or other purpose-built API lowerings.
 
 Type syntax for runtime checks such as `is`, `as`, and patterns should fall back from `SemanticModel.GetTypeInfo(...).Type` to `GetSymbolInfo(...).Symbol as ITypeSymbol`, so generic type parameters lower to hidden runtime type parameters instead of unsupported identifier expressions.
