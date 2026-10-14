@@ -83,6 +83,17 @@ Any return position for a flattenable struct, including expression-bodied method
 
 When a flattened struct target or local is assigned from a conditional expression, declare the flattened temporaries in the surrounding scope, then spill the selected branch inside statement-level `if` branches before assigning the target. Expression-level helpers consume Lua multi-return values, and `do` blocks hide local declarations.
 
+## Generic Types And Structs
+
+Generic types lower to one shared Lua table per generic type definition; there is no per-instantiation specialization of the type itself. The struct decision is share-vs-specialize (the CLR strategy for reference vs value types):
+
+- A method whose parameter type is a **type parameter** that an instantiation substitutes with a flattenable struct gets a **specialized copy per instantiation**: `Method__<StructName>` (namespace-qualified struct name with `.` replaced by `_`), appended after any overload signature suffix (`Method__<sig>__<Struct>`), with the flattened parameter signature. The specialized body lowers with a type-parameter-to-struct substitution so field access, delegate invocation, call arguments, and returns reuse the ordinary flattening paths. Call sites resolve through Roslyn's substituted symbol and emit the same specialized name, so the ABI is identical on both sides.
+- Methods without direct type-parameter parameters stay shared; non-struct instantiations call the shared copies with single values. The shared copy of a specializable method remains emitted for those instantiations.
+- PackStruct containers are excluded: their contract is table representation for struct elements, which specialization would break.
+- Diagnostics instead of guessing: passing a struct to a **generic method** type parameter, passing a struct to a **generic constructor**, and referencing a specializable method **as a value** (method-group argument, identifier, or generic name) all report errors.
+
+Known gaps: transitive open-generic instantiation closure (demand-driven discovery covers direct call sites), generic-method specialization, virtual/override interaction with specialized names, and member-access-as-value (`obj.Method` without invocation), which still resolves to the shared name.
+
 ## Root Table Contract
 
 Every transpiled namespace and type lives under one configurable root table. The default is `SF__`.

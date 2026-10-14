@@ -38,6 +38,9 @@ public sealed class IRLowering
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
     private readonly List<INamedTypeSymbol> _knownExceptionTypes = new();
+    private readonly Dictionary<IMethodSymbol, List<GenericStructSpecialization>> _genericStructSpecializations = new(SymbolEqualityComparer.Default);
+    private IReadOnlyDictionary<ITypeParameterSymbol, INamedTypeSymbol>? _typeParameterSubstitution;
+    private CSharpCompilation? _compilation;
 
     public IRLowering(
         IEnumerable<string>? ignoredClasses = null,
@@ -68,6 +71,9 @@ public sealed class IRLowering
         _usedLuaNames.Clear();
         _luaNameCounter = 0;
         _knownExceptionTypes.Clear();
+        _genericStructSpecializations.Clear();
+        _typeParameterSubstitution = null;
+        _compilation = compilation;
         var compilationUnits = new List<(CompilationUnitSyntax Root, SemanticModel Model)>();
 
         foreach (var tree in compilation.SyntaxTrees)
@@ -148,6 +154,7 @@ public sealed class IRLowering
         }
 
         module.Enums.Sort((left, right) => StringComparer.Ordinal.Compare(left.FullName, right.FullName));
+        EmitGenericStructSpecializations(module, cancellationToken);
         SortTypesByInheritance(module.Types);
         ValidateEntryPoints(module);
         _module = null;
@@ -974,7 +981,7 @@ public sealed class IRLowering
         foreach (var parameter in parameters)
         {
             var symbol = model.GetDeclaredSymbol(parameter, ct);
-            var type = symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type);
+            var type = ResolveType(symbol?.Type ?? (parameter.Type is null ? null : model.GetTypeInfo(parameter.Type).Type));
 
             if (parameter.Modifiers.Any(SyntaxKind.OutKeyword))
             {
@@ -1760,8 +1767,8 @@ public sealed class IRLowering
 
                 if (bin.IsKind(SyntaxKind.EqualsExpression) || bin.IsKind(SyntaxKind.NotEqualsExpression))
                 {
-                    var leftType = model.GetTypeInfo(bin.Left).Type;
-                    var rightType = model.GetTypeInfo(bin.Right).Type;
+                    var leftType = ResolveType(model.GetTypeInfo(bin.Left).Type);
+                    var rightType = ResolveType(model.GetTypeInfo(bin.Right).Type);
                     if (leftType is INamedTypeSymbol { TypeKind: TypeKind.Struct } leftStruct
                         && rightType is INamedTypeSymbol { TypeKind: TypeKind.Struct }
                         && SymbolEqualityComparer.Default.Equals(leftType, rightType)
@@ -1888,6 +1895,14 @@ public sealed class IRLowering
         {
             var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
+        }
+
+        if (symbol is { IsGenericMethod: true } && HasStructSubstitutedTypeParameter(symbol))
+        {
+            AddDiagnostic(
+                inv.GetLocation(),
+                $"cannot pass a struct to generic method '{symbol.OriginalDefinition.ContainingType?.ToDisplayString()}.{symbol.Name}'; generic method type parameters are not specialized; use a class type argument or a non-generic method");
+            return new IRLiteral(null, IRLiteralKind.Nil);
         }
 
         var packStruct = IsPackStructType(symbol.ContainingType);
@@ -2023,7 +2038,7 @@ public sealed class IRLowering
         if (inv.Expression is MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax } && symbol is { IsStatic: false })
         {
             return new IRInvocation(
-                new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetInvocationLuaMethodName(symbol)),
                 new[] { new IRIdentifier("self") }.Concat(callArgs).ToArray());
         }
 
@@ -2034,14 +2049,14 @@ public sealed class IRLowering
             {
                 var selfArgs = LowerStructArgumentValues(structMemberAccess.Expression, symbol.ContainingType, model);
                 return new IRInvocation(
-                    new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                    new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetInvocationLuaMethodName(symbol)),
                     selfArgs.Concat(callArgs).ToArray());
             }
 
             if (inv.Expression is IdentifierNameSyntax && SymbolEqualityComparer.Default.Equals(symbol.ContainingType, _currentStructSelfType))
             {
                 return new IRInvocation(
-                    new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                    new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetInvocationLuaMethodName(symbol)),
                     GetCurrentStructSelfArguments(symbol.ContainingType).Concat(callArgs).ToArray());
             }
         }
@@ -2049,7 +2064,7 @@ public sealed class IRLowering
         if (inv.Expression is SimpleNameSyntax && symbol is { IsStatic: false })
         {
             return new IRInvocation(
-                new IRMemberAccess(new IRIdentifier("self"), GetLuaMethodName(symbol)),
+                new IRMemberAccess(new IRIdentifier("self"), GetInvocationLuaMethodName(symbol)),
                 callArgs,
                 UseColon: true);
         }
@@ -2062,7 +2077,7 @@ public sealed class IRLowering
             }
 
             return new IRInvocation(
-                new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetLuaMethodName(symbol)),
+                new IRMemberAccess(LowerTypeReference(symbol.ContainingType), GetInvocationLuaMethodName(symbol)),
                 callArgs);
         }
 
@@ -2089,7 +2104,7 @@ public sealed class IRLowering
             }
 
             return new IRInvocation(
-                new IRMemberAccess(LowerExpr(memberAccess.Expression, model), GetLuaMethodName(symbol)),
+                new IRMemberAccess(LowerExpr(memberAccess.Expression, model), GetInvocationLuaMethodName(symbol)),
                 callArgs,
                 UseColon: true);
         }
@@ -2117,7 +2132,7 @@ public sealed class IRLowering
             }
 
             return new IRInvocation(
-                new IRMemberAccess(LowerExpr(staticAccess.Expression, model), GetLuaMethodName(symbol)),
+                new IRMemberAccess(LowerExpr(staticAccess.Expression, model), GetInvocationLuaMethodName(symbol)),
                 callArgs);
         }
 
@@ -2216,7 +2231,8 @@ public sealed class IRLowering
                 continue;
             }
 
-            if (parameter?.Type is INamedTypeSymbol structType
+            if (parameter is not null
+                && ResolveType(parameter.Type) is INamedTypeSymbol structType
                 && CanFlattenStructType(structType)
                 && GetFlattenableStructFields(structType).ToArray() is { Length: > 0 } fields)
             {
@@ -2342,7 +2358,7 @@ public sealed class IRLowering
 
     private IReadOnlyList<IRExpr> LowerArgumentValues(ExpressionSyntax argument, IParameterSymbol parameter, SemanticModel model)
     {
-        if (parameter.Type is INamedTypeSymbol structType
+        if (ResolveType(parameter.Type) is INamedTypeSymbol structType
             && CanFlattenStructType(structType)
             && GetFlattenableStructFields(structType).Any())
         {
@@ -2359,7 +2375,7 @@ public sealed class IRLowering
         bool hasTrailingArguments,
         List<IRStmt> prelude)
     {
-        if (parameter.Type is not INamedTypeSymbol structType
+        if (ResolveType(parameter.Type) is not INamedTypeSymbol structType
             || !CanFlattenStructType(structType))
         {
             return [LowerArgument(argument, parameter, model)];
@@ -2385,7 +2401,7 @@ public sealed class IRLowering
 
     private IReadOnlyList<IRExpr> CreateNilArgumentPlaceholders(IParameterSymbol parameter)
     {
-        if (parameter.Type is INamedTypeSymbol structType
+        if (ResolveType(parameter.Type) is INamedTypeSymbol structType
             && CanFlattenStructType(structType)
             && GetFlattenableStructFields(structType).Any())
         {
@@ -2432,6 +2448,14 @@ public sealed class IRLowering
             if (IsIgnoredClass(method.ContainingType))
             {
                 return new IRIdentifier(method.Name);
+            }
+
+            if (TryGetGenericStructSpecialization(method, out _))
+            {
+                AddDiagnostic(
+                    argument.GetLocation(),
+                    $"cannot pass method '{method.ContainingType?.ToDisplayString()}.{method.Name}' as a value; it requires generic struct specialization and has no single shared Lua function");
+                return new IRLiteral(null, IRLiteralKind.Nil);
             }
 
             return new IRMemberAccess(LowerTypeReferenceForAccess(method.ContainingType), GetLuaMethodName(method));
@@ -2892,7 +2916,7 @@ public sealed class IRLowering
             return false;
         }
 
-        var receiverType = model.GetTypeInfo(access.Expression).Type;
+        var receiverType = ResolveType(model.GetTypeInfo(access.Expression).Type);
         if (receiverType is not INamedTypeSymbol structType
             || !CanFlattenStructType(structType)
             || !GetFlattenableStructFields(structType).Any())
@@ -3060,7 +3084,7 @@ public sealed class IRLowering
         // If the initializer is a struct-returning method/property call, always allow flattening.
         // The call returns multiple values which naturally decompose into flattened locals.
         if (statement.Declaration.Variables is [{ Initializer.Value: { } initExpr }]
-            && model.GetTypeInfo(initExpr).Type is INamedTypeSymbol initType
+            && ResolveType(model.GetTypeInfo(initExpr).Type) is INamedTypeSymbol initType
             && CanFlattenStructType(initType)
             && initExpr is InvocationExpressionSyntax or MemberAccessExpressionSyntax)
         {
@@ -3239,7 +3263,7 @@ public sealed class IRLowering
             return new IRReturn(null);
         }
 
-        if (model.GetTypeInfo(expression).Type is INamedTypeSymbol flatType
+        if (ResolveType(model.GetTypeInfo(expression).Type) is INamedTypeSymbol flatType
             && CanFlattenStructType(flatType)
             && GetFlattenableStructFields(flatType).Any())
         {
@@ -3289,7 +3313,7 @@ public sealed class IRLowering
             return TryGetStructFieldValues(creation, model, out fields, out values);
         }
 
-        var type = model.GetTypeInfo(expression).Type as INamedTypeSymbol;
+        var type = ResolveType(model.GetTypeInfo(expression).Type) as INamedTypeSymbol;
         if (type is null || !CanFlattenStructType(type))
         {
             fields = Array.Empty<StructFieldSlot>();
@@ -3311,7 +3335,7 @@ public sealed class IRLowering
     }
 
     private bool IsStructExpression(ExpressionSyntax expression, SemanticModel model)
-        => model.GetTypeInfo(expression).Type is INamedTypeSymbol type
+        => ResolveType(model.GetTypeInfo(expression).Type) is INamedTypeSymbol type
            && CanFlattenStructType(type)
            && GetFlattenableStructFields(type).Any();
 
@@ -3803,14 +3827,14 @@ public sealed class IRLowering
         }
     }
 
-    private static ITypeSymbol? GetSymbolType(ISymbol symbol)
-        => symbol switch
+    private ITypeSymbol? GetSymbolType(ISymbol symbol)
+        => ResolveType(symbol switch
         {
             ILocalSymbol local => local.Type,
             IFieldSymbol field => field.Type,
             IPropertySymbol property => property.Type,
             _ => null,
-        };
+        });
 
     private static bool IsRuntimeObjectLikeType(ITypeSymbol? type)
         => type is not null && (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Interface);
@@ -3846,6 +3870,14 @@ public sealed class IRLowering
         }
 
         var ctor = model.GetSymbolInfo(obj).Symbol as IMethodSymbol;
+        if (ctor is { MethodKind: MethodKind.Constructor } && HasStructSubstitutedTypeParameter(ctor))
+        {
+            AddDiagnostic(
+                obj.GetLocation(),
+                $"cannot pass a struct to constructor of '{ctor.OriginalDefinition.ContainingType?.ToDisplayString()}'; generic constructor struct specialization is not supported yet");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
         var loweredArgs = ctor is null
             ? new LoweredCallArguments(obj.ArgumentList?.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray() ?? Array.Empty<IRExpr>(), Array.Empty<IRStmt>())
             : obj.ArgumentList is null
@@ -4288,6 +4320,14 @@ public sealed class IRLowering
                 return new IRIdentifier(staticMethod.Name);
             }
 
+            if (TryGetGenericStructSpecialization(staticMethod, out _))
+            {
+                AddDiagnostic(
+                    id.GetLocation(),
+                    $"cannot use method '{staticMethod.ContainingType?.ToDisplayString()}.{staticMethod.Name}' as a value; it requires generic struct specialization and has no single shared Lua function");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
             return new IRMemberAccess(LowerTypeReferenceForAccess(staticMethod.ContainingType), GetLuaMethodName(staticMethod));
         }
 
@@ -4300,6 +4340,14 @@ public sealed class IRLowering
                 && _currentStructSelfFields.TryGetValue(symbol.Name, out var selfFieldName))
             {
                 return new IRIdentifier(selfFieldName);
+            }
+
+            if (symbol is IMethodSymbol valueMethod && TryGetGenericStructSpecialization(valueMethod, out _))
+            {
+                AddDiagnostic(
+                    id.GetLocation(),
+                    $"cannot use method '{valueMethod.ContainingType?.ToDisplayString()}.{valueMethod.Name}' as a value; it requires generic struct specialization and has no single shared Lua function");
+                return new IRLiteral(null, IRLiteralKind.Nil);
             }
 
             return symbol is IMethodSymbol instanceMethod
@@ -4337,6 +4385,14 @@ public sealed class IRLowering
 
         if (symbol is IMethodSymbol method)
         {
+            if (TryGetGenericStructSpecialization(method, out _))
+            {
+                AddDiagnostic(
+                    genericName.GetLocation(),
+                    $"cannot use method '{method.ContainingType?.ToDisplayString()}.{method.Name}' as a value; it requires generic struct specialization and has no single shared Lua function");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
             if (method.IsStatic)
             {
                 return IsIgnoredClass(method.ContainingType)
@@ -4417,6 +4473,204 @@ public sealed class IRLowering
                 AddReservedIdentifierDiagnostic(token);
             }
         }
+    }
+
+    /// <summary>
+    /// Generic types lower to one shared Lua table, so a method whose parameter type is a
+    /// type parameter cannot know whether an instantiation flattens that parameter into
+    /// multiple Lua values. For every instantiation where a direct type-parameter parameter
+    /// becomes a flattenable struct, emit a specialized copy named
+    /// <c>Method__StructName</c> with the flattened signature; call sites resolve through
+    /// the substituted symbol and pick the same name. Everything else stays shared.
+    /// </summary>
+    private ITypeSymbol? ResolveType(ITypeSymbol? type)
+    {
+        if (type is ITypeParameterSymbol typeParameter
+            && _typeParameterSubstitution is not null
+            && _typeParameterSubstitution.TryGetValue(typeParameter, out var substituted))
+        {
+            return substituted;
+        }
+
+        return type;
+    }
+
+    private bool TryGetGenericStructSpecialization(IMethodSymbol method, out GenericStructSpecialization? specialization)
+    {
+        specialization = null;
+        var original = method.OriginalDefinition;
+        if (original.IsGenericMethod
+            || IsPackStructType(method.ContainingType)
+            || SymbolEqualityComparer.Default.Equals(method, original))
+        {
+            return false;
+        }
+
+        Dictionary<ITypeParameterSymbol, INamedTypeSymbol>? substitution = null;
+        var suffixParts = new List<string>();
+        for (var i = 0; i < original.Parameters.Length && i < method.Parameters.Length; i++)
+        {
+            if (original.Parameters[i].Type is not ITypeParameterSymbol typeParameter
+                || method.Parameters[i].Type is not INamedTypeSymbol structType
+                || !CanFlattenStructType(structType)
+                || !GetFlattenableStructFields(structType).Any())
+            {
+                continue;
+            }
+
+            (substitution ??= new Dictionary<ITypeParameterSymbol, INamedTypeSymbol>(SymbolEqualityComparer.Default))[typeParameter] = structType;
+            var structSuffix = structType.ToDisplayString().Replace('.', '_');
+            if (!suffixParts.Contains(structSuffix, StringComparer.Ordinal))
+            {
+                suffixParts.Add(structSuffix);
+            }
+        }
+
+        if (substitution is null)
+        {
+            return false;
+        }
+
+        specialization = new GenericStructSpecialization(method, substitution, string.Join("_", suffixParts));
+        return true;
+    }
+
+    private bool HasStructSubstitutedTypeParameter(IMethodSymbol method)
+    {
+        var original = method.OriginalDefinition;
+        if (IsPackStructType(method.ContainingType)
+            || SymbolEqualityComparer.Default.Equals(method, original))
+        {
+            return false;
+        }
+
+        for (var i = 0; i < original.Parameters.Length && i < method.Parameters.Length; i++)
+        {
+            if (original.Parameters[i].Type is ITypeParameterSymbol
+                && method.Parameters[i].Type is INamedTypeSymbol structType
+                && CanFlattenStructType(structType)
+                && GetFlattenableStructFields(structType).Any())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void RegisterGenericStructSpecialization(GenericStructSpecialization specialization)
+    {
+        var original = specialization.ConstructedMethod.OriginalDefinition;
+        if (!_genericStructSpecializations.TryGetValue(original, out var list))
+        {
+            list = new List<GenericStructSpecialization>();
+            _genericStructSpecializations[original] = list;
+        }
+
+        if (list.All(existing => existing.Suffix != specialization.Suffix))
+        {
+            list.Add(specialization);
+        }
+    }
+
+    private string GetInvocationLuaMethodName(IMethodSymbol symbol)
+    {
+        if (TryGetGenericStructSpecialization(symbol, out var specialization) && specialization is not null)
+        {
+            RegisterGenericStructSpecialization(specialization);
+            return GetLuaMethodName(symbol) + "__" + specialization.Suffix;
+        }
+
+        return GetLuaMethodName(symbol);
+    }
+
+    private void EmitGenericStructSpecializations(IRModule module, CancellationToken ct)
+    {
+        var emitted = new Dictionary<IMethodSymbol, HashSet<string>>(SymbolEqualityComparer.Default);
+        while (true)
+        {
+            // Specialized bodies can register further specializations; drain until stable.
+            var pending = _genericStructSpecializations
+                .SelectMany(pair => pair.Value.Select(specialization => (Method: pair.Key, Specialization: specialization)))
+                .Where(item => !emitted.TryGetValue(item.Method, out var done) || !done.Contains(item.Specialization.Suffix))
+                .ToList();
+            if (pending.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var (method, specialization) in pending)
+            {
+                var declaration = method.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(ct) as MethodDeclarationSyntax;
+                if (declaration is null || _compilation is null)
+                {
+                    continue;
+                }
+
+                var model = _compilation.GetSemanticModel(declaration.SyntaxTree);
+                var owner = method.ContainingType;
+                var irType = module.Types.FirstOrDefault(type =>
+                    type.FullName == string.Join('.', GetTypeContainerSegments(owner).Append(owner.Name)));
+                if (irType is null)
+                {
+                    continue;
+                }
+
+                irType.Methods.Add(LowerSpecializedMethod(declaration, owner, specialization, model, ct));
+                if (!emitted.TryGetValue(method, out var done))
+                {
+                    done = new HashSet<string>(StringComparer.Ordinal);
+                    emitted[method] = done;
+                }
+
+                done.Add(specialization.Suffix);
+            }
+        }
+    }
+
+    private IRFunction LowerSpecializedMethod(
+        MethodDeclarationSyntax m,
+        INamedTypeSymbol owner,
+        GenericStructSpecialization specialization,
+        SemanticModel model,
+        CancellationToken ct)
+    {
+        var original = specialization.ConstructedMethod.OriginalDefinition;
+        var isStatic = m.Modifiers.Any(SyntaxKind.StaticKeyword);
+        var fn = new IRFunction
+        {
+            Name = m.Identifier.ValueText + "__" + specialization.Suffix,
+            LuaName = GetLuaMethodName(original) + "__" + specialization.Suffix,
+            IsStatic = isStatic,
+            IsInstance = !isStatic,
+            IsCoroutine = m.Modifiers.Any(SyntaxKind.AsyncKeyword) && ContainsTaskDelay(m, model),
+        };
+        fn.Comments.AddRange(ExtractComments(m.GetLeadingTrivia()));
+
+        var previousSubstitution = _typeParameterSubstitution;
+        var previousFunction = _currentFunction;
+        _typeParameterSubstitution = specialization.Substitution;
+        _currentFunction = fn;
+        try
+        {
+            AddLoweredParameters(fn, m.ParameterList.Parameters, model, ct);
+
+            if (m.Body is { } body)
+            {
+                LowerBlock(body, fn.Body, model, ct);
+            }
+            else if (m.ExpressionBody is { } arrow)
+            {
+                fn.Body.Statements.Add(LowerReturnExpression(arrow.Expression, model));
+            }
+        }
+        finally
+        {
+            _currentFunction = previousFunction;
+            _typeParameterSubstitution = previousSubstitution;
+        }
+
+        return fn;
     }
 
     private string GetLuaMethodName(IMethodSymbol method)
@@ -4760,6 +5014,11 @@ public sealed class IRLowering
     private sealed record FlattenedStructLocal(IReadOnlyDictionary<string, string> FieldLocals);
 
     private sealed record FlattenedStructMember(bool IsStatic, INamedTypeSymbol ContainingType, IReadOnlyDictionary<string, string> FieldMembers);
+
+    private sealed record GenericStructSpecialization(
+        IMethodSymbol ConstructedMethod,
+        IReadOnlyDictionary<ITypeParameterSymbol, INamedTypeSymbol> Substitution,
+        string Suffix);
 
     private sealed record StructFieldSlot(string Name, ITypeSymbol Type, int SortKey);
 
