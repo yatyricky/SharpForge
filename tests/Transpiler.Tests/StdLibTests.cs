@@ -291,4 +291,52 @@ public class StdLibTests
 
         Assert.Contains(diagnostics, d => d.Contains("unsupported collection expression target 'int[]'", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task List_index_from_end_canonicalizes_to_count_minus_n()
+    {
+        var src = """
+            using StdLib;
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    List<int> nums = [10, 20, 30];
+                    var last = nums[^1];
+                    var second = nums[^2];
+                    nums[^1] = 99;
+                    var plain = nums[0];
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "HatIndex.cs");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("local last = nums:get_Item((nums.Count - 1))", lua);
+        Assert.Contains("local second = nums:get_Item((nums.Count - 2))", lua);
+        Assert.Contains("nums:set_Item((nums.Count - 1), 99)", lua);
+        Assert.Contains("local plain = nums:get_Item(0)", lua);
+    }
+
+    [Fact]
+    public async Task Index_from_end_rejects_non_list_receivers()
+    {
+        var src = """
+            public static class Program
+            {
+                public static void Main()
+                {
+                    int[] arr = new int[] { 1, 2 };
+                    var last = arr[^1];
+                }
+            }
+            """;
+
+        var (_, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["HatIndexNeg.cs"] = src });
+
+        Assert.Contains(diagnostics, d => d.Contains("index-from-end '^' is only supported on StdLib.List, not 'int[]'", StringComparison.Ordinal));
+    }
 }

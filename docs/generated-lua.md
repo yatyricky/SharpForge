@@ -49,6 +49,8 @@ When implementing syntax conveniences or target-typed forms, canonicalize into t
 
 Collection expressions canonicalize into the object-initializer path before any lowering: `[a, b]` with a `StdLib.List<T>` target becomes `new List<T> { a, b }` (constructor plus `Add` calls in an IIFE), `[]` becomes a plain `new List<T>()` / `new Dictionary<K, V>()` construction, and any other target (arrays, interfaces), spread elements, or non-empty dictionary targets are diagnosed rather than guessed.
 
+Index-from-end canonicalizes the same way: `list[^n]` becomes `list[list.Count - n]` on `StdLib.List` receivers before the ordinary get_Item/set_Item paths run; other receivers are diagnosed.
+
 Null-conditional delegate invocation must preserve C# short-circuiting. Lower `handler?.Invoke(args)` with a temporary and nil guard or another lazy form so the receiver is evaluated once and the arguments are evaluated only when the delegate is non-nil.
 
 Method groups passed as delegate arguments must preserve function identity so register/unregister-style matching works: static method groups lower to the direct function reference (`SF__.Type.Method`, including overload suffix names), and instance method groups are rejected with a diagnostic because passing them would require a self-capturing closure whose handle is never the original function.

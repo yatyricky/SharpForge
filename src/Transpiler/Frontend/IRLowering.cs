@@ -1819,9 +1819,10 @@ public sealed class IRLowering
             case ElementAccessExpressionSyntax elementAccess:
                 if (IsCollectionElementAccess(elementAccess, model))
                 {
+                    var collectionReceiver = LowerExpr(elementAccess.Expression, model);
                     return new IRElementAccess(
-                        LowerExpr(elementAccess.Expression, model),
-                        LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
+                        collectionReceiver,
+                        LowerElementIndex(collectionReceiver, elementAccess, elementAccess.ArgumentList.Arguments[0], model));
                 }
 
                 if (TryLowerIndexerGet(elementAccess, model) is { } indexerGet)
@@ -1829,9 +1830,10 @@ public sealed class IRLowering
                     return indexerGet;
                 }
 
+                var fallbackReceiver = LowerExpr(elementAccess.Expression, model);
                 return new IRElementAccess(
-                    LowerExpr(elementAccess.Expression, model),
-                    LowerExpr(elementAccess.ArgumentList.Arguments[0].Expression, model));
+                    fallbackReceiver,
+                    LowerElementIndex(fallbackReceiver, elementAccess, elementAccess.ArgumentList.Arguments[0], model));
 
             case InvocationExpressionSyntax inv:
                 return LowerInvocation(inv, model);
@@ -4461,9 +4463,13 @@ public sealed class IRLowering
 
         if (left is ElementAccessExpressionSyntax elementAccess && model.GetSymbolInfo(elementAccess).Symbol is IPropertySymbol { IsIndexer: true } indexer)
         {
-            var args = elementAccess.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).Append(LowerExpr(right, model)).ToArray();
+            var setterReceiver = LowerExpr(elementAccess.Expression, model);
+            var args = elementAccess.ArgumentList.Arguments
+                .Select(a => LowerElementIndex(setterReceiver, elementAccess, a, model))
+                .Append(LowerExpr(right, model))
+                .ToArray();
             return new IRExprStmt(new IRInvocation(
-                new IRMemberAccess(LowerExpr(elementAccess.Expression, model), "set_Item"),
+                new IRMemberAccess(setterReceiver, "set_Item"),
                 args,
                 UseColon: !indexer.IsStatic));
         }
@@ -4505,10 +4511,41 @@ public sealed class IRLowering
             return null;
         }
 
+        var receiver = LowerExpr(access.Expression, model);
         return new IRInvocation(
-            new IRMemberAccess(LowerExpr(access.Expression, model), "get_Item"),
-            access.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray(),
+            new IRMemberAccess(receiver, "get_Item"),
+            access.ArgumentList.Arguments.Select(a => LowerElementIndex(receiver, access, a, model)).ToArray(),
             UseColon: !indexer.IsStatic);
+    }
+
+    /// <summary>
+    /// Index-from-end canonicalizes into the ordinary 0-based path before lowering:
+    /// `list[^n]` becomes `list[list.Count - n]` on StdLib.List receivers, so the existing
+    /// get_Item/set_Item (0-based C#) machinery handles it unchanged. Other receivers
+    /// are diagnosed rather than guessed.
+    /// </summary>
+    private IRExpr LowerElementIndex(IRExpr receiverLowered, ElementAccessExpressionSyntax access, ArgumentSyntax argument, SemanticModel model)
+    {
+        var index = argument.Expression;
+        if (index is not PrefixUnaryExpressionSyntax { OperatorToken.ValueText: "^" } hat)
+        {
+            return LowerExpr(index, model);
+        }
+
+        var receiverType = model.GetTypeInfo(access.Expression).Type;
+        if (receiverType?.OriginalDefinition is { Name: "List", ContainingNamespace: { } listNamespace }
+            && listNamespace.ToDisplayString() == "StdLib")
+        {
+            return new IRBinary(
+                "-",
+                new IRMemberAccess(receiverLowered, "Count"),
+                LowerExpr(hat.Operand, model));
+        }
+
+        AddDiagnostic(
+            index.GetLocation(),
+            $"index-from-end '^' is only supported on StdLib.List, not '{receiverType?.ToDisplayString()}'");
+        return new IRLiteral(null, IRLiteralKind.Nil);
     }
 
     private static bool IsAutoPropertySymbol(IPropertySymbol property)
