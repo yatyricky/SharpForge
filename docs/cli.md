@@ -88,7 +88,7 @@ Output behavior:
 
 - No `--output`: writes `bundle.lua` next to the entry script.
 - `--output <folder>`: writes `<folder>/bundle.lua` when the folder is not a `.w3x` folder.
-- `--output <map.w3x>`: copies the archive to `<map>.sf-build.w3x`, then injects the copied archive.
+- `--output <map.w3x>`: copies the archive to `<map>.sf-build.w3x`, then injects the copied archive; after a successful injection the final `war3map.lua` text is also mirrored next to the map file for inspection.
 - `--output <map.w3x-folder>`: injects `<map.w3x-folder>/war3map.lua`.
 - `--output <war3map.lua>`: injects that Lua file directly.
 - Other existing file targets are rejected with exit code `2`.

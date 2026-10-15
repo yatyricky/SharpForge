@@ -126,6 +126,8 @@ public sealed class BuilderTests
         Assert.Contains("local s, m = xpcall(SF__Bundle, SF__BundleError__)", result);
         Assert.True(result.IndexOf("require(\"Main\")", StringComparison.Ordinal) < result.IndexOf("function main()", StringComparison.Ordinal));
         Assert.False(File.Exists(Path.Combine(target.FullName, "bundle.lua")));
+        // Folder targets keep their script in place; no sibling copy is written outside.
+        Assert.False(File.Exists(Path.Combine(dir.FullName, "war3map.lua")));
     }
 
     [Fact]
@@ -217,6 +219,12 @@ public sealed class BuilderTests
         Assert.Contains("function SF__Bundle()", injected);
         Assert.Contains("print('bundle')", injected);
         Assert.Contains("print('editor')", injected);
+
+        // The final injected script is mirrored next to the map for direct inspection.
+        var siblingPath = Path.Combine(dir.FullName, "war3map.lua");
+        Assert.True(File.Exists(siblingPath));
+        var sibling = await File.ReadAllTextAsync(siblingPath);
+        Assert.Equal(injected, sibling);
     }
 
     [Fact]

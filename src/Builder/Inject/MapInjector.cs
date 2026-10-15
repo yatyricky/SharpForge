@@ -466,6 +466,7 @@ public sealed class MapInjector
                 builder.AddFile(newFile);
 
                 builder.SaveTo(mapFile);
+                await WriteSiblingScriptCopyAsync(mapFile, injected, cancellationToken).ConfigureAwait(false);
             }
             return 0;
         }
@@ -474,6 +475,24 @@ public sealed class MapInjector
             Console.Error.WriteLine(ex.Message);
             return 2;
         }
+    }
+
+    /// <summary>
+    /// Archive targets hide the final script inside the MPQ; mirror the injected
+    /// war3map.lua next to the map file so it can be inspected directly, matching
+    /// folder maps where the script is already on disk.
+    /// </summary>
+    private static async Task WriteSiblingScriptCopyAsync(string mapFile, string injected, CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(mapFile);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return;
+        }
+
+        var copyPath = Path.Combine(directory, War3MapLua);
+        await File.WriteAllTextAsync(copyPath, injected, cancellationToken).ConfigureAwait(false);
+        Console.WriteLine($"[sf-build] wrote war3map.lua copy: {copyPath}");
     }
 
     private static bool TryReadArchiveFile(MpqArchive archive, string name, out string contents)
