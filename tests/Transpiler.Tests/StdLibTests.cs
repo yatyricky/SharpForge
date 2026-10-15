@@ -238,4 +238,57 @@ public class StdLibTests
         Assert.Matches(@"local p = \{key = __key\w*, value = __value\w*\}", lua);
         Assert.Contains("p.key", lua);
     }
+
+    [Fact]
+    public async Task Collection_expressions_canonicalize_to_list_and_dictionary_constructions()
+    {
+        var src = """
+            using StdLib;
+
+            public static class Config
+            {
+                public static List<int> PosLifeArr = [FourCC("AHP0"), FourCC("AHP1")];
+            }
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    List<int> nums = [1, 2, 3];
+                    List<int> emptyList = [];
+                    Dictionary<string, int> emptyDict = [];
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "CollectionExpression.cs");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("SF__.Config.PosLifeArr = (function()", lua);
+        Assert.Matches(@"obj\w*:Add\(FourCC\(""AHP0""\)\)", lua);
+        Assert.Matches(@"local nums = \(function\(\)", lua);
+        Assert.Matches(@"obj\w*:Add\(1\)", lua);
+        Assert.Matches(@"obj\w*:Add\(3\)", lua);
+        Assert.Matches(@"local emptyList = SF__\.StdLib\.List\.New__0\(\)", lua);
+        Assert.Matches(@"local emptyDict = SF__\.StdLib\.Dictionary\.New\(\)", lua);
+    }
+
+    [Fact]
+    public async Task Collection_expressions_reject_unsupported_targets()
+    {
+        var src = """
+            public static class Program
+            {
+                public static void Main()
+                {
+                    int[] arr = [1, 2];
+                }
+            }
+            """;
+
+        var (_, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["CollectionExpressionNeg.cs"] = src });
+
+        Assert.Contains(diagnostics, d => d.Contains("unsupported collection expression target 'int[]'", StringComparison.Ordinal));
+    }
 }

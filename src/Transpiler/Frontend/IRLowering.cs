@@ -1859,6 +1859,9 @@ public sealed class IRLowering
             case ImplicitObjectCreationExpressionSyntax obj:
                 return LowerObjectCreation(obj, model);
 
+            case CollectionExpressionSyntax collection:
+                return LowerCollectionExpression(collection, model);
+
             case ArrayCreationExpressionSyntax arrayCreation:
                 return arrayCreation.Initializer is null
                     ? new IRArrayNew(LowerExpr(arrayCreation.Type.RankSpecifiers[0].Sizes[0], model))
@@ -4097,6 +4100,69 @@ public sealed class IRLowering
                 loweredArgs,
                 lowered => new IRInvocation(new IRMemberAccess(LowerTypeReference(type), ctor is null ? "New" : GetLuaMethodName(ctor)), lowered)),
             model);
+    }
+
+    /// <summary>
+    /// Collection expressions canonicalize into the object-initializer path first:
+    /// `[a, b]` becomes `new List&lt;T&gt; { a, b }` (constructor + Add calls in an IIFE,
+    /// the same shape ApplyObjectInitializer emits), and `[]` becomes a plain
+    /// construction. Everything else (arrays, interfaces, spread elements, non-empty
+    /// dictionary targets) is diagnosed rather than guessed.
+    /// </summary>
+    private IRExpr LowerCollectionExpression(CollectionExpressionSyntax collection, SemanticModel model)
+    {
+        var typeInfo = model.GetTypeInfo(collection);
+        var targetType = (typeInfo.ConvertedType ?? typeInfo.Type) as INamedTypeSymbol;
+        var original = targetType?.OriginalDefinition;
+        var isStdLibList = original is { Name: "List", ContainingNamespace: { } listNamespace }
+            && listNamespace.ToDisplayString() == "StdLib";
+        var isStdLibDictionary = original is { Name: "Dictionary", ContainingNamespace: { } dictionaryNamespace }
+            && dictionaryNamespace.ToDisplayString() == "StdLib";
+
+        if (targetType is not { TypeKind: TypeKind.Class }
+            || (!isStdLibList && !isStdLibDictionary)
+            || targetType.InstanceConstructors.FirstOrDefault(ctor => ctor.Parameters.Length == 0) is not { } parameterless)
+        {
+            AddDiagnostic(
+                collection.GetLocation(),
+                $"unsupported collection expression target '{typeInfo.ConvertedType?.ToDisplayString() ?? "?"}'; use new List<T> {{ ... }} / new Dictionary<K, V>() instead");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        var creation = new IRInvocation(
+            new IRMemberAccess(LowerTypeReference(targetType), GetLuaMethodName(parameterless)),
+            Array.Empty<IRExpr>());
+        if (collection.Elements.Count == 0)
+        {
+            return creation;
+        }
+
+        if (!isStdLibList
+            || collection.Elements.Any(element => element is not ExpressionElementSyntax))
+        {
+            AddDiagnostic(
+                collection.GetLocation(),
+                "collection expressions with elements only support StdLib.List targets without spread elements");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        var addSymbol = targetType.GetMembers("Add").OfType<IMethodSymbol>()
+            .FirstOrDefault(method => method.MethodKind == MethodKind.Ordinary && method.Parameters.Length == 1);
+        var objectName = AllocateLuaName("obj");
+        var objectRef = new IRIdentifier(objectName);
+        var body = new IRBlock();
+        body.Statements.Add(new IRLocalDecl(objectName, creation));
+        foreach (var element in collection.Elements)
+        {
+            var expression = ((ExpressionElementSyntax)element).Expression;
+            body.Statements.Add(new IRExprStmt(new IRInvocation(
+                new IRMemberAccess(objectRef, addSymbol is null ? "Add" : GetInvocationLuaMethodName(addSymbol)),
+                new[] { LowerExpr(expression, model) },
+                UseColon: true)));
+        }
+
+        body.Statements.Add(new IRReturn(objectRef));
+        return new IRInvocation(new IRFunctionExpression(Array.Empty<string>(), body), Array.Empty<IRExpr>());
     }
 
     private IRExpr ApplyObjectInitializer(BaseObjectCreationExpressionSyntax obj, IRExpr creation, SemanticModel model)
