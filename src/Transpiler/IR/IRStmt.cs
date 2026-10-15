@@ -34,7 +34,12 @@ public sealed record IRSwitch(IRExpr Value, IReadOnlyList<IRSwitchSection> Secti
 public sealed record IRSwitchSection(IReadOnlyList<IRExpr> Labels, bool IsDefault, IRBlock Body);
 public sealed record IRWhile(IRExpr Condition, IRBlock Body) : IRStmt;
 public sealed record IRFor(IRStmt? Initializer, IRExpr? Condition, IReadOnlyList<IRStmt> Incrementors, IRBlock Body) : IRStmt;
-public sealed record IRForEach(string ItemName, IRExpr Collection, IRBlock Body, IRExpr? Iterator = null) : IRStmt;
+public sealed record IRForEach(
+    IReadOnlyList<string> ItemNames,
+    IRExpr Collection,
+    IRBlock Body,
+    IRExpr? Iterator = null,
+    bool ItemNamesIncludeControl = false) : IRStmt;
 public sealed record IRTry(IRBlock Try, IReadOnlyList<IRCatch> Catches, IRBlock? Finally) : IRStmt;
 public sealed record IRCatch(string? Variable, IReadOnlyList<string> ExceptionHeaders, bool CatchesAnySharpForgeException, bool CatchesAny, IRBlock Body);
 public sealed record IRThrow(IRExpr? Value) : IRStmt;

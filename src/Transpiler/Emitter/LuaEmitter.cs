@@ -955,24 +955,27 @@ public sealed class LuaEmitter
         EmitExpr(f.Collection);
         _sb.Append('\n');
 
-        string indexVar;
         string iterator;
+        IEnumerable<string> loopVariables;
         if (f.Iterator is not null)
         {
-            indexVar = "_";
             var start = _sb.Length;
             EmitExpr(f.Iterator);
             var expr = _sb.ToString(start, _sb.Length - start);
             _sb.Length = start;
             iterator = $"({expr})({collectionName})";
+            // Protocol iterators yield the whole value list (index/item or key/value);
+            // when the payload includes the control variable the names are complete.
+            loopVariables = f.ItemNamesIncludeControl ? f.ItemNames : new[] { "_" }.Concat(f.ItemNames);
         }
         else
         {
-            indexVar = NewTemp("i");
+            var indexVar = NewTemp("i");
             iterator = $"ipairs({collectionName})";
+            loopVariables = new[] { indexVar }.Concat(f.ItemNamesIncludeControl ? f.ItemNames.Skip(1) : f.ItemNames);
         }
 
-        WriteLine($"for {indexVar}, {f.ItemName} in {iterator} do");
+        WriteLine($"for {string.Join(", ", loopVariables)} in {iterator} do");
         _indent++;
         WriteLine("repeat");
         _indent++;
@@ -1717,7 +1720,11 @@ public sealed class LuaEmitter
                 CollectIdentifiers(fr.Body);
                 break;
             case IRForEach fe:
-                _usedIdentifiers.Add(fe.ItemName);
+                foreach (var name in fe.ItemNames)
+                {
+                    _usedIdentifiers.Add(name);
+                }
+
                 CollectIdentifiers(fe.Collection);
                 CollectIdentifiers(fe.Body);
                 break;

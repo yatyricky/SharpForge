@@ -1260,6 +1260,9 @@ public sealed class IRLowering
             case ForEachStatementSyntax fe:
                 return LowerForEach(fe, model, ct);
 
+            case ForEachVariableStatementSyntax fev:
+                return LowerForEachVariable(fev, model, ct);
+
             case TryStatementSyntax ts:
                 return LowerTry(ts, model, ct);
 
@@ -1423,12 +1426,32 @@ public sealed class IRLowering
     {
         var collection = LowerExpr(fe.Expression, model);
         var itemSymbol = model.GetDeclaredSymbol(fe, ct);
-        var body = new IRBlock();
         var itemName = DeclareLuaName(itemSymbol, fe.Identifier.ValueText);
+        var collectionType = model.GetTypeInfo(fe.Expression).Type;
+
+        if (collectionType is INamedTypeSymbol pairsType && !ImplementsIIpairs(pairsType) && ImplementsIPairs(pairsType))
+        {
+            // foreach (var pair in dict): PairsNext yields key and value separately, so bind
+            // them to hidden temps and pack the named tuple into a table the body reads
+            // through `pair.key` / `pair.value`.
+            var keyTemp = AllocateLuaName("__key");
+            var valueTemp = AllocateLuaName("__value");
+            var packedBody = new IRBlock();
+            packedBody.Statements.Add(new IRLocalDecl(itemName, new IRTableLiteralNew(
+                new[] { ("key", (IRExpr)new IRIdentifier(keyTemp)), ("value", (IRExpr)new IRIdentifier(valueTemp)) })));
+            LowerBlock(fe.Statement, packedBody, model, ct);
+            return new IRForEach(
+                new[] { keyTemp, valueTemp },
+                collection,
+                packedBody,
+                new IRMemberAccess(LowerTypeReference(pairsType), "PairsNext"),
+                ItemNamesIncludeControl: true);
+        }
+
+        var body = new IRBlock();
         LowerBlock(fe.Statement, body, model, ct);
 
         // IIpairs: foreach on a type implementing IIpairs<T> uses IpairsNext
-        var collectionType = model.GetTypeInfo(fe.Expression).Type;
         IRExpr? iterator = null;
         if (collectionType is INamedTypeSymbol namedType && ImplementsIIpairs(namedType))
         {
@@ -1436,7 +1459,58 @@ public sealed class IRLowering
             iterator = new IRMemberAccess(typeRef, "IpairsNext");
         }
 
-        return new IRForEach(itemName, collection, body, iterator);
+        return new IRForEach(new[] { itemName }, collection, body, iterator);
+    }
+
+    /// <summary>
+    /// Deconstructing foreach: `foreach (var (key, value) in dict)` lowers to a protocol
+    /// iteration whose value list IS the loop variable list (the control variable is the
+    /// key/index, which the protocols never yield as nil before termination).
+    /// </summary>
+    private IRStmt LowerForEachVariable(ForEachVariableStatementSyntax fev, SemanticModel model, CancellationToken ct)
+    {
+        var collection = LowerExpr(fev.Expression, model);
+        var collectionType = model.GetTypeInfo(fev.Expression).Type as INamedTypeSymbol;
+        // Only IPairs: its (key, value) protocol maps 1:1 onto the deconstruction. An IIpairs
+        // deconstruction would mean tuple ELEMENTS in C# while the protocol yields
+        // (index, item) — different semantics, so it stays diagnosed.
+        var iteratorMember = collectionType switch
+        {
+            { } named when ImplementsIPairs(named) => "PairsNext",
+            _ => null,
+        };
+
+        // `var (key, value)` lowers to a DeclarationExpression wrapping the designation.
+        var designation = (fev.Variable as DeclarationExpressionSyntax)?.Designation as ParenthesizedVariableDesignationSyntax;
+        if (iteratorMember is null
+            || designation is null
+            || designation.Variables.Count != 2
+            || designation.Variables.Any(d => d is not (SingleVariableDesignationSyntax or DiscardDesignationSyntax)))
+        {
+            AddDiagnostic(
+                fev.GetLocation(),
+                $"unsupported foreach deconstruction '{fev.Variable}'; use foreach (var (key, value) in ...) over an IPairs dictionary");
+            return new IRBlock();
+        }
+
+        var names = new string[2];
+        for (var i = 0; i < 2; i++)
+        {
+            names[i] = designation.Variables[i] switch
+            {
+                SingleVariableDesignationSyntax single => DeclareLuaName(model.GetDeclaredSymbol(single, ct), single.Identifier.ValueText),
+                _ => "_",
+            };
+        }
+
+        var body = new IRBlock();
+        LowerBlock(fev.Statement, body, model, ct);
+        return new IRForEach(
+            names,
+            collection,
+            body,
+            new IRMemberAccess(LowerTypeReference(collectionType!), iteratorMember),
+            ItemNamesIncludeControl: true);
     }
 
     private IRStmt LowerTry(TryStatementSyntax ts, SemanticModel model, CancellationToken ct)
@@ -5279,6 +5353,11 @@ public sealed class IRLowering
     private static bool ImplementsIIpairs(INamedTypeSymbol type)
         => type.AllInterfaces.Any(i =>
             i is { Name: "IIpairs", ContainingNamespace: { } ns }
+            && ns.ToDisplayString() == "SFLib.Interop");
+
+    private static bool ImplementsIPairs(INamedTypeSymbol type)
+        => type.AllInterfaces.Any(i =>
+            i is { Name: "IPairs", ContainingNamespace: { } ns }
             && ns.ToDisplayString() == "SFLib.Interop");
 
     private INamedTypeSymbol? TryGetPackStructReturnType(ExpressionSyntax expression, SemanticModel model)

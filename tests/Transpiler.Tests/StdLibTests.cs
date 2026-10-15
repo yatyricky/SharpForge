@@ -166,4 +166,76 @@ public class StdLibTests
         Assert.DoesNotContain("System.Collections", lua);
         Assert.DoesNotContain("__sf_interfaces", lua);
     }
+
+    [Fact]
+    public async Task Dictionary_foreach_deconstruction_uses_pairs_next_protocol()
+    {
+        var src = """
+            using System;
+            using StdLib;
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    var dict = new Dictionary<string, int>
+                    {
+                        { "a", 1 },
+                        { "b", 2 },
+                    };
+
+                    foreach (var (key, value) in dict)
+                    {
+                        Console.WriteLine(key);
+                    }
+
+                    foreach (var (k, _) in dict)
+                    {
+                        Console.WriteLine(k);
+                    }
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "DictForeachDeconstruct.cs");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("for key, value in (SF__.StdLib.Dictionary.PairsNext)(collection", lua);
+        Assert.Contains("for k, _ in (SF__.StdLib.Dictionary.PairsNext)(collection", lua);
+        // List plain foreach is unchanged.
+        Assert.DoesNotContain("for key, value in (SF__.StdLib.List.IpairsNext)", lua);
+    }
+
+    [Fact]
+    public async Task Dictionary_foreach_plain_form_packs_pair_into_table()
+    {
+        var src = """
+            using System;
+            using StdLib;
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    var dict = new Dictionary<string, int>
+                    {
+                        { "a", 1 },
+                    };
+
+                    foreach (var p in dict)
+                    {
+                        Console.WriteLine(p.key);
+                        Console.WriteLine(p.value);
+                    }
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "DictForeachPlain.cs");
+
+        Assert.Equal(0, exitCode);
+        Assert.Matches(@"for __key\w*, __value\w* in \(SF__\.StdLib\.Dictionary\.PairsNext\)\(collection\w*\) do", lua);
+        Assert.Matches(@"local p = \{key = __key\w*, value = __value\w*\}", lua);
+        Assert.Contains("p.key", lua);
+    }
 }

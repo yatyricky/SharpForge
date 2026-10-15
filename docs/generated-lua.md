@@ -102,6 +102,8 @@ Every transpiled namespace and type lives under one configurable root table. The
 
 Module assembly is two-phase: all type declarations (namespace tables, type tables, metatables, methods, LuaClass `class()` calls) are emitted first; static field initializers and static constructors run afterwards in a single `-- static initialization` section, in the original type order, before the entry point call. A static initializer may therefore reference any type's tables and methods. Relative order between initializers is preserved, and field initializers still precede their own type's static constructor.
 
+Foreach is protocol-driven, matching each collection's runtime shape: `IIpairs<T>` collections lower to `for _, item in (Type.IpairsNext)(collection)`, and `IPairs<K,V>` dictionaries to `for key, value in (Type.PairsNext)(collection)` — the deconstructing form `foreach (var (key, value) in dict)` maps the protocol's value list directly onto the loop variables (discards become `_`), while the plain form `foreach (var p in dict)` binds hidden `__key/__value` temps and packs the named tuple into `local p = {key = ..., value = ...}` so `p.key`/`p.value` read naturally. Collection initializers (`new List<T> { a, b }`, `new Dictionary<K,V> { {k, v} }`) lower to `Add` calls and are orthogonal to iteration.
+
 ```lua
 SF__ = SF__ or {}
 SF__.Game = SF__.Game or {}
