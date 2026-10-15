@@ -99,7 +99,7 @@ public sealed class TranspilePipeline
         }
 
         // 3. Emit Lua.
-        var emitter = new LuaEmitter(options.RootTable);
+        var emitter = new LuaEmitter(options.RootTable, options.TraceCalls);
         var lua = emitter.Emit(module);
 
         if (options.CheckOnly)

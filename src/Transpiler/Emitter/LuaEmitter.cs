@@ -28,14 +28,16 @@ public sealed class LuaEmitter
     private bool _emitStringConcatHelper;
     private bool _emitCoroutineHelpers;
     private bool _emitStrSplitHelper;
+    private readonly bool _traceCalls;
 
-    public LuaEmitter(string rootTable)
+    public LuaEmitter(string rootTable, bool traceCalls = false)
     {
         if (string.IsNullOrWhiteSpace(rootTable))
         {
             throw new ArgumentException("Root table name must be non-empty.", nameof(rootTable));
         }
         _rootTable = rootTable;
+        _traceCalls = traceCalls;
     }
 
     public string Emit(IRModule module)
@@ -53,6 +55,11 @@ public sealed class LuaEmitter
         CollectIdentifiers(module);
 
         EnsureRootEmitted();
+
+        if (_traceCalls)
+        {
+            WriteTraceHelpers();
+        }
 
         // Emit all LuaRequires at the top — before any type uses them (e.g., class() calls).
         var emittedRequires = new HashSet<string>(StringComparer.Ordinal);
@@ -465,6 +472,28 @@ public sealed class LuaEmitter
         _sb.Append(")\n");
     }
 
+    /// <summary>
+    /// Shadow call stack for debug builds: every instrumented function pushes a frame on
+    /// entry; the to-be-closed local pops it on normal return AND during error unwinding.
+    /// Error formatting (StdLib assertions, xpcall message handlers) runs before unwinding,
+    /// so SF__TRACE__ still holds the live call chain when an error message is built.
+    /// </summary>
+    private void WriteTraceHelpers()
+    {
+        WriteLine("SF__TRACE__ = SF__TRACE__ or {}");
+        WriteLine("function SF__TracePush__(name)");
+        _indent++;
+        WriteLine("local depth = #SF__TRACE__ + 1");
+        WriteLine("SF__TRACE__[depth] = name");
+        WriteLine("return function()");
+        _indent++;
+        WriteLine("SF__TRACE__[depth] = nil");
+        _indent--;
+        WriteLine("end");
+        _indent--;
+        WriteLine("end");
+    }
+
     private void EmitMethod(IRType type, string typePath, IRFunction m, IEnumerable<IRField> instanceFields)
     {
         EmitComments(m.Comments);
@@ -479,6 +508,11 @@ public sealed class LuaEmitter
         var paramList = string.Join(", ", m.Parameters);
         WriteLine($"function {typePath}{sep}{m.LuaName}({paramList})");
         _indent++;
+        if (_traceCalls)
+        {
+            WriteLine($"local __sf_trace <close> = SF__TracePush__({FormatLiteral(new IRLiteral($"{typePath}{sep}{m.LuaName}", IRLiteralKind.String))})");
+        }
+
         EmitParameterDefaults(m);
 
         if (m.IsCoroutine)

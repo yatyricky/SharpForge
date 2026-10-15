@@ -24,7 +24,7 @@ The SDK is pinned by [global.json](global.json) to .NET 10.0.202 with `rollForwa
 
 ### CLI Contracts
 
-- `sf-transpile <input-dir> [-o out.lua] [--init] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [--library-folder libs]... [-v]`; there is no `build` subcommand. Output defaults to `<input>/sf-out.lua`; `--check` does not write a file; `--init` only copies the project template and bundled libs, then exits.
+- `sf-transpile <input-dir> [-o out.lua] [--init] [--check] [-r SF__] [-d SYM]... [-i CLASS]... [--library-folder libs]... [--trace-calls] [-v]`; there is no `build` subcommand. Output defaults to `<input>/sf-out.lua`; `--check` does not write a file; `--init` only copies the project template and bundled libs, then exits; `--trace-calls` instruments a shadow call stack for debug builds.
 - `sf-build <entry.lua> [-o output-or-target] [--include a.lua;b.lua] [-v]`; there is no `pack` subcommand. No output writes `bundle.lua` next to the entry script. `.w3x` files/folders and existing `war3map.lua` targets are injected; archive (`.w3x` file) targets also mirror the injected `war3map.lua` next to the map; other folders receive `bundle.lua`; other files exit 2.
 - `sf-jassgen <input-dir> [-o out-dir] [--host-class NAME] [-v]`; default host class is `JASS`, which must stay aligned with transpiler `--ignore-class` defaults.
 

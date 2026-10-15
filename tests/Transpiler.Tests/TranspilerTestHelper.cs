@@ -48,7 +48,8 @@ internal static class TranspilerTestHelper
         string fileName = "Test.cs",
         string[]? preprocessorSymbols = null,
         string[]? ignoredClasses = null,
-        string[]? ignoredNamespaces = null)
+        string[]? ignoredNamespaces = null,
+        bool traceCalls = false)
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
         var file = Path.Combine(dir.FullName, fileName);
@@ -62,7 +63,8 @@ internal static class TranspilerTestHelper
             IgnoredClasses: ignoredClasses ?? new[] { TranspileOptions.DefaultIgnoredClass },
             IgnoredNamespaces: ignoredNamespaces ?? new[] { TranspileOptions.DefaultIgnoredNamespace },
             CheckOnly: false,
-            Verbose: false), CancellationToken.None);
+            Verbose: false,
+            TraceCalls: traceCalls), CancellationToken.None);
 
         var lua = output.Exists ? await File.ReadAllTextAsync(output.FullName) : string.Empty;
         return (exitCode, lua, dir.FullName);

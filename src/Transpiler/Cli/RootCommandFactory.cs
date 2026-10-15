@@ -66,6 +66,10 @@ internal static class RootCommandFactory
             aliases: ["--jass-version"],
             description: "JASS bindings baseline version deployed into <input>/libs (e.g. 3.0.0). Defaults to the latest bundled version.");
 
+        var traceCallsOpt = new Option<bool>(
+            aliases: ["--trace-calls"],
+            description: "Instrument every method with a shadow call stack (SF__TRACE__) that StdLib assertion errors embed into their messages. Debug builds only.");
+
         var listJassOpt = new Option<bool>(
             aliases: ["--list-jass"],
             description: "Print the bundled JASS bindings versions (oldest first) and exit.");
@@ -82,6 +86,7 @@ internal static class RootCommandFactory
             ignoredNamespaceOpt,
             verboseOpt,
             jassVersionOpt,
+            traceCallsOpt,
             listJassOpt,
         };
 
@@ -119,7 +124,8 @@ internal static class RootCommandFactory
                 CheckOnly: context.ParseResult.GetValueForOption(checkOpt),
                 Verbose: context.ParseResult.GetValueForOption(verboseOpt),
                 InitOnly: context.ParseResult.GetValueForOption(initOpt),
-                JassVersion: context.ParseResult.GetValueForOption(jassVersionOpt) ?? string.Empty);
+                JassVersion: context.ParseResult.GetValueForOption(jassVersionOpt) ?? string.Empty,
+                TraceCalls: context.ParseResult.GetValueForOption(traceCallsOpt));
 
             var pipeline = new TranspilePipeline();
             context.ExitCode = await pipeline.RunAsync(options, context.GetCancellationToken());

@@ -339,4 +339,53 @@ public class StdLibTests
 
         Assert.Contains(diagnostics, d => d.Contains("index-from-end '^' is only supported on StdLib.List, not 'int[]'", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task Collection_assertion_messages_carry_values_and_trace_suffix()
+    {
+        var src = """
+            using StdLib;
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    List<int> nums = [1];
+                    var last = nums[3];
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "AssertionMessages.cs");
+
+        Assert.Equal(0, exitCode);
+        Assert.Matches(@"""Index out of range: index="", index\w*, "" count="", self\.Count, SF__\.StdLib\.Diagnostics\.TraceSuffix\(\)", lua);
+        Assert.Contains("\"Key not found: \"", lua);
+        Assert.Contains("table.concat(trace, \" -> \")", lua);
+    }
+
+    [Fact]
+    public async Task Trace_calls_flag_instruments_shadow_call_stack()
+    {
+        var src = """
+            using StdLib;
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    List<int> nums = [1];
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "TraceCalls.cs", traceCalls: true);
+        var (_, plain, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "TraceCallsPlain.cs");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("SF__TRACE__ = SF__TRACE__ or {}", lua);
+        Assert.Contains("function SF__TracePush__(name)", lua);
+        Assert.Contains("local __sf_trace <close> = SF__TracePush__(\"SF__.Program.Main\")", lua);
+        Assert.DoesNotContain("SF__TracePush__", plain);
+    }
 }

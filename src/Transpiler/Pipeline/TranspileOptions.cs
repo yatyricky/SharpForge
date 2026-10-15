@@ -10,7 +10,8 @@ public sealed record TranspileOptions(
     bool CheckOnly,
     bool Verbose,
     bool InitOnly = false,
-    string JassVersion = "")
+    string JassVersion = "",
+    bool TraceCalls = false)
 {
     public const string DefaultRootTable = "SF__";
     public const string DefaultOutputFileName = "sharpforge.lua";
