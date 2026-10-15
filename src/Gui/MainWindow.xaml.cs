@@ -143,6 +143,7 @@ public sealed partial class MainWindow : Window
             JassOutputBox.Text = settings.JassOutput;
             JassHostClassBox.Text = string.IsNullOrWhiteSpace(settings.JassHostClass) ? DefaultJassHostClass : settings.JassHostClass;
             JassVersionBox.Text = settings.JassVersion;
+            TraceCallsBox.IsChecked = settings.TraceCalls;
             FillMissingDefaults();
         }
         finally
@@ -171,6 +172,7 @@ public sealed partial class MainWindow : Window
             EnableBuilderBox.IsChecked = true;
             EnableTestBox.IsChecked = true;
             JassVersionBox.Clear();
+            TraceCallsBox.IsChecked = false;
             FillDefaultsFromMap();
             FillDefaultJassVersionAsync();
         }
@@ -246,6 +248,7 @@ public sealed partial class MainWindow : Window
                 JassOutput = JassOutputBox.Text.Trim(),
                 JassHostClass = JassHostClassBox.Text.Trim(),
                 JassVersion = JassVersionBox.Text.Trim(),
+                TraceCalls = TraceCallsBox.IsChecked == true,
             };
             if (!MapPathBox.Items.Cast<string>().Contains(map, StringComparer.OrdinalIgnoreCase))
             {
@@ -402,6 +405,11 @@ public sealed partial class MainWindow : Window
         AddSplitOptions(args, "--define", DefinesBox.Text);
         AddSplitOptions(args, "--ignore-class", IgnoreClassBox.Text);
         AddSplitOptions(args, "--ignore-namespace", IgnoreNamespaceBox.Text);
+        if (TraceCallsBox.IsChecked == true)
+        {
+            args.Add("--trace-calls");
+        }
+
         return args.ToArray();
     }
 
@@ -1639,5 +1647,6 @@ public sealed partial class MainWindow : Window
         public string JassOutput { get; set; } = string.Empty;
         public string JassHostClass { get; set; } = DefaultJassHostClass;
         public string JassVersion { get; set; } = string.Empty;
+        public bool TraceCalls { get; set; }
     }
 }

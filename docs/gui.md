@@ -26,6 +26,7 @@ Transpiler fields:
 - C# project path
 - Output Lua path
 - JASS bindings version (shown on the card; empty resolves to the latest bundled version). Pick from the dropdown in the card's Edit dialog, which lists the versions reported by `sf-transpile --list-jass`.
+- Trace calls toggle (next to the Init/Check/Transpile buttons): passes `--trace-calls` so StdLib assertion errors embed the live call chain (`SF__TRACE__`) into their messages. Debug builds only — it adds per-call overhead.
 - Preprocessor symbols
 - Root table
 - Ignore class list

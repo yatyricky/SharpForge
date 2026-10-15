@@ -103,6 +103,7 @@
                                             <TextBox x:Name="JassVersionBox" Grid.Column="1" IsReadOnly="True" TextChanged="AnyTextChanged" LostFocus="AnyFieldLostFocus" ToolTip="Bundled JASS bindings version sf-transpile deploys into the C# project's libs folder. Empty uses the latest bundled version. Pick one via Edit." />
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,46,0,0">
+                                            <CheckBox x:Name="TraceCallsBox" Content="Trace calls" VerticalAlignment="Center" Margin="0,0,16,0" Checked="PipelineOptionChanged" Unchecked="PipelineOptionChanged" ToolTip="Debug builds only: pass --trace-calls so StdLib assertion errors embed the live call chain (SF__TRACE__) into their messages. Adds per-call overhead." />
                                             <Button Content="Init" Click="RunTranspileInit" />
                                             <Button Content="Check" Click="RunTranspileCheck" Margin="8,0,0,0" />
                                             <Button Content="Transpile" Click="RunTranspile" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" />
