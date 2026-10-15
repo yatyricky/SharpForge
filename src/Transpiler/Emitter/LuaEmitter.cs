@@ -473,23 +473,24 @@ public sealed class LuaEmitter
     }
 
     /// <summary>
-    /// Shadow call stack for debug builds: every instrumented function pushes a frame on
-    /// entry; the to-be-closed local pops it on normal return AND during error unwinding.
-    /// Error formatting (StdLib assertions, xpcall message handlers) runs before unwinding,
-    /// so SF__TRACE__ still holds the live call chain when an error message is built.
+    /// Shadow call stack for debug builds (WC3 embeds Lua 5.3 without debug/<close>):
+    /// every instrumented method pushes a frame and runs its body under xpcall. The
+    /// message handler below runs at throw time — before the frame is popped — so it can
+    /// append the live call chain to the error message. Errors rethrown by wrappers keep
+    /// the enriched message (level 0 adds no position; the handler already captured it).
     /// </summary>
     private void WriteTraceHelpers()
     {
         WriteLine("SF__TRACE__ = SF__TRACE__ or {}");
-        WriteLine("function SF__TracePush__(name)");
+        WriteLine("function SF__TraceError__(m)");
         _indent++;
-        WriteLine("local depth = #SF__TRACE__ + 1");
-        WriteLine("SF__TRACE__[depth] = name");
-        WriteLine("return function()");
+        WriteLine("m = tostring(m)");
+        WriteLine("if (string.find(m, \" | at \", 1, true) ~= nil) then");
         _indent++;
-        WriteLine("SF__TRACE__[depth] = nil");
+        WriteLine("return m");
         _indent--;
         WriteLine("end");
+        WriteLine("return (m .. \" | at \" .. table.concat(SF__TRACE__, \" -> \"))");
         _indent--;
         WriteLine("end");
     }
@@ -508,9 +509,15 @@ public sealed class LuaEmitter
         var paramList = string.Join(", ", m.Parameters);
         WriteLine($"function {typePath}{sep}{m.LuaName}({paramList})");
         _indent++;
+        // WC3 embeds Lua 5.3 (no <close>, no debug library): push a frame, run the body
+        // under xpcall so the message handler can append the live chain to any error,
+        // then pop on both the normal and the error path.
         if (_traceCalls)
         {
-            WriteLine($"local __sf_trace <close> = SF__TracePush__({FormatLiteral(new IRLiteral($"{typePath}{sep}{m.LuaName}", IRLiteralKind.String))})");
+            WriteLine($"SF__TRACE__[(#SF__TRACE__ + 1)] = {FormatLiteral(new IRLiteral($"{typePath}{sep}{m.LuaName}", IRLiteralKind.String))}");
+            var forwarding = paramList.Length == 0 ? string.Empty : ", " + paramList;
+            WriteLine($"local __sf_r = table.pack(xpcall(function({paramList})");
+            _indent++;
         }
 
         EmitParameterDefaults(m);
@@ -526,6 +533,20 @@ public sealed class LuaEmitter
         else
         {
             EmitBlock(m.Body);
+        }
+
+        if (_traceCalls)
+        {
+            _indent--;
+            var forwarding = paramList.Length == 0 ? string.Empty : ", " + paramList;
+            WriteLine($"end, SF__TraceError__{forwarding}))");
+            WriteLine("SF__TRACE__[#SF__TRACE__] = nil");
+            WriteLine("if __sf_r[1] then");
+            _indent++;
+            WriteLine("return table.unpack(__sf_r, 2, __sf_r.n)");
+            _indent--;
+            WriteLine("end");
+            WriteLine("error(__sf_r[2], 0)");
         }
 
         _indent--;

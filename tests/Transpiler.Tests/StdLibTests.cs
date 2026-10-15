@@ -384,8 +384,13 @@ public class StdLibTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains("SF__TRACE__ = SF__TRACE__ or {}", lua);
-        Assert.Contains("function SF__TracePush__(name)", lua);
-        Assert.Contains("local __sf_trace <close> = SF__TracePush__(\"SF__.Program.Main\")", lua);
-        Assert.DoesNotContain("SF__TracePush__", plain);
+        Assert.Contains("function SF__TraceError__(m)", lua);
+        Assert.Contains("SF__TRACE__[(#SF__TRACE__ + 1)] = \"SF__.Program.Main\"", lua);
+        Assert.Contains("local __sf_r = table.pack(xpcall(function()", lua);
+        Assert.Contains("end, SF__TraceError__))", lua);
+        Assert.Contains("error(__sf_r[2], 0)", lua);
+        Assert.DoesNotContain("SF__TracePush__", lua);
+        Assert.DoesNotContain("<close>", lua);
+        Assert.DoesNotContain("SF__TraceError__", plain);
     }
 }

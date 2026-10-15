@@ -25,7 +25,7 @@ Options:
 - `--library-folder <name>`: folder names containing C# library or extern stubs to compile for symbols but skip during Lua lowering. Default: `libs`. Repeatable.
 - `--jass-version <VERSION>`: bundled JASS bindings baseline deployed to `<input-dir>/libs/Jass-<VERSION>` (e.g. `3.0.0`). Defaults to the latest bundled version. Other bundled baseline folders left in `libs` from earlier runs are removed so two binding sets never coexist.
 - `--list-jass`: print the bundled JASS bindings versions (oldest first) and exit.
-- `--trace-calls`: debug-build instrumentation. Every method pushes a frame onto a shadow call stack (`SF__TRACE__`, popped via a to-be-closed local even during error unwinding), and StdLib assertion errors embed the live chain into their message (`... | at A -> B -> C`) — WC3 shows the stack in its single error line. Adds per-call overhead; leave off for normal builds.
+- `--trace-calls`: debug-build instrumentation (WC3 embeds Lua 5.3 without `debug`/`<close>`). Every method pushes a frame onto a shadow call stack (`SF__TRACE__`) and runs its body under `xpcall`; the message handler appends the live chain to the error message (`... | at A -> B -> C`), so WC3's single error line carries the stack. StdLib assertion errors embed it via `Diagnostics.TraceSuffix`. Adds per-call overhead; leave off for normal builds.
 - `-v, --verbose`: print verbose diagnostics.
 
 Examples:
