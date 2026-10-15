@@ -379,7 +379,7 @@ public sealed class IRLowering
         _currentIrType = irType;
         _currentIrTypeFullName = irType.FullName;
 
-        foreach (var iface in symbol.Interfaces.Where(i => !irType.IsStruct && !IsIgnoredClass(i) && !IsSFLibType(i)))
+        foreach (var iface in symbol.Interfaces.Where(i => !irType.IsStruct && !IsIgnoredClass(i) && !IsSFLibType(i) && i.Locations.Any(l => l.IsInSource)))
         {
             irType.Interfaces.Add(LowerTypeReference(iface));
         }
@@ -393,7 +393,7 @@ public sealed class IRLowering
                 case ConstructorDeclarationSyntax c:
                     irType.Methods.Add(LowerConstructor(c, symbol, model, ct));
                     break;
-                case MethodDeclarationSyntax m:
+                case MethodDeclarationSyntax m when m.ExplicitInterfaceSpecifier is null:
                     irType.Methods.Add(LowerMethod(m, symbol, model, ct));
                     break;
                 case OperatorDeclarationSyntax o:
@@ -4041,7 +4041,31 @@ public sealed class IRLowering
         {
             if (expression is not AssignmentExpressionSyntax assignment || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
             {
-                AddDiagnostic(expression.GetLocation(), $"unsupported object initializer expression: {expression.Kind()}");
+                // Collection initializer elements: `new List<T> { a, b }` and dictionary-style
+                // `{ k, v }` pairs lower to Add calls. SymbolInfo binds to the element's own
+                // symbol for most expressions (e.g. constructors for object-creation elements)
+                // and to conversion operands for literals, so only accept an Ordinary Add and
+                // fall back to the constructed type's Add with a matching parameter count.
+                var compound = expression as InitializerExpressionSyntax;
+                var elementCount = compound?.Expressions.Count ?? 1;
+                var addSymbol = model.GetSymbolInfo(expression).Symbol as IMethodSymbol is { MethodKind: MethodKind.Ordinary, Name: "Add" } boundAdd
+                    && boundAdd.Parameters.Length == elementCount
+                    ? boundAdd
+                    : (model.GetTypeInfo(obj).Type as INamedTypeSymbol)?.GetMembers("Add").OfType<IMethodSymbol>()
+                        .FirstOrDefault(m => m.MethodKind == MethodKind.Ordinary && m.Parameters.Length == elementCount);
+                if (addSymbol is null)
+                {
+                    AddDiagnostic(expression.GetLocation(), $"unsupported object initializer expression: {expression.Kind()}");
+                    continue;
+                }
+
+                var addArgs = compound is not null
+                    ? compound.Expressions.Select(element => LowerExpr(element, model)).ToArray()
+                    : [LowerExpr(expression, model)];
+                body.Statements.Add(new IRExprStmt(new IRInvocation(
+                    new IRMemberAccess(objectRef, GetInvocationLuaMethodName(addSymbol)),
+                    addArgs,
+                    UseColon: true)));
                 continue;
             }
 
