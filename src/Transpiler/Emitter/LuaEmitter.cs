@@ -485,12 +485,13 @@ public sealed class LuaEmitter
         WriteLine("function SF__TraceError__(m)");
         _indent++;
         WriteLine("m = tostring(m)");
-        WriteLine("if (string.find(m, \" | at \", 1, true) ~= nil) then");
+        WriteLine("if (string.find(m, \" | at \", 1, true) == nil) then");
         _indent++;
-        WriteLine("return m");
+        WriteLine("m = (m .. \" | at \" .. table.concat(SF__TRACE__, \" -> \"))");
+        WriteLine("pcall(SF__.StdLib.Diagnostics.Report, m)");
         _indent--;
         WriteLine("end");
-        WriteLine("return (m .. \" | at \" .. table.concat(SF__TRACE__, \" -> \"))");
+        WriteLine("return m");
         _indent--;
         WriteLine("end");
     }

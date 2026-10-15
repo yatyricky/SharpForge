@@ -359,9 +359,16 @@ public class StdLibTests
         var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "AssertionMessages.cs");
 
         Assert.Equal(0, exitCode);
-        Assert.Matches(@"""Index out of range: index="", index\w*, "" count="", self\.Count, SF__\.StdLib\.Diagnostics\.TraceSuffix\(\)", lua);
+        Assert.Matches(@"""Index out of range: index="", index\w*, "" count="", self\.Count\)\)\)", lua);
         Assert.Contains("\"Key not found: \"", lua);
         Assert.Contains("table.concat(trace, \" -> \")", lua);
+        // Disk reporting via PreloadGen: one numbered .pld per error, capped.
+        Assert.Contains("function SF__.StdLib.Diagnostics.Fail(message", lua);
+        Assert.Contains("sf-error-", lua);
+        Assert.Contains(".pld", lua);
+        Assert.Contains("PreloadGenClear()", lua);
+        Assert.Contains("PreloadGenStart()", lua);
+        Assert.Contains("PreloadGenEnd(path", lua);
     }
 
     [Fact]
@@ -389,6 +396,8 @@ public class StdLibTests
         Assert.Contains("local __sf_r = table.pack(xpcall(function()", lua);
         Assert.Contains("end, SF__TraceError__))", lua);
         Assert.Contains("error(__sf_r[2], 0)", lua);
+        // Raw VM errors are reported to disk by the message handler, guarded by pcall.
+        Assert.Contains("pcall(SF__.StdLib.Diagnostics.Report, m)", lua);
         Assert.DoesNotContain("SF__TracePush__", lua);
         Assert.DoesNotContain("<close>", lua);
         Assert.DoesNotContain("SF__TraceError__", plain);

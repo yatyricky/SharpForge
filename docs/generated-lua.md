@@ -51,6 +51,10 @@ Collection expressions canonicalize into the object-initializer path before any 
 
 Index-from-end canonicalizes the same way: `list[^n]` becomes `list[list.Count - n]` on `StdLib.List` receivers before the ordinary get_Item/set_Item paths run; other receivers are diagnosed.
 
+## Error Reporting
+
+StdLib assertion errors carry live values (`Index out of range: index=… count=…`, `Key not found: …`) and, in `--trace-calls` builds, the shadow call chain. Every reported error is also written to disk through the PreloadGen natives — `sf-error-<N>.pld`, one numbered file per error, capped at 50 per session — so WC3's single on-screen error line never has to be retyped. `StdLib.Diagnostics.Fail` enriches and logs assertions (always on); the emitted `SF__TraceError__` handler additionally logs raw VM errors in trace builds.
+
 Null-conditional delegate invocation must preserve C# short-circuiting. Lower `handler?.Invoke(args)` with a temporary and nil guard or another lazy form so the receiver is evaluated once and the arguments are evaluated only when the delegate is non-nil.
 
 Method groups passed as delegate arguments must preserve function identity so register/unregister-style matching works: static method groups lower to the direct function reference (`SF__.Type.Method`, including overload suffix names), and instance method groups are rejected with a diagnostic because passing them would require a self-capturing closure whose handle is never the original function.
