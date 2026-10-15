@@ -100,6 +100,8 @@ Known gaps: transitive open-generic instantiation closure (demand-driven discove
 
 Every transpiled namespace and type lives under one configurable root table. The default is `SF__`.
 
+Module assembly is two-phase: all type declarations (namespace tables, type tables, metatables, methods, LuaClass `class()` calls) are emitted first; static field initializers and static constructors run afterwards in a single `-- static initialization` section, in the original type order, before the entry point call. A static initializer may therefore reference any type's tables and methods. Relative order between initializers is preserved, and field initializers still precede their own type's static constructor.
+
 ```lua
 SF__ = SF__ or {}
 SF__.Game = SF__.Game or {}

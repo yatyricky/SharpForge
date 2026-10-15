@@ -314,4 +314,78 @@ public class ClassesTests
 
         Assert.Equal(1, exitCode);
     }
+
+    [Fact]
+    public async Task Static_initialization_runs_after_all_type_declarations_and_before_entry_point()
+    {
+        var src = """
+            using StdLib;
+
+            public class Config
+            {
+                public static Dictionary<string, int> Formulas = new Dictionary<string, int>
+                {
+                    { "a", 1 },
+                };
+
+                public static int Counter = 0;
+            }
+
+            public static class Program
+            {
+                public static void Main()
+                {
+                    var x = Config.Counter;
+                }
+            }
+            """;
+
+        var (exitCode, lua, _) = await TranspilerTestHelper.TranspileViaPipelineAsync(src, "StaticInitOrder.cs");
+
+        Assert.Equal(0, exitCode);
+        var staticSection = lua.IndexOf("-- static initialization", StringComparison.Ordinal);
+        var dictionaryDecl = lua.IndexOf("SF__.StdLib.Dictionary = SF__.StdLib.Dictionary or {}", StringComparison.Ordinal);
+        var dictionaryAdd = lua.IndexOf("function SF__.StdLib.Dictionary:Add(", StringComparison.Ordinal);
+        var formulasInit = lua.IndexOf("SF__.Config.Formulas = ", StringComparison.Ordinal);
+        var counterInit = lua.IndexOf("SF__.Config.Counter = 0", StringComparison.Ordinal);
+        // LastIndexOf skips the `function SF__.Program.Main()` definition and finds the entry call.
+        var entryCall = lua.LastIndexOf("SF__.Program.Main()", StringComparison.Ordinal);
+
+        Assert.True(staticSection >= 0);
+        Assert.True(dictionaryDecl >= 0 && dictionaryDecl < formulasInit);
+        Assert.True(dictionaryAdd >= 0 && dictionaryAdd < formulasInit);
+        Assert.True(formulasInit < counterInit);
+        Assert.True(counterInit < entryCall);
+    }
+
+    [Fact]
+    public async Task Static_initialization_preserves_type_order_and_ctor_runs_after_fields()
+    {
+        var src = """
+            public class First
+            {
+                public static int A = 1;
+
+                static First()
+                {
+                    A = A + 1;
+                }
+            }
+
+            public class Second
+            {
+                public static int B = First.A;
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        var aInit = lua.IndexOf("SF__.First.A = 1", StringComparison.Ordinal);
+        var ctor = lua.IndexOf("SF__.First.A = (SF__.First.A + 1)", StringComparison.Ordinal);
+        var bInit = lua.IndexOf("SF__.Second.B = SF__.First.A", StringComparison.Ordinal);
+
+        Assert.True(aInit >= 0 && ctor >= 0 && bInit >= 0);
+        Assert.True(aInit < ctor);
+        Assert.True(ctor < bInit);
+    }
 }

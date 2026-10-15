@@ -21,6 +21,7 @@ public sealed class LuaEmitter
     private readonly StringBuilder _sb = new();
     private readonly HashSet<string> _emittedTablePaths = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedIdentifiers = new(StringComparer.Ordinal);
+    private readonly List<(string TypePath, IRType Type)> _staticInitTypes = new();
     private int _indent;
     private int _tempId;
     private bool _emitTypeHelpers;
@@ -41,6 +42,7 @@ public sealed class LuaEmitter
     {
         _sb.Clear();
         _emittedTablePaths.Clear();
+        _staticInitTypes.Clear();
         _indent = 0;
         _tempId = 0;
         _emitTypeHelpers = UsesTypeChecks(module);
@@ -88,6 +90,7 @@ public sealed class LuaEmitter
             EmitType(module.Types[i], luaClassPaths);
         }
 
+        EmitStaticInitialization();
         EmitEntryPointCall(module);
 
         // Trim trailing blank lines, keep exactly one terminating newline.
@@ -391,32 +394,56 @@ public sealed class LuaEmitter
             }
         }
 
-        if (methods.Length > 0 && (type.Fields.Any(f => f.IsStatic) || type.Methods.Any(m => m.IsStaticConstructor)))
+        if (type.Fields.Any(f => f.IsStatic) || type.Methods.Any(m => m.IsStaticConstructor))
         {
-            _sb.Append('\n');
+            _staticInitTypes.Add((typePath, type));
+        }
+    }
+
+    /// <summary>
+    /// Static field initializers and static constructors run after EVERY type has been
+    /// declared (tables, methods, LuaClass class() calls), in the original type order,
+    /// and before the entry point call. A static initializer may therefore reference any
+    /// type in the compilation — field initializers still precede their type's static
+    /// constructor, and relative order between initializers is preserved.
+    /// </summary>
+    private void EmitStaticInitialization()
+    {
+        if (_staticInitTypes.Count == 0)
+        {
+            return;
         }
 
-        // Static initialization runs after methods are registered so type-local
-        // initializers and static constructors can safely call helpers like .New().
-        foreach (var f in type.Fields.Where(f => f.IsStatic))
+        _sb.Append('\n');
+        WriteLine("-- static initialization");
+        for (int i = 0; i < _staticInitTypes.Count; i++)
         {
-            EmitComments(f.Comments);
-            WriteIndent();
-            _sb.Append(typePath).Append('.').Append(f.Name).Append(" = ");
-            if (f.Initializer is null)
+            var (typePath, type) = _staticInitTypes[i];
+            if (i > 0)
             {
-                _sb.Append("nil");
+                _sb.Append('\n');
             }
-            else
-            {
-                EmitExpr(f.Initializer);
-            }
-            _sb.Append('\n');
-        }
 
-        foreach (var staticConstructor in type.Methods.Where(m => m.IsStaticConstructor))
-        {
-            EmitBlock(staticConstructor.Body);
+            foreach (var f in type.Fields.Where(f => f.IsStatic))
+            {
+                EmitComments(f.Comments);
+                WriteIndent();
+                _sb.Append(typePath).Append('.').Append(f.Name).Append(" = ");
+                if (f.Initializer is null)
+                {
+                    _sb.Append("nil");
+                }
+                else
+                {
+                    EmitExpr(f.Initializer);
+                }
+                _sb.Append('\n');
+            }
+
+            foreach (var staticConstructor in type.Methods.Where(m => m.IsStaticConstructor))
+            {
+                EmitBlock(staticConstructor.Body);
+            }
         }
     }
 
