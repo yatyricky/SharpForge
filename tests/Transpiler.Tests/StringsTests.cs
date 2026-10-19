@@ -206,6 +206,7 @@ public class StringsTests
             new Dictionary<string, string> { ["StringReplace.cs"] = src });
 
         Assert.Empty(diagnostics);
+        Assert.Contains("#s > 480", lua);
         Assert.Contains("function SF__.StrReplace__(str, old, new)", lua);
         // gsub pitfalls: magic chars escaped in the search, % escaped in the replacement,
         // and the final gsub parenthesized so only the result (not the count) escapes.

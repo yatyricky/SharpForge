@@ -4334,6 +4334,13 @@ public sealed class IRLowering
             return new IRLength(LowerExpr(access.Expression, model));
         }
 
+        // string.Length lowers to the Lua '#' operator; without this it falls through to the
+        // generic property lowering and emits a get_Length() call that does not exist at runtime.
+        if (type is INamedTypeSymbol { SpecialType: SpecialType.System_String })
+        {
+            return new IRLength(LowerExpr(access.Expression, model));
+        }
+
         return null;
     }
 
