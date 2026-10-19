@@ -181,4 +181,61 @@ public class StringsTests
         Assert.Contains("return SF__.StrConcat__(\"Error: \", ex)", lua);
         Assert.DoesNotContain("ex:ToString()", lua);
     }
+
+    [Fact]
+    public async Task String_replace_and_substring_lower_to_runtime_helpers()
+    {
+        var src = """
+            public static class Log
+            {
+                public static string Sanitize(string message)
+                {
+                    var s = message.Replace("\r", " ").Replace("\n", " ").Replace("\"", "'");
+                    if (s.Length > 480)
+                    {
+                        s = s.Substring(0, 480) + "...";
+                    }
+                    var tail = s.Substring(3);
+                    var magic = "a.b*c".Replace(".", "-").Replace("*", "+");
+                    return s + tail + magic;
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["StringReplace.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains("function SF__.StrReplace__(str, old, new)", lua);
+        // gsub pitfalls: magic chars escaped in the search, % escaped in the replacement,
+        // and the final gsub parenthesized so only the result (not the count) escapes.
+        Assert.Contains("local pattern = string.gsub(old, \"([%^%$%(%)%%%.%[%]%*%+%-%?])\", \"%%%0\")", lua);
+        Assert.Contains("local replacement = string.gsub(new, \"%%\", \"%%%%\")", lua);
+        Assert.Contains("return (string.gsub(str, pattern, replacement))", lua);
+        Assert.Contains("function SF__.StrSubstr__(str, start, length)", lua);
+        Assert.Contains("return string.sub(str, start + 1, start + length)", lua);
+        Assert.Contains("SF__.StrReplace__(SF__.StrReplace__(SF__.StrReplace__(message, \"\\r\", \" \"), \"\\n\", \" \"), \"\\\"\", \"'\")", lua);
+        Assert.Contains("SF__.StrSubstr__(s, 0, 480)", lua);
+        Assert.Contains("SF__.StrSubstr__(s, 3, nil)", lua);
+        Assert.Contains("SF__.StrReplace__(SF__.StrReplace__(\"a.b*c\", \".\", \"-\"), \"*\", \"+\")", lua);
+    }
+
+    [Fact]
+    public async Task String_replace_substring_helpers_not_emitted_when_unused()
+    {
+        var src = """
+            public static class Demo
+            {
+                public static int Run()
+                {
+                    return 1 + 2;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src);
+
+        Assert.DoesNotContain("StrReplace__", lua);
+        Assert.DoesNotContain("StrSubstr__", lua);
+    }
 }

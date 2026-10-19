@@ -28,6 +28,7 @@ public sealed class LuaEmitter
     private bool _emitStringConcatHelper;
     private bool _emitCoroutineHelpers;
     private bool _emitStrSplitHelper;
+    private bool _emitStrReplaceSubstrHelpers;
     private readonly bool _traceCalls;
 
     public LuaEmitter(string rootTable, bool traceCalls = false)
@@ -51,6 +52,7 @@ public sealed class LuaEmitter
         _emitStringConcatHelper = UsesStringConcat(module);
         _emitCoroutineHelpers = UsesCoroutineHelpers(module);
         _emitStrSplitHelper = UsesStrSplit(module);
+        _emitStrReplaceSubstrHelpers = UsesStrReplaceSubstr(module);
         _usedIdentifiers.Clear();
         CollectIdentifiers(module);
 
@@ -125,6 +127,11 @@ public sealed class LuaEmitter
             if (_emitStrSplitHelper)
             {
                 WriteStrSplitHelper();
+            }
+            if (_emitStrReplaceSubstrHelpers)
+            {
+                WriteStrReplaceHelper();
+                WriteStrSubstrHelper();
             }
         }
     }
@@ -247,6 +254,39 @@ public sealed class LuaEmitter
         _indent--;
         WriteLine("end");
         _sb.Append('\n');
+    }
+
+    /// <summary>
+    /// string.Replace on plain text: gsub treats the search as a Lua pattern and %
+    /// specially in the replacement, so both are escaped; the final gsub is
+    /// parenthesized because it returns (result, count) and only the result may escape.
+    /// </summary>
+    private void WriteStrReplaceHelper()
+    {
+        WriteLine($"function {_rootTable}.StrReplace__(str, old, new)");
+        _indent++;
+        WriteLine("if str == nil or old == nil or new == nil then return str end");
+        WriteLine("local pattern = string.gsub(old, \"([%^%$%(%)%%%.%[%]%*%+%-%?])\", \"%%%0\")");
+        WriteLine("local replacement = string.gsub(new, \"%%\", \"%%%%\")");
+        WriteLine("return (string.gsub(str, pattern, replacement))");
+        _indent--;
+        WriteLine("end");
+    }
+
+    /// <summary>
+    /// string.Substring with 0-based C# indices: Lua string.sub is 1-based with an
+    /// inclusive end, so [start, start+length) becomes (start+1, start+length).
+    /// Out-of-range accesses clamp to empty strings instead of throwing like C#.
+    /// </summary>
+    private void WriteStrSubstrHelper()
+    {
+        WriteLine($"function {_rootTable}.StrSubstr__(str, start, length)");
+        _indent++;
+        WriteLine("if str == nil then return \"\" end");
+        WriteLine("if length == nil then return string.sub(str, start + 1) end");
+        WriteLine("return string.sub(str, start + 1, start + length)");
+        _indent--;
+        WriteLine("end");
     }
 
     private void WriteStrSplitHelper()
@@ -1517,6 +1557,67 @@ public sealed class LuaEmitter
             IRCoalesceAssignment coalesceAssignment => ExprUsesStrSplit(coalesceAssignment.Target) || ExprUsesStrSplit(coalesceAssignment.Value),
             IRIs isExpr => ExprUsesStrSplit(isExpr.Value) || ExprUsesStrSplit(isExpr.Type),
             IRAs asExpr => ExprUsesStrSplit(asExpr.Value) || ExprUsesStrSplit(asExpr.Type),
+            _ => false,
+        };
+
+    private static bool UsesStrReplaceSubstr(IRModule module)
+        => module.Types.SelectMany(t => t.Methods).Any(m => BlockUsesStrReplaceSubstr(m.Body));
+
+    private static bool BlockUsesStrReplaceSubstr(IRBlock block)
+        => block.Statements.Any(StmtUsesStrReplaceSubstr);
+
+    private static bool StmtUsesStrReplaceSubstr(IRStmt stmt)
+        => stmt switch
+        {
+            IRStatementList list => list.Statements.Any(StmtUsesStrReplaceSubstr),
+            IRBlock block => BlockUsesStrReplaceSubstr(block),
+            IRLocalDecl local => local.Initializer is not null && ExprUsesStrReplaceSubstr(local.Initializer),
+            IRMultiLocalDecl local => local.Initializers.Any(ExprUsesStrReplaceSubstr),
+            IRAssign assign => ExprUsesStrReplaceSubstr(assign.Target) || ExprUsesStrReplaceSubstr(assign.Value),
+            IRMultiAssign assign => assign.Targets.Any(ExprUsesStrReplaceSubstr) || assign.Values.Any(ExprUsesStrReplaceSubstr),
+            IRExprStmt exprStmt => ExprUsesStrReplaceSubstr(exprStmt.Expression),
+            IRBaseConstructorCall baseCall => baseCall.Arguments.Any(ExprUsesStrReplaceSubstr),
+            IRThisConstructorCall thisCall => thisCall.Arguments.Any(ExprUsesStrReplaceSubstr),
+            IRReturn ret => ret.Value is not null && ExprUsesStrReplaceSubstr(ret.Value),
+            IRMultiReturn ret => ret.Values.Any(ExprUsesStrReplaceSubstr),
+            IRIf iff => ExprUsesStrReplaceSubstr(iff.Condition) || BlockUsesStrReplaceSubstr(iff.Then) || (iff.Else is not null && BlockUsesStrReplaceSubstr(iff.Else)),
+            IRSwitch sw => ExprUsesStrReplaceSubstr(sw.Value) || sw.Sections.Any(section => section.Labels.Any(ExprUsesStrReplaceSubstr) || BlockUsesStrReplaceSubstr(section.Body)),
+            IRWhile wh => ExprUsesStrReplaceSubstr(wh.Condition) || BlockUsesStrReplaceSubstr(wh.Body),
+            IRFor fr => (fr.Initializer is not null && StmtUsesStrReplaceSubstr(fr.Initializer))
+                || (fr.Condition is not null && ExprUsesStrReplaceSubstr(fr.Condition))
+                || fr.Incrementors.Any(StmtUsesStrReplaceSubstr)
+                || BlockUsesStrReplaceSubstr(fr.Body),
+            IRForEach fe => ExprUsesStrReplaceSubstr(fe.Collection) || BlockUsesStrReplaceSubstr(fe.Body),
+            IRTry tr => BlockUsesStrReplaceSubstr(tr.Try)
+                || tr.Catches.Any(catchClause => BlockUsesStrReplaceSubstr(catchClause.Body))
+                || (tr.Finally is not null && BlockUsesStrReplaceSubstr(tr.Finally)),
+            IRThrow th => th.Value is not null && ExprUsesStrReplaceSubstr(th.Value),
+            _ => false,
+        };
+
+    private static bool ExprUsesStrReplaceSubstr(IRExpr expr)
+        => expr switch
+        {
+            IRRuntimeInvocation inv => inv.Name is "StrReplace__" or "StrSubstr__" || inv.Arguments.Any(ExprUsesStrReplaceSubstr),
+            IRMemberAccess member => ExprUsesStrReplaceSubstr(member.Target),
+            IRElementAccess element => ExprUsesStrReplaceSubstr(element.Target) || ExprUsesStrReplaceSubstr(element.Index),
+            IRLength length => ExprUsesStrReplaceSubstr(length.Target),
+            IRInvocation invocation => ExprUsesStrReplaceSubstr(invocation.Callee) || invocation.Arguments.Any(ExprUsesStrReplaceSubstr),
+            IRFunctionExpression functionExpression => BlockUsesStrReplaceSubstr(functionExpression.Body),
+            IRArrayLiteral array => array.Items.Any(ExprUsesStrReplaceSubstr),
+            IRArrayNew arrayNew => ExprUsesStrReplaceSubstr(arrayNew.Size),
+            IRTableLiteralNew tableLiteralNew => tableLiteralNew.Fields.Any(f => ExprUsesStrReplaceSubstr(f.Value)),
+            IRStringConcat concat => concat.Parts.Any(ExprUsesStrReplaceSubstr),
+            IRLuaRequire luaRequire => ExprUsesStrReplaceSubstr(luaRequire.ModuleName),
+            IRLuaGlobal luaGlobal => ExprUsesStrReplaceSubstr(luaGlobal.Name),
+            IRLuaAccess luaAccess => ExprUsesStrReplaceSubstr(luaAccess.Target) || ExprUsesStrReplaceSubstr(luaAccess.Name),
+            IRLuaMethodInvocation luaMethodInvocation => ExprUsesStrReplaceSubstr(luaMethodInvocation.Target) || ExprUsesStrReplaceSubstr(luaMethodInvocation.Name) || luaMethodInvocation.Arguments.Any(ExprUsesStrReplaceSubstr),
+            IRBinary binary => ExprUsesStrReplaceSubstr(binary.Left) || ExprUsesStrReplaceSubstr(binary.Right),
+            IRUnary unary => ExprUsesStrReplaceSubstr(unary.Operand),
+            IRTernary ternary => ExprUsesStrReplaceSubstr(ternary.Condition) || ExprUsesStrReplaceSubstr(ternary.WhenTrue) || ExprUsesStrReplaceSubstr(ternary.WhenFalse),
+            IRCoalesceAssignment coalesceAssignment => ExprUsesStrReplaceSubstr(coalesceAssignment.Target) || ExprUsesStrReplaceSubstr(coalesceAssignment.Value),
+            IRIs isExpr => ExprUsesStrReplaceSubstr(isExpr.Value) || ExprUsesStrReplaceSubstr(isExpr.Type),
+            IRAs asExpr => ExprUsesStrReplaceSubstr(asExpr.Value) || ExprUsesStrReplaceSubstr(asExpr.Type),
             _ => false,
         };
 

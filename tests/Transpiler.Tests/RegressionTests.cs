@@ -108,14 +108,14 @@ public class RegressionTests
     [Fact]
     public async Task String_instance_methods_produce_diagnostic()
     {
-        // string.Split is now lowered to StrSplit__ helper.
+        // string.Split/Replace/Substring lower to runtime helpers.
         // Other unsupported string methods should produce diagnostics.
         var src = """
             public static class Demo
             {
-                public static string DoReplace(string name)
+                public static string DoUpper(string name)
                 {
-                    return name.Replace("a", "b");
+                    return name.ToUpper();
                 }
             }
             """;
@@ -128,7 +128,7 @@ public class RegressionTests
             .CompileAsync(new[] { new FileInfo(file) }, CancellationToken.None);
         var module = new SharpForge.Transpiler.Frontend.IRLowering().Lower(compilation, CancellationToken.None);
 
-        Assert.Contains(module.Diagnostics, d => d.Contains("string.Replace is not supported", StringComparison.Ordinal));
+        Assert.Contains(module.Diagnostics, d => d.Contains("string.ToUpper is not supported", StringComparison.Ordinal));
     }
 
     [Fact]

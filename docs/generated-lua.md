@@ -148,6 +148,9 @@ Common C# constructs lower to direct Lua patterns:
 | Static field initializer | `SF__.Type.Field = ...` |
 | `const` field | static type-table field (`SF__.Type.Field = ...`) |
 | String interpolation | nil-safe `SF__.StrConcat__(...)` calls; supported format clauses use `string.format(...)` |
+| `string.Split(sep)` | `SF__.StrSplit__(...)` runtime helper (literal separator via plain find) |
+| `string.Replace(a, b)` | `SF__.StrReplace__(...)` runtime helper; gsub magic chars escaped in the search, `%` escaped in the replacement, result parenthesized so the gsub count never leaks. Char overloads share the helper (chars lower to strings) |
+| `string.Substring(start[, len])` | `SF__.StrSubstr__(...)` runtime helper; 0-based C# indices convert to Lua's 1-based inclusive `string.sub`. Out-of-range clamps to `""` instead of throwing like C# |
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding with typed SharpForge exception headers |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |

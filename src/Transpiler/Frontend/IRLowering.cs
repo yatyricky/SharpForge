@@ -2259,6 +2259,21 @@ public sealed class IRLowering
                     return new IRRuntimeInvocation("StrSplit__", new[] { LowerExpr(memberAccess.Expression, model), callArgs[0] });
                 }
 
+                if (symbol.Name == "Replace" && callArgs.Count == 2)
+                {
+                    var replaceReceiver = LowerExpr(memberAccess.Expression, model);
+                    return new IRRuntimeInvocation("StrReplace__", new[] { replaceReceiver, callArgs[0], callArgs[1] });
+                }
+
+                if (symbol.Name == "Substring" && callArgs.Count is 1 or 2)
+                {
+                    var substrReceiver = LowerExpr(memberAccess.Expression, model);
+                    var substrArgs = callArgs.Count == 1
+                        ? new[] { substrReceiver, callArgs[0], new IRLiteral(null, IRLiteralKind.Nil) }
+                        : new[] { substrReceiver, callArgs[0], callArgs[1] };
+                    return new IRRuntimeInvocation("StrSubstr__", substrArgs);
+                }
+
                 AddDiagnostic(inv.GetLocation(), $"string.{symbol.Name} is not supported; use SFLib.Interop.@string for Lua string operations");
                 return new IRLiteral(null, IRLiteralKind.Nil);
             }
