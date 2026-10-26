@@ -2047,6 +2047,12 @@ public sealed class IRLowering
                     LowerExpr(ternary.WhenTrue, model),
                     LowerExpr(ternary.WhenFalse, model));
 
+            case SwitchExpressionSyntax switchExpression:
+                AddDiagnostic(
+                    switchExpression.GetLocation(),
+                    "switch expressions are only supported as a return value; move the switch expression into a return statement");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+
             case AwaitExpressionSyntax awaitExpression:
                 return LowerExpr(awaitExpression.Expression, model);
 
@@ -3564,7 +3570,126 @@ public sealed class IRLowering
                && postfix.Operand is DefaultExpressionSyntax);
 
     private IRStmt LowerReturnExpression(ExpressionSyntax expression, SemanticModel model)
-        => AppendOutParameterValues(TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model)));
+    {
+        if (TryUnwrapSwitchExpression(expression) is { } switchExpression)
+        {
+            return LowerSwitchExpression(switchExpression, model);
+        }
+
+        return AppendOutParameterValues(TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model)));
+    }
+
+    private static SwitchExpressionSyntax? TryUnwrapSwitchExpression(ExpressionSyntax expression)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
+
+        return expression as SwitchExpressionSyntax;
+    }
+
+    /// <summary>
+    /// Canonicalizes <c>return value switch { ... }</c> into the ordinary switch statement shape:
+    /// one section per arm whose body is <c>return &lt;expression&gt;</c> (or <c>throw</c>), then the
+    /// existing switch/return/throw lowering applies. Each arm is lowered against the switch
+    /// expression's converted type so the value selected by C# is converted to the return type.
+    /// </summary>
+    private IRStmt LowerSwitchExpression(SwitchExpressionSyntax switchExpression, SemanticModel model)
+    {
+        var value = LowerExpr(switchExpression.GoverningExpression, model);
+        var prelude = new List<IRStmt>();
+        if (_pendingStatements.Count > 0)
+        {
+            prelude.AddRange(_pendingStatements);
+            _pendingStatements.Clear();
+        }
+
+        var typeInfo = model.GetTypeInfo(switchExpression);
+        var targetType = typeInfo.ConvertedType ?? typeInfo.Type;
+
+        var sections = new List<IRSwitchSection>();
+        var hasDefaultSection = false;
+        foreach (var arm in switchExpression.Arms)
+        {
+            if (arm.WhenClause is { } whenClause)
+            {
+                AddUnsupportedDiagnostic(whenClause, "switch expression when clause");
+                continue;
+            }
+
+            var labels = new List<IRExpr>();
+            var isDefault = false;
+            switch (arm.Pattern)
+            {
+                case DiscardPatternSyntax:
+                    isDefault = true;
+                    break;
+                case ConstantPatternSyntax constantPattern:
+                    if (!model.GetConstantValue(constantPattern.Expression).HasValue)
+                    {
+                        AddDiagnostic(constantPattern.GetLocation(), "switch expression patterns must be compile-time constants");
+                    }
+
+                    labels.Add(LowerExpr(constantPattern.Expression, model));
+                    break;
+                default:
+                    AddUnsupportedDiagnostic(arm.Pattern, "switch expression pattern");
+                    continue;
+            }
+
+            var body = new IRBlock();
+            var armStatement = arm.Expression is ThrowExpressionSyntax throwExpression
+                ? LowerThrowExpression(throwExpression, model)
+                : LowerSwitchExpressionArmValue(arm.Expression, targetType, model);
+
+            // Arm expressions may schedule prelude statements (out vars, conversion temporaries);
+            // they belong inside the arm's branch before the return/throw.
+            FlushPendingStatements(body);
+            body.Statements.Add(armStatement);
+            sections.Add(new IRSwitchSection(labels, isDefault, body));
+            hasDefaultSection |= isDefault;
+        }
+
+        if (!hasDefaultSection)
+        {
+            // A switch expression that matches no arm throws at runtime in C#; do not fall
+            // through to a nil return in Lua.
+            var fallbackBody = new IRBlock();
+            fallbackBody.Statements.Add(new IRThrow(new IRLiteral(
+                "switch expression did not match any arm",
+                IRLiteralKind.String)));
+            sections.Add(new IRSwitchSection(Array.Empty<IRExpr>(), true, fallbackBody));
+        }
+
+        var switchStatement = new IRSwitch(value, sections);
+        if (prelude.Count == 0)
+        {
+            return switchStatement;
+        }
+
+        prelude.Add(switchStatement);
+        return new IRStatementList(prelude);
+    }
+
+    private IRStmt LowerSwitchExpressionArmValue(ExpressionSyntax expression, ITypeSymbol? targetType, SemanticModel model)
+    {
+        var resolvedTarget = ResolveType(targetType);
+        if (resolvedTarget is INamedTypeSymbol structTarget && IsFlattenableStructType(structTarget))
+        {
+            return AppendOutParameterValues(new IRMultiReturn(
+                LowerStructArgumentValues(expression, structTarget, model)));
+        }
+
+        if (resolvedTarget is not null
+            && TryGetImplicitUserDefinedConversion(expression, resolvedTarget, model, isExplicitInSource: false, out var conversion))
+        {
+            return AppendOutParameterValues(new IRReturn(
+                BuildImplicitConversionCall(conversion, expression, model)));
+        }
+
+        return AppendOutParameterValues(new IRReturn(LowerExpr(expression, model)));
+    }
 
     private IRStmt AppendOutParameterValues(IRStmt returnStmt)
     {

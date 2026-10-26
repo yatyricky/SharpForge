@@ -105,6 +105,12 @@ C#-applied implicit conversions lower to a call to that function:
 
 Positions that cannot consume a flattened struct result (array elements, field initializers, `for` initializers, and similar expression-only slots) are hard diagnostics rather than silently truncated multi-returns. Conversions whose operator is declared in a type the transpiler does not emit (ignored namespaces, JASS handles, external LuaObject types) are also diagnosed.
 
+## Switch Expressions
+
+A switch expression is supported only as a return value (a `return` statement, an expression-bodied member, or an expression-bodied lambda). It canonicalizes to the ordinary switch statement shape before Lua emission: the governing expression is evaluated once into a local, and each arm becomes a `case: return <expression>` section; `throw` arms become `case: throw ...`. Arm values go through the normal return lowering for the switch expression's converted type, so struct flattening and implicit conversion operators apply exactly as they would to a plain `return`.
+
+Supported arm patterns are compile-time constant patterns and the `_` discard arm, matching switch statement labels. `when` guards, type/relational/`or`/`var` patterns, and switch expressions outside return position are hard diagnostics. A switch expression without a discard arm gets an `error("switch expression did not match any arm")` fallback so an unmatched value never silently returns nil.
+
 ## Generic Types And Structs
 
 Generic types lower to one shared Lua table per generic type definition; there is no per-instantiation specialization of the type itself. The struct decision is share-vs-specialize (the CLR strategy for reference vs value types):
@@ -167,6 +173,7 @@ Common C# constructs lower to direct Lua patterns:
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
 | implicit conversion operator | static `SF__.Type.op_Implicit(...)` function; a flattenable struct parameter is expanded to one Lua parameter per field, and a flattenable struct result uses the ordinary multi-return shape |
+| switch expression (return position) | `repeat` / `local switchValue = ...` / `if ... then return ... else (error) end` / `until true` branch chain, one `return` per arm |
 
 ## Lua Interop Classes
 

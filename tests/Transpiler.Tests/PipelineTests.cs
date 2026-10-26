@@ -534,6 +534,180 @@ public class PipelineTests
     }
 
     [Fact]
+    public async Task Switch_expression_in_return_position_lowers_to_branch_chain()
+    {
+        var src = """
+            public enum StatType
+            {
+                Float,
+                Int,
+            }
+
+            public class StatValue
+            {
+                public StatType _type;
+                public float floatVal;
+                public int intVal;
+            }
+
+            public static class Switches
+            {
+                public static float Get(StatValue v)
+                {
+                    return v._type switch
+                    {
+                        StatType.Float => v.floatVal,
+                        StatType.Int => v.intVal,
+                        _ => throw new System.Exception("cant cast non float/int to float"),
+                    };
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "SwitchExpression.cs");
+
+        Assert.Contains("repeat", lua);
+        Assert.Contains("local switchValue = v._type", lua);
+        Assert.Contains("if (switchValue == SF__.StatType.Float) then", lua);
+        Assert.Contains("return v.floatVal", lua);
+        Assert.Contains("elseif (switchValue == SF__.StatType.Int) then", lua);
+        Assert.Contains("return v.intVal", lua);
+        Assert.Contains("else", lua);
+        Assert.Matches(
+            "error\\(SF__\\.StrConcat__\\(\\\"SF__E[0-9a-f]{8}\\\", \\\"cant cast non float/int to float\\\"\\)\\)",
+            lua);
+        Assert.Contains("until true", lua);
+        Assert.DoesNotContain("unsupported expression: SwitchExpression", lua);
+    }
+
+    [Fact]
+    public async Task Switch_expression_arms_use_return_conversion_and_struct_flattening()
+    {
+        var src = """
+            public struct Vec
+            {
+                public float x;
+                public float y;
+
+                public Vec(float x, float y)
+                {
+                    this.x = x;
+                    this.y = y;
+                }
+
+                public static implicit operator Vec(float f)
+                {
+                    return new Vec(f, f);
+                }
+
+                public static implicit operator float(Vec v)
+                {
+                    return v.x;
+                }
+            }
+
+            public static class Switches
+            {
+                public static float Scalar(Vec v) => 0 switch
+                {
+                    0 => v,
+                    _ => throw new System.Exception("no"),
+                };
+
+                public static Vec Struct(float f) => 0 switch
+                {
+                    0 => 1f,
+                    _ => throw new System.Exception("no"),
+                };
+
+                public static Vec Created() => 0 switch
+                {
+                    0 => new Vec(1, 2),
+                    _ => throw new System.Exception("no"),
+                };
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "SwitchExpressionConversions.cs");
+
+        // Arm value is converted to the enclosing return type (Vec -> float).
+        Assert.Matches(@"return SF__\.Vec\.op_Implicit__[0-9a-z]+__f\(v__x\d*, v__y\d*\)", lua);
+
+        // Struct return target: conversion returns multi-values, creation stays flattened.
+        Assert.Matches(@"return SF__\.Vec\.op_Implicit__f__[0-9a-z]+\(1\)", lua);
+        Assert.Contains("return 1, 2", lua);
+        Assert.DoesNotContain("unsupported expression: SwitchExpression", lua);
+    }
+
+    [Fact]
+    public async Task Switch_expression_without_discard_arm_emits_runtime_error()
+    {
+        var src = """
+            public static class Switches
+            {
+                public static float Classify(int x)
+                {
+                    return x switch
+                    {
+                        1 => 10f,
+                        2 => 20f,
+                    };
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "SwitchExpressionFallback.cs");
+
+        Assert.Contains("elseif (switchValue == 2) then", lua);
+        Assert.Contains("else", lua);
+        Assert.Contains("error(\"switch expression did not match any arm\")", lua);
+    }
+
+    [Fact]
+    public async Task Switch_expression_outside_return_position_and_unsupported_patterns_are_diagnosed()
+    {
+        var src = """
+            public static class Switches
+            {
+                public static float Local(int x)
+                {
+                    var y = x switch
+                    {
+                        1 => 10f,
+                        _ => 20f,
+                    };
+                    return y;
+                }
+
+                public static float Guarded(int x)
+                {
+                    return x switch
+                    {
+                        1 when x > 0 => 10f,
+                        _ => 20f,
+                    };
+                }
+
+                public static float Relational(int x)
+                {
+                    return x switch
+                    {
+                        > 0 => 10f,
+                        _ => 20f,
+                    };
+                }
+            }
+            """;
+
+        var (_, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["SwitchExpressionDiagnostics.cs"] = src });
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Contains("only supported as a return value", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Contains("unsupported switch expression when clause", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Contains("unsupported switch expression pattern", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Switch_goto_case_returns_pipeline_error()
     {
         var dir = Directory.CreateTempSubdirectory("sf-test-");
