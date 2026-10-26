@@ -93,6 +93,18 @@ Any return position for a flattenable struct, including expression-bodied method
 
 When a flattened struct target or local is assigned from a conditional expression, declare the flattened temporaries in the surrounding scope, then spill the selected branch inside statement-level `if` branches before assigning the target. Expression-level helpers consume Lua multi-return values, and `do` blocks hide local declarations.
 
+## Implicit Conversion Operators
+
+Only `implicit operator` declarations are lowered; `explicit operator` declarations are currently ignored. A lowered conversion is an ordinary static function on the declaring type, named `op_Implicit`, and subject to the usual overload signature suffixes. Because conversion operators may differ by result type alone (`implicit operator float(M)` next to `implicit operator Wrapper(M)`), suffix naming for conversion operators includes both the parameter signature and the result type: `op_Implicit__<parameter-sig>__<result-sig>`.
+
+C#-applied implicit conversions lower to a call to that function:
+
+- A flattenable struct source is expanded into one argument per field.
+- A flattenable struct result is a Lua multi-return value and flows through the existing struct paths (local declaration, assignment, return, argument, and object-initializer member assignment). No conversion-specific pack/unpack code exists.
+- Explicit cast syntax (`(T)x`) reuses the `implicit operator` when Roslyn binds one, so struct-to-scalar casts do not report the runtime struct-cast diagnostic.
+
+Positions that cannot consume a flattened struct result (array elements, field initializers, `for` initializers, and similar expression-only slots) are hard diagnostics rather than silently truncated multi-returns. Conversions whose operator is declared in a type the transpiler does not emit (ignored namespaces, JASS handles, external LuaObject types) are also diagnosed.
+
 ## Generic Types And Structs
 
 Generic types lower to one shared Lua table per generic type definition; there is no per-instantiation specialization of the type itself. The struct decision is share-vs-specialize (the CLR strategy for reference vs value types):
@@ -154,6 +166,7 @@ Common C# constructs lower to direct Lua patterns:
 | `try` / `catch` / `finally` | Lua `pcall` scaffolding with typed SharpForge exception headers |
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
+| implicit conversion operator | static `SF__.Type.op_Implicit(...)` function; a flattenable struct parameter is expanded to one Lua parameter per field, and a flattenable struct result uses the ordinary multi-return shape |
 
 ## Lua Interop Classes
 

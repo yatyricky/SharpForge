@@ -35,6 +35,8 @@ public sealed class IRLowering
     private readonly Dictionary<string, string> _outVarNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private readonly HashSet<ExpressionSyntax> _reportedInstanceMethodGroups = new();
+    private readonly HashSet<ExpressionSyntax> _conversionSourceNodes = new();
+    private readonly HashSet<SyntaxNode> _reportedConversionIssues = new();
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
     private readonly List<INamedTypeSymbol> _knownExceptionTypes = new();
@@ -70,6 +72,8 @@ public sealed class IRLowering
         _currentStructSelfType = null;
         _currentStructSelfFields = null;
         _usedLuaNames.Clear();
+        _conversionSourceNodes.Clear();
+        _reportedConversionIssues.Clear();
         _luaNameCounter = 0;
         _knownExceptionTypes.Clear();
         _genericStructSpecializations.Clear();
@@ -398,6 +402,10 @@ public sealed class IRLowering
                     break;
                 case OperatorDeclarationSyntax o:
                     irType.Methods.Add(LowerOperator(o, model, ct));
+                    break;
+                case ConversionOperatorDeclarationSyntax conversion
+                    when conversion.ImplicitOrExplicitKeyword.IsKind(SyntaxKind.ImplicitKeyword):
+                    irType.Methods.Add(LowerConversionOperator(conversion, model, ct));
                     break;
                 case FieldDeclarationSyntax f when f.Modifiers.Any(SyntaxKind.StaticKeyword) || f.Modifiers.Any(SyntaxKind.ConstKeyword):
                     var staticFieldComments = ExtractComments(f.GetLeadingTrivia());
@@ -1022,25 +1030,59 @@ public sealed class IRLowering
     private IRFunction LowerOperator(OperatorDeclarationSyntax o, SemanticModel model, CancellationToken ct)
     {
         var symbol = model.GetDeclaredSymbol(o, ct);
+        var name = symbol?.Name ?? GetLuaOperatorName(o.OperatorToken.ValueText);
         var fn = new IRFunction
         {
-            Name = symbol?.Name ?? GetLuaOperatorName(o.OperatorToken.ValueText),
-            LuaName = symbol is null ? GetLuaOperatorName(o.OperatorToken.ValueText) : GetLuaMethodName(symbol),
+            Name = name,
+            LuaName = symbol is null ? name : GetLuaMethodName(symbol),
             IsStatic = true,
             IsInstance = false,
         };
 
+        LowerOperatorBody(fn, o.ParameterList.Parameters, o.Body, o.ExpressionBody, model, ct);
+        return fn;
+    }
+
+    /// <summary>
+    /// Lowers an <c>implicit operator</c> declaration. Explicit conversion operators are out of
+    /// scope: the enclosing member switch skips them, so they neither emit Lua nor participate
+    /// in call lowering.
+    /// </summary>
+    private IRFunction LowerConversionOperator(ConversionOperatorDeclarationSyntax conversion, SemanticModel model, CancellationToken ct)
+    {
+        var symbol = model.GetDeclaredSymbol(conversion, ct);
+        const string fallbackName = "op_Implicit";
+        var fn = new IRFunction
+        {
+            Name = symbol?.Name ?? fallbackName,
+            LuaName = symbol is null ? fallbackName : GetLuaMethodName(symbol),
+            IsStatic = true,
+            IsInstance = false,
+        };
+
+        LowerOperatorBody(fn, conversion.ParameterList.Parameters, conversion.Body, conversion.ExpressionBody, model, ct);
+        return fn;
+    }
+
+    private void LowerOperatorBody(
+        IRFunction fn,
+        SeparatedSyntaxList<ParameterSyntax> parameters,
+        BlockSyntax? body,
+        ArrowExpressionClauseSyntax? expressionBody,
+        SemanticModel model,
+        CancellationToken ct)
+    {
         var previousFunction = _currentFunction;
         _currentFunction = fn;
         try
         {
-            AddLoweredParameters(fn, o.ParameterList.Parameters, model, ct);
+            AddLoweredParameters(fn, parameters, model, ct);
 
-            if (o.Body is { } body)
+            if (body is { } block)
             {
-                LowerBlock(body, fn.Body, model, ct);
+                LowerBlock(block, fn.Body, model, ct);
             }
-            else if (o.ExpressionBody is { } arrow)
+            else if (expressionBody is { } arrow)
             {
                 fn.Body.Statements.Add(LowerReturnExpression(arrow.Expression, model));
             }
@@ -1049,8 +1091,6 @@ public sealed class IRLowering
         {
             _currentFunction = previousFunction;
         }
-
-        return fn;
     }
 
     private void AddLoweredParameters(
@@ -1766,6 +1806,20 @@ public sealed class IRLowering
 
     private IRExpr LowerExpr(ExpressionSyntax e, SemanticModel model)
     {
+        if (!_conversionSourceNodes.Contains(e)
+            && TryGetContextualImplicitConversion(e, model) is { } implicitConversion)
+        {
+            if (IsFlattenableStructType(ResolveType(implicitConversion.ReturnType)))
+            {
+                ReportConversionIssue(
+                    e,
+                    $"implicit conversion from '{model.GetTypeInfo(e).Type?.ToDisplayString() ?? "?"}' to '{implicitConversion.ReturnType.ToDisplayString()}' produces a flattened struct value that cannot be used in this expression position; use a struct-typed local, argument, return, or assignment target");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            return BuildImplicitConversionCall(implicitConversion, e, model);
+        }
+
         switch (e)
         {
             case LiteralExpressionSyntax lit:
@@ -1839,6 +1893,17 @@ public sealed class IRLowering
                 return LowerInvocation(inv, model);
 
             case CastExpressionSyntax cast:
+                if (model.GetTypeInfo(cast).Type is { } castTarget
+                    && TryGetImplicitUserDefinedConversion(
+                        cast.Expression,
+                        castTarget,
+                        model,
+                        isExplicitInSource: true,
+                        out var castConversion))
+                {
+                    return BuildImplicitConversionCall(castConversion, cast.Expression, model);
+                }
+
                 if (IsStructRuntimeCast(cast, model))
                 {
                     AddDiagnostic(cast.GetLocation(), "struct casts are not supported; SharpForge structs are compile-time value shapes and cannot be recovered from object/interface values");
@@ -2657,6 +2722,11 @@ public sealed class IRLowering
 
     private IReadOnlyList<IRExpr> LowerStructArgumentValues(ExpressionSyntax expression, INamedTypeSymbol structType, SemanticModel model)
     {
+        if (TryGetImplicitUserDefinedConversion(expression, structType, model, isExplicitInSource: false, out var conversion))
+        {
+            return new[] { BuildImplicitConversionCall(conversion, expression, model) };
+        }
+
         if (expression is BaseObjectCreationExpressionSyntax creation
             && TryGetStructFieldValues(creation, model, out _, out var creationValues))
         {
@@ -2872,7 +2942,19 @@ public sealed class IRLowering
             return new IRStatementList([tmpInit, multiLocal]);
         }
 
-        if (!TryGetStructExpressionValues(initializer, model, out var fields, out var values))
+        IReadOnlyList<StructFieldSlot> fields;
+        IReadOnlyList<IRExpr> values = Array.Empty<IRExpr>();
+        var spillConditionalBranches = false;
+        if (initializer is ConditionalExpressionSyntax conditionalInitializer
+            && TryGetFlattenableStructTargetType(conditionalInitializer, model, out var conditionalTarget, out fields)
+            && !TryGetImplicitUserDefinedConversion(conditionalInitializer, conditionalTarget, model, isExplicitInSource: false, out _))
+        {
+            // Common-type conditional whose branches are struct values: spill each branch into
+            // the flattened locals. A conditional converted as a whole falls through to the
+            // ordinary conversion call path below.
+            spillConditionalBranches = true;
+        }
+        else if (!TryGetStructExpressionValues(initializer, model, out fields, out values))
         {
             return null;
         }
@@ -2888,7 +2970,7 @@ public sealed class IRLowering
         }
 
         _flattenedStructLocals[localSymbol] = new FlattenedStructLocal(fieldLocals);
-        if (initializer is ConditionalExpressionSyntax ternary)
+        if (spillConditionalBranches && initializer is ConditionalExpressionSyntax ternary)
         {
             var branchBlock = new IRBlock();
             branchBlock.Statements.Add(LowerStructConditionalAssignment(
@@ -2907,15 +2989,24 @@ public sealed class IRLowering
 
     private IRStmt? TryLowerStructAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {
+        if (right is ConditionalExpressionSyntax ternary
+            && TryGetFlattenableStructTargetType(ternary, model, out var ternaryTarget, out var ternaryFields)
+            && !TryGetImplicitUserDefinedConversion(ternary, ternaryTarget, model, isExplicitInSource: false, out _))
+        {
+            // Common-type conditional whose branches are struct values. A conditional converted
+            // as a whole falls through to the ordinary conversion call path below.
+            if (!TryGetFlattenedStructAssignmentTargets(left, ternaryFields, model, out var ternaryTargets, out var ternaryReceiverTemp))
+            {
+                return null;
+            }
+
+            return LowerStructConditionalAssignmentThroughTemps(ternary, ternaryFields, ternaryTargets, model, ternaryReceiverTemp);
+        }
+
         if (!TryGetStructExpressionValues(right, model, out var fields, out var values)
             || !TryGetFlattenedStructAssignmentTargets(left, fields, model, out var targets, out var receiverTemp))
         {
             return null;
-        }
-
-        if (right is ConditionalExpressionSyntax ternary)
-        {
-            return LowerStructConditionalAssignmentThroughTemps(ternary, fields, targets, model, receiverTemp);
         }
 
         if (receiverTemp is not null)
@@ -2971,7 +3062,8 @@ public sealed class IRLowering
         IReadOnlyList<StructFieldSlot> fields,
         SemanticModel model)
     {
-        if (model.GetTypeInfo(expression).Type is INamedTypeSymbol branchType
+        var typeInfo = model.GetTypeInfo(expression);
+        if (ResolveType(typeInfo.ConvertedType ?? typeInfo.Type) is INamedTypeSymbol branchType
             && CanFlattenStructType(branchType))
         {
             return LowerStructArgumentValues(expression, branchType, model);
@@ -3292,7 +3384,7 @@ public sealed class IRLowering
                     && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
                 {
                     // pos = otherStruct; — direct struct-to-struct assignment
-                    if (assignment.Left == id && IsStructExpression(assignment.Right, model))
+                    if (assignment.Left == id && IsContextuallyStructExpression(assignment.Right, model))
                     {
                         continue;
                     }
@@ -3343,11 +3435,39 @@ public sealed class IRLowering
                     continue;
                 }
 
+                // float f = v; / Consume(v) / (float)v / v + 1f — contextual implicit conversion
+                // from this struct. The conversion call consumes the flattened fields as arguments.
+                if (IsImplicitConversionSourceUse(id, model))
+                {
+                    continue;
+                }
+
                 return false;
             }
         }
 
         return true;
+    }
+
+    private bool IsImplicitConversionSourceUse(IdentifierNameSyntax id, SemanticModel model)
+    {
+        IMethodSymbol? conversion;
+        if (id.Parent is CastExpressionSyntax cast && cast.Expression == id)
+        {
+            conversion = model.GetTypeInfo(cast).Type is { } castTarget
+                && TryGetImplicitUserDefinedConversion(id, castTarget, model, isExplicitInSource: true, out var castConversion)
+                    ? castConversion
+                    : null;
+        }
+        else
+        {
+            conversion = TryGetContextualImplicitConversion(id, model);
+        }
+
+        return conversion is { Parameters.Length: 1 }
+               && SymbolEqualityComparer.Default.Equals(
+                   ResolveType(model.GetTypeInfo(id).Type),
+                   ResolveType(conversion.Parameters[0].Type));
     }
 
     private bool IsSupportedStructArgumentUse(IdentifierNameSyntax id, SemanticModel model)
@@ -3426,26 +3546,15 @@ public sealed class IRLowering
 
     private IRStmt? TryLowerStructReturn(ExpressionSyntax expression, SemanticModel model)
     {
-        if (expression is BaseObjectCreationExpressionSyntax creation
-            && TryGetStructFieldValues(creation, model, out _, out var values))
-        {
-            return new IRMultiReturn(values);
-        }
-
         // `return default` for tuple types → bare `return` (nil in Lua, stops iterators).
         if (IsDefaultExpression(expression) && model.GetTypeInfo(expression).Type is INamedTypeSymbol defType && defType.IsTupleType)
         {
             return new IRReturn(null);
         }
 
-        if (ResolveType(model.GetTypeInfo(expression).Type) is INamedTypeSymbol flatType
-            && CanFlattenStructType(flatType)
-            && GetFlattenableStructFields(flatType).Any())
-        {
-            return new IRMultiReturn(LowerStructArgumentValues(expression, flatType, model));
-        }
-
-        return null;
+        return TryGetStructExpressionValues(expression, model, out _, out var values)
+            ? new IRMultiReturn(values)
+            : null;
     }
 
     private static bool IsDefaultExpression(ExpressionSyntax expression)
@@ -3483,36 +3592,74 @@ public sealed class IRLowering
         out IReadOnlyList<StructFieldSlot> fields,
         out IReadOnlyList<IRExpr> values)
     {
-        if (expression is BaseObjectCreationExpressionSyntax creation)
-        {
-            return TryGetStructFieldValues(creation, model, out fields, out values);
-        }
+        fields = Array.Empty<StructFieldSlot>();
+        values = Array.Empty<IRExpr>();
 
-        var type = ResolveType(model.GetTypeInfo(expression).Type) as INamedTypeSymbol;
-        if (type is null || !CanFlattenStructType(type))
+        // The contextual target type decides whether the expression is used as a flattened
+        // struct. A declaration/assignment/return may convert a scalar into a struct (or the
+        // other way around) through an implicit conversion operator.
+        if (!TryGetFlattenableStructTargetType(expression, model, out var targetType, out var fieldSlots))
         {
-            fields = Array.Empty<StructFieldSlot>();
-            values = Array.Empty<IRExpr>();
             return false;
         }
 
-        var fieldSlots = GetFlattenableStructFields(type).ToArray();
-        if (fieldSlots.Length == 0)
+        if (TryGetImplicitUserDefinedConversion(expression, targetType, model, isExplicitInSource: false, out var conversion))
         {
-            fields = Array.Empty<StructFieldSlot>();
-            values = Array.Empty<IRExpr>();
-            return false;
+            fields = fieldSlots;
+            values = new[] { BuildImplicitConversionCall(conversion, expression, model) };
+            return true;
+        }
+
+        if (expression is BaseObjectCreationExpressionSyntax creation
+            && SymbolEqualityComparer.Default.Equals(GetCreationType(creation, model), targetType)
+            && TryGetStructFieldValues(creation, model, out fields, out values))
+        {
+            return true;
         }
 
         fields = fieldSlots;
-        values = LowerStructArgumentValues(expression, type, model);
+        values = LowerStructArgumentValues(expression, targetType, model);
         return true;
     }
+
+    private bool TryGetFlattenableStructTargetType(
+        ExpressionSyntax expression,
+        SemanticModel model,
+        out INamedTypeSymbol structType,
+        out IReadOnlyList<StructFieldSlot> fields)
+    {
+        structType = null!;
+        fields = Array.Empty<StructFieldSlot>();
+
+        var typeInfo = model.GetTypeInfo(expression);
+        if (ResolveType(typeInfo.ConvertedType ?? typeInfo.Type) is not INamedTypeSymbol targetType
+            || !CanFlattenStructType(targetType))
+        {
+            return false;
+        }
+
+        var fieldSlots = GetFlattenableStructFields(targetType).ToArray();
+        if (fieldSlots.Length == 0)
+        {
+            return false;
+        }
+
+        structType = targetType;
+        fields = fieldSlots;
+        return true;
+    }
+
+    private static INamedTypeSymbol? GetCreationType(BaseObjectCreationExpressionSyntax creation, SemanticModel model)
+        => ((model.GetSymbolInfo(creation).Symbol as IMethodSymbol)?.ContainingType
+            ?? model.GetTypeInfo(creation).Type) as INamedTypeSymbol;
 
     private bool IsStructExpression(ExpressionSyntax expression, SemanticModel model)
         => ResolveType(model.GetTypeInfo(expression).Type) is INamedTypeSymbol type
            && CanFlattenStructType(type)
            && GetFlattenableStructFields(type).Any();
+
+    private bool IsContextuallyStructExpression(ExpressionSyntax expression, SemanticModel model)
+        => TryGetFlattenableStructTargetType(expression, model, out _, out _);
 
     private bool CanFlattenStructType(INamedTypeSymbol type)
         => type.TypeKind == TypeKind.Struct
@@ -3898,6 +4045,111 @@ public sealed class IRLowering
         => type is INamedTypeSymbol { SpecialType: SpecialType.None } namedType
            && CanFlattenStructType(namedType)
            && GetFlattenableStructFields(namedType).Any();
+
+    /// <summary>
+    /// Resolves the C# user-defined implicit conversion applied to <paramref name="expression"/>
+    /// when it is converted to <paramref name="targetType"/>. Only <c>implicit operator</c>
+    /// declarations are lowered; explicit conversion operators are out of scope.
+    /// </summary>
+    private bool TryGetImplicitUserDefinedConversion(
+        ExpressionSyntax expression,
+        ITypeSymbol? targetType,
+        SemanticModel model,
+        bool isExplicitInSource,
+        out IMethodSymbol conversion)
+    {
+        conversion = null!;
+        if (targetType is null || targetType.TypeKind == TypeKind.Error)
+        {
+            return false;
+        }
+
+        var sourceType = ResolveType(model.GetTypeInfo(expression).Type);
+        if (sourceType is not null && SymbolEqualityComparer.Default.Equals(sourceType, targetType))
+        {
+            return false;
+        }
+
+        var classified = model.ClassifyConversion(expression, targetType, isExplicitInSource);
+        if (!classified.IsUserDefined
+            || classified.MethodSymbol is not { MethodKind: MethodKind.Conversion, Name: "op_Implicit" } method)
+        {
+            return false;
+        }
+
+        if (!IsTranspiledUserType(method.ContainingType))
+        {
+            ReportConversionIssue(
+                expression,
+                $"cannot lower implicit conversion from '{sourceType?.ToDisplayString() ?? "?"}' to '{targetType.ToDisplayString()}': the operator is declared in '{method.ContainingType.ToDisplayString()}', which SharpForge does not transpile");
+            return false;
+        }
+
+        conversion = method;
+        return true;
+    }
+
+    /// <summary>
+    /// Returns the user-defined implicit conversion C# applies to an expression in its current
+    /// context (argument, return value, initializer, assignment, built-in operator operand, ...).
+    /// </summary>
+    private IMethodSymbol? TryGetContextualImplicitConversion(ExpressionSyntax expression, SemanticModel model)
+    {
+        var typeInfo = model.GetTypeInfo(expression);
+        if (typeInfo.ConvertedType is not { } converted
+            || (typeInfo.Type is { } source && SymbolEqualityComparer.Default.Equals(source, converted)))
+        {
+            return null;
+        }
+
+        return TryGetImplicitUserDefinedConversion(expression, converted, model, isExplicitInSource: false, out var conversion)
+            ? conversion
+            : null;
+    }
+
+    /// <summary>
+    /// Builds the Lua call for a user-defined implicit conversion. A flattenable struct source is
+    /// expanded into one argument per field, matching the operator's flattened parameter list.
+    /// </summary>
+    private IRExpr BuildImplicitConversionCall(IMethodSymbol conversion, ExpressionSyntax source, SemanticModel model)
+    {
+        var sourceType = ResolveType(model.GetTypeInfo(source).Type) as INamedTypeSymbol;
+        var added = _conversionSourceNodes.Add(source);
+        try
+        {
+            IReadOnlyList<IRExpr> arguments = sourceType is not null
+                && CanFlattenStructType(sourceType)
+                && GetFlattenableStructFields(sourceType).Any()
+                    ? LowerStructArgumentValues(source, sourceType, model)
+                    : new[] { LowerExpr(source, model) };
+
+            return new IRInvocation(
+                new IRMemberAccess(LowerTypeReference(conversion.ContainingType), GetLuaMethodName(conversion)),
+                arguments);
+        }
+        finally
+        {
+            if (added)
+            {
+                _conversionSourceNodes.Remove(source);
+            }
+        }
+    }
+
+    private bool IsTranspiledUserType(INamedTypeSymbol type)
+        => SymbolEqualityComparer.Default.Equals(type.ContainingAssembly, _compilationAssembly)
+           && !_ignoredClasses.Contains(type.Name)
+           && !IsSFLibType(type)
+           && !InheritsFromHandle(type)
+           && !IsExternalLuaObjectType(type);
+
+    private void ReportConversionIssue(SyntaxNode node, string message)
+    {
+        if (_reportedConversionIssues.Add(node))
+        {
+            AddDiagnostic(node.GetLocation(), message);
+        }
+    }
 
     private void ValidateStructRuntimeFeatures(TypeDeclarationSyntax typeDecl, INamedTypeSymbol symbol, SemanticModel model, CancellationToken ct)
     {
@@ -4986,11 +5238,21 @@ public sealed class IRLowering
             return attributeName;
         }
 
-        if (method.MethodKind == MethodKind.UserDefinedOperator)
+        if (method.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion)
         {
-            return HasOverloadSiblings(method, MethodKind.UserDefinedOperator)
-                ? AppendLuaParameterSignature(method.Name, method.Parameters)
-                : method.Name;
+            if (!HasOverloadSiblings(method, method.MethodKind))
+            {
+                return method.Name;
+            }
+
+            var signature = AppendLuaParameterSignature(method.Name, method.Parameters);
+
+            // Conversion operators may overload on the result type alone (for example
+            // `implicit operator float(Vec)` next to `implicit operator Wrapper(Vec)`), so
+            // the result type is part of the distinct Lua name.
+            return method.MethodKind == MethodKind.Conversion
+                ? $"{signature}__{GetLuaTypeSignature(method.ReturnType)}"
+                : signature;
         }
 
         if (method.MethodKind == MethodKind.Constructor)
