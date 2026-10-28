@@ -43,6 +43,16 @@ When designing a lowering feature, compare viable strategies in this order:
 4. Concision: keep generated Lua compact when doing so preserves full semantics.
 5. Readability: prefer stable names, predictable ordering, and source-shaped structure after the earlier concerns are satisfied.
 
+## Rejected Optimizations
+
+### Method Inlining
+
+Source-level method inlining is intentionally rejected: do not add an automatic call-site body-substitution pass, an `[Inline]` attribute, or helper-definition removal.
+
+- Inlining erases the per-method Lua frames that `--trace-calls` exposes through `SF__TRACE__` and in reported error messages, making diagnostics worse exactly where production behavior matters.
+- It is a micro-optimization relative to the direct static-call shape SharpForge already emits, while requiring broad semantic rules for argument purity, evaluation order, method-group references, recursion, and all-or-nothing definition removal.
+- Hotspot optimization belongs in user code (for example, manual inlining at the call site or reducing call frequency), not in the transpiler.
+
 ## Canonicalization Notes
 
 When implementing syntax conveniences or target-typed forms, canonicalize into the existing semantic lowering path wherever practical. Shared lowering helpers should be keyed by Roslyn symbols, receiver shape, and supported API semantics rather than by prompt-shaped special cases.

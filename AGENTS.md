@@ -184,3 +184,4 @@ Keep this section short and general. Detailed feature notes belong in docs and t
 - Choose the simplest design that preserves semantics; weigh performance, implementation fit, correctness risk, output size, and readability.
 - Add focused tests for observable lowering behavior and boundary cases.
 - Emit diagnostics for unsupported constructs instead of guessing.
+- Do not add source-level method inlining (automatic call-site body substitution or an `[Inline]` attribute). It erases the per-method Lua frames that `--trace-calls` relies on and is only a micro-optimization; hotspot tuning belongs in user code. See [docs/generated-lua.md](docs/generated-lua.md#rejected-optimizations).
