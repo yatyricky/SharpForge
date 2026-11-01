@@ -1,5 +1,3 @@
-using SharpForge.Transpiler.Frontend;
-using SharpForge.Transpiler.Pipeline;
 using Xunit;
 
 namespace SharpForge.Transpiler.Tests;
@@ -64,30 +62,43 @@ public class EnumsTests
     }
 
     [Fact]
-    public async Task Flags_enums_return_pipeline_error_for_first_pass()
+    public async Task Flags_enums_emit_numeric_constants_and_bitwise_operations()
     {
-        var dir = Directory.CreateTempSubdirectory("sf-test-");
-        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "FlagsEnum.cs"), """
+        var src = """
             using System;
 
             [Flags]
             public enum Bits
             {
+                None = 0,
                 A = 1,
                 B = 2,
+                All = A | B,
             }
-            """);
 
-        var exitCode = await new TranspilePipeline().RunAsync(new TranspileOptions(
-            InputDirectory: dir,
-            OutputFile: new FileInfo(Path.Combine(dir.FullName, "out.lua")),
-            PreprocessorSymbols: Array.Empty<string>(),
-            RootTable: TranspileOptions.DefaultRootTable,
-            IgnoredClasses: new[] { TranspileOptions.DefaultIgnoredClass },
-            IgnoredNamespaces: new[] { TranspileOptions.DefaultIgnoredNamespace },
-            CheckOnly: true,
-            Verbose: false), CancellationToken.None);
+            public static class Program
+            {
+                public static bool HasA(Bits value)
+                {
+                    return (value & Bits.A) != 0;
+                }
 
-        Assert.Equal(1, exitCode);
+                public static Bits Both()
+                {
+                    return Bits.A | Bits.B;
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["FlagsEnum.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains("SF__.Bits.None = 0", lua);
+        Assert.Contains("SF__.Bits.A = 1", lua);
+        Assert.Contains("SF__.Bits.B = 2", lua);
+        Assert.Contains("SF__.Bits.All = 3", lua);
+        Assert.Contains("return ((value & SF__.Bits.A) ~= 0)", lua);
+        Assert.Contains("return (SF__.Bits.A | SF__.Bits.B)", lua);
     }
 }

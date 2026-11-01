@@ -325,11 +325,6 @@ public sealed class IRLowering
         };
         irEnum.Comments.AddRange(ExtractComments(enumDecl.GetLeadingTrivia()));
 
-        if (HasFlagsAttribute(symbol))
-        {
-            AddDiagnostic(enumDecl.GetLocation(), "[Flags] enums are not supported yet; SharpForge currently emits plain numeric enum constants only");
-        }
-
         foreach (var memberDecl in enumDecl.Members)
         {
             if (model.GetDeclaredSymbol(memberDecl, ct) is not IFieldSymbol memberSymbol)
@@ -7019,9 +7014,6 @@ public sealed class IRLowering
 
         return new IRLiteral(value, IRLiteralKind.Integer);
     }
-
-    private static bool HasFlagsAttribute(INamedTypeSymbol symbol)
-        => symbol.GetAttributes().Any(attribute => attribute.AttributeClass?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::System.FlagsAttribute");
 
     private static string MapBinaryOp(string op) => op switch
     {

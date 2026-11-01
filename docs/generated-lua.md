@@ -137,6 +137,12 @@ Return position uses this statement shape directly. Other expression positions u
 
 Supported receivers are reference types (classes, interfaces, strings, arrays, and external LuaObject types). Conditional element access (`?[]`), nullable value-type or type-parameter/dynamic receivers, calls with `ref`/`out` arguments, and conditional access containing `await` are hard diagnostics. Conditional access producing a flattenable struct, or reaching a flattened struct member, is also diagnosed: the expression form cannot represent struct multi-returns, so use an explicit `if`/`return` instead.
 
+## Enums
+
+Enum declarations emit one numeric constant per member. `[Flags]` is intentionally ignored: it only affects .NET formatting and debugger display, while SharpForge enum values are already plain Lua numbers. Composite members such as `All = A | B` use Roslyn's constant value (`3`), and runtime functions on flag values use ordinary bitwise operators (`value & Enum.Member`, `A | B`).
+
+SharpForge does not preserve enum member names at runtime, so this is not a promise that `Enum.ToString()` or other name-formatting APIs are supported. Values that cannot be represented exactly as Lua numbers retain the existing enum diagnostics.
+
 ## Generic Types And Structs
 
 Generic types lower to one shared Lua table per generic type definition; there is no per-instantiation specialization of the type itself. The struct decision is share-vs-specialize (the CLR strategy for reference vs value types):
@@ -201,6 +207,7 @@ Common C# constructs lower to direct Lua patterns:
 | implicit conversion operator | static `SF__.Type.op_Implicit(...)` function; a flattenable struct parameter is expanded to one Lua parameter per field, and a flattenable struct result uses the ordinary multi-return shape |
 | switch expression (return position) | `repeat` / `local switchValue = ...` / `if ... then return ... else (error) end` / `until true` branch chain, one `return` per arm |
 | `?.` / `?.Method()` | receiver hoisted to `local __ca`; nil-guarded member/invocation branch; return position uses statements, other value positions use the existing IIFE scaffolding |
+| `[Flags]` enum | numeric constants; the attribute is ignored, and composite/bitwise values stay ordinary integers |
 
 ## Lua Interop Classes
 
