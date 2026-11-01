@@ -219,6 +219,76 @@ public class CastingTests
     }
 
     [Fact]
+    public async Task Negated_declaration_pattern_guard_reuses_variable_after_if()
+    {
+        var src = """
+            public class Data
+            {
+                public int Value;
+            }
+
+            public class Source
+            {
+                public object? GetValue()
+                {
+                    return null;
+                }
+            }
+
+            public static class Program
+            {
+                public static int Run(Source source)
+                {
+                    if (source.GetValue() is not Data data)
+                        throw new System.Exception("bad");
+
+                    return data.Value;
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["NegatedPattern.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains("local data = source:GetValue()", lua);
+        Assert.Contains("if (not SF__.TypeIs__(data, SF__.Data)) then", lua);
+        Assert.Contains("return data.Value", lua);
+        Assert.Equal(1, lua.Split("source:GetValue()", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public async Task Negated_declaration_pattern_guard_with_return_keeps_variable_in_scope()
+    {
+        var src = """
+            public class Data
+            {
+                public int Value;
+            }
+
+            public static class Program
+            {
+                public static int Run(object? value)
+                {
+                    if (value is not Data data)
+                        return -1;
+
+                    return data.Value;
+                }
+            }
+            """;
+
+        var (lua, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["NegatedPatternReturn.cs"] = src });
+
+        Assert.Empty(diagnostics);
+        Assert.Contains("local data = value", lua);
+        Assert.Contains("if (not SF__.TypeIs__(data, SF__.Data)) then", lua);
+        Assert.Contains("return (-1)", lua);
+        Assert.Contains("return data.Value", lua);
+    }
+
+    [Fact]
     public async Task Struct_runtime_casting_and_boxed_equality_are_diagnostics()
     {
         var src = """

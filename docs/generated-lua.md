@@ -137,6 +137,20 @@ Return position uses this statement shape directly. Other expression positions u
 
 Supported receivers are reference types (classes, interfaces, strings, arrays, and external LuaObject types). Conditional element access (`?[]`), nullable value-type or type-parameter/dynamic receivers, calls with `ref`/`out` arguments, and conditional access containing `await` are hard diagnostics. Conditional access producing a flattenable struct, or reaching a flattened struct member, is also diagnosed: the expression form cannot represent struct multi-returns, so use an explicit `if`/`return` instead.
 
+## Declaration Patterns
+
+A declaration pattern is supported directly as an `if` condition: `if (x is T name)` and `if (x is not T name)`. The receiver is evaluated once into a local named after the pattern variable, and the existing runtime type test (`SF__.TypeIs__(...)`) is used; `is not` negates that test. For a negated guard the local is emitted in the enclosing Lua block rather than a nested `do ... end`, so code after a guard that throws or returns can keep using `name`:
+
+```lua
+local data = effect.Data
+if (not SF__.TypeIs__(data, SF__.ApplyBuffData)) then
+    error(...)
+end
+return data.WhichTarget
+```
+
+Only top-level `if` conditions are rewritten. Declaration patterns in compound conditions, returns, field initializers, loop conditions, and other expression positions remain diagnostics; use an explicit type check plus cast/`as` assignment. Struct and other value-type patterns keep the existing runtime-type-check diagnostics.
+
 ## Enums
 
 Enum declarations emit one numeric constant per member. `[Flags]` is intentionally ignored: it only affects .NET formatting and debugger display, while SharpForge enum values are already plain Lua numbers. Composite members such as `All = A | B` use Roslyn's constant value (`3`), and runtime functions on flag values use ordinary bitwise operators (`value & Enum.Member`, `A | B`).
@@ -207,6 +221,7 @@ Common C# constructs lower to direct Lua patterns:
 | implicit conversion operator | static `SF__.Type.op_Implicit(...)` function; a flattenable struct parameter is expanded to one Lua parameter per field, and a flattenable struct result uses the ordinary multi-return shape |
 | switch expression (return position) | `repeat` / `local switchValue = ...` / `if ... then return ... else (error) end` / `until true` branch chain, one `return` per arm |
 | `?.` / `?.Method()` | receiver hoisted to `local __ca`; nil-guarded member/invocation branch; return position uses statements, other value positions use the existing IIFE scaffolding |
+| `if` declaration pattern | pattern variable hoisted to `local <name>`; type test via `SF__.TypeIs__(...)`, negated for `is not`; negated locals stay in the enclosing block for use after the guard |
 | `[Flags]` enum | numeric constants; the attribute is ignored, and composite/bitwise values stay ordinary integers |
 
 ## Lua Interop Classes

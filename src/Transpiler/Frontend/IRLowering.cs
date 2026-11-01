@@ -4600,22 +4600,22 @@ public sealed class IRLowering
 
     private IRStmt? TryLowerDeclarationPatternIf(IfStatementSyntax ifStatement, SemanticModel model, CancellationToken ct)
     {
-        if (ifStatement.Condition is not IsPatternExpressionSyntax
-            {
-                Pattern: DeclarationPatternSyntax
-                {
-                    Designation: SingleVariableDesignationSyntax designation,
-                    Type: { } patternType
-                }
-            } isPattern)
+        if (ifStatement.Condition is not IsPatternExpressionSyntax isPattern
+            || !TryGetDeclarationPattern(isPattern.Pattern, out var negated, out var declaration)
+            || declaration.Designation is not SingleVariableDesignationSyntax designation
+            || declaration.Type is not { } patternType)
         {
             return null;
         }
 
         var declaredSymbol = model.GetDeclaredSymbol(designation, ct);
+        if (declaredSymbol is null)
+        {
+            return null;
+        }
+
         var localName = DeclareLuaName(declaredSymbol, designation.Identifier.ValueText);
-        var block = new IRBlock();
-        block.Statements.Add(new IRLocalDecl(localName, LowerExpr(isPattern.Expression, model)));
+        var localDeclaration = new IRLocalDecl(localName, LowerExpr(isPattern.Expression, model));
 
         var thenBlock = new IRBlock();
         LowerBlock(ifStatement.Statement, thenBlock, model, ct);
@@ -4626,8 +4626,54 @@ public sealed class IRLowering
             LowerBlock(elseClause.Statement, elseBlock, model, ct);
         }
 
-        block.Statements.Add(new IRIf(LowerTypePatternTest(new IRIdentifier(localName), patternType, model), thenBlock, elseBlock));
+        var typeTest = LowerTypePatternTest(new IRIdentifier(localName), patternType, model);
+        var condition = negated ? new IRUnary("!", typeTest) : typeTest;
+        var ifStatementIr = new IRIf(condition, thenBlock, elseBlock);
+
+        if (negated)
+        {
+            // The pattern variable is used after the guard, so it must live in
+            // the enclosing Lua block rather than a nested `do ... end`.
+            return new IRStatementList([localDeclaration, ifStatementIr]);
+        }
+
+        var block = new IRBlock();
+        block.Statements.Add(localDeclaration);
+        block.Statements.Add(ifStatementIr);
         return block;
+    }
+
+    private static bool TryGetDeclarationPattern(
+        PatternSyntax pattern,
+        out bool negated,
+        out DeclarationPatternSyntax declaration)
+    {
+        negated = false;
+        while (true)
+        {
+            while (pattern is ParenthesizedPatternSyntax parenthesized)
+            {
+                pattern = parenthesized.Pattern;
+            }
+
+            if (pattern is UnaryPatternSyntax unary && unary.IsKind(SyntaxKind.NotPattern))
+            {
+                negated = !negated;
+                pattern = unary.Pattern;
+                continue;
+            }
+
+            break;
+        }
+
+        if (pattern is DeclarationPatternSyntax candidate)
+        {
+            declaration = candidate;
+            return true;
+        }
+
+        declaration = null!;
+        return false;
     }
 
     private bool IsStructRuntimeCast(CastExpressionSyntax cast, SemanticModel model)
