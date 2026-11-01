@@ -32,6 +32,7 @@ public sealed class IRLowering
     private IReadOnlyDictionary<string, string>? _currentStructSelfFields;
     private IRFunction? _currentFunction;
     private readonly List<IRStmt> _pendingStatements = new();
+    private readonly Stack<ConditionalReceiver> _conditionalAccessReceivers = new();
     private readonly Dictionary<string, string> _outVarNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> _usedLuaNames = new(StringComparer.Ordinal);
     private readonly HashSet<ExpressionSyntax> _reportedInstanceMethodGroups = new();
@@ -79,6 +80,7 @@ public sealed class IRLowering
         _genericStructSpecializations.Clear();
         _chainShadowedMethodNames.Clear();
         _typeParameterSubstitution = null;
+        _conditionalAccessReceivers.Clear();
         _compilation = compilation;
         var compilationUnits = new List<(CompilationUnitSyntax Root, SemanticModel Model)>();
 
@@ -1271,6 +1273,18 @@ public sealed class IRLowering
         }
     }
 
+    private IReadOnlyList<IRStmt> TakePendingStatementsSince(int startIndex)
+    {
+        if (startIndex >= _pendingStatements.Count)
+        {
+            return Array.Empty<IRStmt>();
+        }
+
+        var taken = _pendingStatements.Skip(startIndex).ToArray();
+        _pendingStatements.RemoveRange(startIndex, _pendingStatements.Count - startIndex);
+        return taken;
+    }
+
     private IRStmt LowerStatement(StatementSyntax s, SemanticModel model, CancellationToken ct)
     {
         switch (s)
@@ -2059,6 +2073,23 @@ public sealed class IRLowering
             case IsPatternExpressionSyntax isPattern:
                 return LowerIsPatternExpression(isPattern, model);
 
+            case ConditionalAccessExpressionSyntax conditionalAccess:
+                return LowerConditionalAccess(conditionalAccess, model);
+
+            case MemberBindingExpressionSyntax memberBinding:
+                if (_conditionalAccessReceivers.Count == 0)
+                {
+                    return UnsupportedExpression(memberBinding);
+                }
+
+                return LowerConditionalMemberBinding(memberBinding, _conditionalAccessReceivers.Peek(), model);
+
+            case ElementBindingExpressionSyntax elementBinding:
+                AddDiagnostic(
+                    elementBinding.GetLocation(),
+                    "conditional element access (?[]) is not supported; use an explicit null check and element access");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+
             default:
                 return UnsupportedExpression(e);
         }
@@ -2126,6 +2157,15 @@ public sealed class IRLowering
         {
             var args = inv.ArgumentList.Arguments.Select(a => LowerExpr(a.Expression, model)).ToArray();
             return new IRInvocation(LowerExpr(inv.Expression, model), args);
+        }
+
+        if (inv.Expression is MemberBindingExpressionSyntax
+            && symbol.Parameters.Any(parameter => parameter.RefKind != RefKind.None))
+        {
+            AddDiagnostic(
+                inv.GetLocation(),
+                "conditional access calls with ref/out arguments are not supported; use an explicit if/return");
+            return new IRLiteral(null, IRLiteralKind.Nil);
         }
 
         if (symbol is { IsGenericMethod: true } && HasStructSubstitutedTypeParameter(symbol))
@@ -2216,8 +2256,421 @@ public sealed class IRLowering
         ]);
     }
 
+    private IRExpr LowerConditionalAccess(ConditionalAccessExpressionSyntax access, SemanticModel model)
+    {
+        if (!TryGetConditionalAccessSupport(access, model, out var receiverType, out var resultType, out var unsupportedReason))
+        {
+            ReportUnsupportedConditionalAccess(access, receiverType, resultType, unsupportedReason);
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        if (!TryBuildConditionalAccessParts(access, model, receiverType, out var parts))
+        {
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        var body = new IRBlock();
+        body.Statements.AddRange(parts.ReceiverPrelude);
+        body.Statements.Add(new IRLocalDecl(parts.TempName, parts.Receiver));
+        var thenBlock = new IRBlock();
+        thenBlock.Statements.AddRange(parts.WhenPrelude);
+        thenBlock.Statements.Add(new IRReturn(parts.WhenNotNull));
+        body.Statements.Add(new IRIf(
+            new IRBinary("~=", new IRIdentifier(parts.TempName), new IRLiteral(null, IRLiteralKind.Nil)),
+            thenBlock,
+            null));
+        body.Statements.Add(new IRReturn(new IRLiteral(null, IRLiteralKind.Nil)));
+        return BuildImmediatelyInvokedExpression(body);
+    }
+
+    private IRStmt? TryLowerConditionalAccessReturn(ExpressionSyntax expression, SemanticModel model)
+    {
+        if (TryUnwrapConditionalAccess(expression) is not { } access)
+        {
+            return null;
+        }
+
+        var typeInfo = model.GetTypeInfo(access);
+        if (typeInfo.ConvertedType is not null
+            && !SymbolEqualityComparer.Default.Equals(typeInfo.Type, typeInfo.ConvertedType))
+        {
+            return null;
+        }
+
+        if (!TryGetConditionalAccessSupport(access, model, out var receiverType, out _, out _))
+        {
+            return null;
+        }
+
+        if (!TryBuildConditionalAccessParts(access, model, receiverType, out var parts))
+        {
+            return null;
+        }
+
+        var statements = new List<IRStmt>(parts.ReceiverPrelude)
+        {
+            new IRLocalDecl(parts.TempName, parts.Receiver),
+        };
+
+        var thenBlock = new IRBlock();
+        thenBlock.Statements.AddRange(parts.WhenPrelude);
+        thenBlock.Statements.Add(new IRReturn(parts.WhenNotNull));
+        statements.Add(new IRIf(
+            new IRBinary("~=", new IRIdentifier(parts.TempName), new IRLiteral(null, IRLiteralKind.Nil)),
+            thenBlock,
+            null));
+        statements.Add(new IRReturn(new IRLiteral(null, IRLiteralKind.Nil)));
+        return new IRStatementList(statements);
+    }
+
+    private bool TryGetConditionalAccessSupport(
+        ConditionalAccessExpressionSyntax access,
+        SemanticModel model,
+        out ITypeSymbol? receiverType,
+        out ITypeSymbol? resultType,
+        out string unsupportedReason)
+    {
+        receiverType = ResolveType(model.GetTypeInfo(access.Expression).Type);
+        var resultInfo = model.GetTypeInfo(access);
+        resultType = ResolveType(resultInfo.Type) ?? ResolveType(resultInfo.ConvertedType);
+        unsupportedReason = string.Empty;
+
+        if (access.DescendantNodes().OfType<AwaitExpressionSyntax>().Any())
+        {
+            unsupportedReason = "conditional access containing await is not supported";
+            return false;
+        }
+
+        if (access.WhenNotNull is ElementBindingExpressionSyntax)
+        {
+            unsupportedReason = "conditional element access (?[]) is not supported";
+            return false;
+        }
+
+        if (receiverType is null
+            || receiverType.TypeKind is TypeKind.Error or TypeKind.TypeParameter or TypeKind.Dynamic
+            || receiverType is not INamedTypeSymbol and not IArrayTypeSymbol)
+        {
+            unsupportedReason = "unsupported conditional-access receiver type";
+            return false;
+        }
+
+        if (receiverType.IsValueType)
+        {
+            unsupportedReason = "conditional access on value types is not supported; use an explicit HasValue/if form";
+            return false;
+        }
+
+        if (resultType is ITypeParameterSymbol)
+        {
+            unsupportedReason = "conditional access producing a generic type parameter is not supported";
+            return false;
+        }
+
+        if (IsFlattenedStructValue(resultType))
+        {
+            unsupportedReason = "conditional access producing a flattenable struct is not supported; use an explicit if/return so struct fields can be flattened";
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ReportUnsupportedConditionalAccess(
+        ConditionalAccessExpressionSyntax access,
+        ITypeSymbol? receiverType,
+        ITypeSymbol? resultType,
+        string reason)
+    {
+        AddDiagnostic(
+            access.GetLocation(),
+            $"conditional access is not supported: {reason}; receiver '{receiverType?.ToDisplayString() ?? "?"}', result '{resultType?.ToDisplayString() ?? "?"}'");
+    }
+
+    private bool TryBuildConditionalAccessParts(
+        ConditionalAccessExpressionSyntax access,
+        SemanticModel model,
+        ITypeSymbol? receiverType,
+        out ConditionalAccessParts parts)
+    {
+        parts = null!;
+
+        var receiverPendingStart = _pendingStatements.Count;
+        var receiver = LowerExpr(access.Expression, model);
+        var receiverPrelude = TakePendingStatementsSince(receiverPendingStart);
+
+        var tempName = AllocateLuaName("__ca");
+        var temp = new IRIdentifier(tempName);
+        _conditionalAccessReceivers.Push(new ConditionalReceiver(temp, receiverType));
+        try
+        {
+            var whenPendingStart = _pendingStatements.Count;
+            var whenNotNull = LowerExpr(access.WhenNotNull, model);
+            var whenPrelude = TakePendingStatementsSince(whenPendingStart);
+            parts = new ConditionalAccessParts(receiver, tempName, whenNotNull, receiverPrelude, whenPrelude);
+            return true;
+        }
+        finally
+        {
+            _conditionalAccessReceivers.Pop();
+        }
+    }
+
+    private static ConditionalAccessExpressionSyntax? TryUnwrapConditionalAccess(ExpressionSyntax expression)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
+
+        return expression as ConditionalAccessExpressionSyntax;
+    }
+
+    private IRExpr LowerConditionalMemberBinding(
+        MemberBindingExpressionSyntax binding,
+        ConditionalReceiver receiver,
+        SemanticModel model)
+    {
+        var symbol = model.GetSymbolInfo(binding).Symbol;
+        if (symbol is null)
+        {
+            AddUnsupportedDiagnostic(binding, "conditional member binding");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        if (symbol is IFieldSymbol field)
+        {
+            if (field.IsStatic)
+            {
+                AddDiagnostic(binding.GetLocation(), "conditional access to a static member is not supported");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            if (field.ContainingType is not null && IsExternalLuaObjectType(field.ContainingType))
+            {
+                return new IRMemberAccess(receiver.Receiver, GetLuaObjectMemberName(field));
+            }
+
+            if (IsExternalToCompilation(field))
+            {
+                AddDiagnostic(
+                    binding.GetLocation(),
+                    $"unsupported external member '{field.ContainingType?.ToDisplayString()}.{field.Name}'");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            if (IsFlattenedStructMemberSymbol(field) || IsFlattenedStructValue(ResolveType(field.Type)))
+            {
+                AddDiagnostic(
+                    binding.GetLocation(),
+                    $"conditional access to flattened struct member '{field.Name}' is not supported; use an explicit if/return");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            return new IRMemberAccess(receiver.Receiver, field.Name);
+        }
+
+        if (symbol is IPropertySymbol property)
+        {
+            if (property.IsStatic)
+            {
+                AddDiagnostic(binding.GetLocation(), "conditional access to a static member is not supported");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            if (property.ContainingType is not null && IsExternalLuaObjectType(property.ContainingType))
+            {
+                return new IRMemberAccess(receiver.Receiver, GetLuaObjectMemberName(property));
+            }
+
+            if (IsFlattenedStructMemberSymbol(property) || IsFlattenedStructValue(ResolveType(property.Type)))
+            {
+                AddDiagnostic(
+                    binding.GetLocation(),
+                    $"conditional access to flattened struct member '{property.Name}' is not supported; use an explicit if/return");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            if (property.Name == "Length"
+                && (receiver.Type is IArrayTypeSymbol
+                    || receiver.Type is INamedTypeSymbol { SpecialType: SpecialType.System_String }))
+            {
+                return new IRLength(receiver.Receiver);
+            }
+
+            if (property.ContainingType?.SpecialType == SpecialType.System_String)
+            {
+                AddDiagnostic(
+                    binding.GetLocation(),
+                    $"string.{property.Name} is not supported; use SFLib.Interop.@string for Lua string operations");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            if (IsExternalToCompilation(property))
+            {
+                AddDiagnostic(
+                    binding.GetLocation(),
+                    $"unsupported external member '{property.ContainingType?.ToDisplayString()}.{property.Name}'");
+                return new IRLiteral(null, IRLiteralKind.Nil);
+            }
+
+            if (IsAutoPropertySymbol(property))
+            {
+                return new IRMemberAccess(receiver.Receiver, property.Name);
+            }
+
+            return new IRInvocation(
+                new IRMemberAccess(receiver.Receiver, "get_" + property.Name),
+                Array.Empty<IRExpr>(),
+                UseColon: true);
+        }
+
+        if (symbol is IMethodSymbol)
+        {
+            AddDiagnostic(
+                binding.GetLocation(),
+                "conditional access to a method group is not supported; invoke the method instead");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        AddDiagnostic(binding.GetLocation(), $"conditional access to '{symbol.Kind}' is not supported");
+        return new IRLiteral(null, IRLiteralKind.Nil);
+    }
+
+    private IRExpr LowerConditionalBindingInvocation(
+        InvocationExpressionSyntax invocation,
+        IMethodSymbol symbol,
+        IReadOnlyList<IRExpr> args,
+        SemanticModel model)
+    {
+        if (invocation.Expression is not MemberBindingExpressionSyntax binding
+            || _conditionalAccessReceivers.Count == 0)
+        {
+            return UnsupportedExpression(invocation.Expression);
+        }
+
+        var receiver = _conditionalAccessReceivers.Peek();
+
+        if (symbol.MethodKind == MethodKind.DelegateInvoke)
+        {
+            if (binding.Name.Identifier.ValueText == "Invoke")
+            {
+                return new IRInvocation(receiver.Receiver, args);
+            }
+
+            var delegateValue = LowerConditionalMemberBinding(binding, receiver, model);
+            return delegateValue is IRLiteral { Kind: IRLiteralKind.Nil }
+                ? new IRLiteral(null, IRLiteralKind.Nil)
+                : new IRInvocation(delegateValue, args);
+        }
+
+        if (symbol.IsStatic)
+        {
+            AddDiagnostic(
+                invocation.GetLocation(),
+                "conditional access to a static or extension method is not supported");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        if (symbol.ContainingType?.SpecialType == SpecialType.System_String)
+        {
+            if (symbol.Name == "Split" && args.Count == 1)
+            {
+                return new IRRuntimeInvocation("StrSplit__", new[] { receiver.Receiver, args[0] });
+            }
+
+            if (symbol.Name == "Replace" && args.Count == 2)
+            {
+                return new IRRuntimeInvocation("StrReplace__", new[] { receiver.Receiver, args[0], args[1] });
+            }
+
+            if (symbol.Name == "Substring" && args.Count is 1 or 2)
+            {
+                var substrArgs = args.Count == 1
+                    ? new[] { receiver.Receiver, args[0], new IRLiteral(null, IRLiteralKind.Nil) }
+                    : new[] { receiver.Receiver, args[0], args[1] };
+                return new IRRuntimeInvocation("StrSubstr__", substrArgs);
+            }
+
+            AddDiagnostic(
+                invocation.GetLocation(),
+                $"string.{symbol.Name} is not supported; use SFLib.Interop.@string for Lua string operations");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        if (symbol.ContainingType is { } containingType && IsExternalLuaObjectType(containingType))
+        {
+            var member = GetLuaObjectMember(symbol);
+            return new IRInvocation(
+                new IRMemberAccess(receiver.Receiver, member.Name),
+                args,
+                UseColon: member.UseColon);
+        }
+
+        if (symbol.ContainingType is { TypeKind: TypeKind.Struct } structType
+            && CanFlattenStructType(structType))
+        {
+            AddDiagnostic(
+                invocation.GetLocation(),
+                "conditional access on a struct receiver is not supported; use an explicit if/return");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        if (IsFlattenedStructValue(ResolveType(symbol.ReturnType)))
+        {
+            AddDiagnostic(
+                invocation.GetLocation(),
+                "conditional access producing a flattenable struct is not supported; use an explicit if/return so struct fields can be flattened");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        if (_compilationAssembly is not null
+            && !SymbolEqualityComparer.Default.Equals(symbol.ContainingAssembly, _compilationAssembly))
+        {
+            AddDiagnostic(
+                invocation.GetLocation(),
+                $"unsupported external method '{symbol.ContainingType?.ToDisplayString()}.{symbol.Name}'; SharpForge has no lowering for this API");
+            return new IRLiteral(null, IRLiteralKind.Nil);
+        }
+
+        return new IRInvocation(
+            new IRMemberAccess(receiver.Receiver, GetInvocationLuaMethodName(symbol)),
+            args,
+            UseColon: true);
+    }
+
+    private bool IsFlattenedStructMemberSymbol(ISymbol symbol)
+        => _flattenedStructMembers.ContainsKey(symbol);
+
+    private bool IsExternalToCompilation(ISymbol symbol)
+        => _compilationAssembly is not null
+            && symbol.ContainingAssembly is not null
+            && !SymbolEqualityComparer.Default.Equals(symbol.ContainingAssembly, _compilationAssembly);
+
+    private bool IsFlattenedStructValue(ITypeSymbol? type)
+    {
+        if (type is null)
+        {
+            return false;
+        }
+
+        if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable
+            && nullable.TypeArguments.Length == 1)
+        {
+            type = ResolveType(nullable.TypeArguments[0]);
+        }
+
+        return type is INamedTypeSymbol namedType && IsFlattenableStructType(namedType);
+    }
+
     private IRExpr LowerInvocationCore(InvocationExpressionSyntax inv, IMethodSymbol symbol, IReadOnlyList<IRExpr> args, SemanticModel model)
     {
+        if (symbol is { MethodKind: MethodKind.DelegateInvoke }
+            && inv.Expression is MemberBindingExpressionSyntax)
+        {
+            return LowerConditionalBindingInvocation(inv, symbol, args, model);
+        }
+
         if (symbol is { MethodKind: MethodKind.DelegateInvoke })
         {
             // Strip .Invoke from action.Invoke() — lower to just action()
@@ -2225,6 +2678,15 @@ public sealed class IRLowering
                 ? ma.Expression
                 : inv.Expression;
             return new IRInvocation(LowerExpr(receiver, model), args);
+        }
+
+        if (inv.Expression is MemberBindingExpressionSyntax)
+        {
+            return LowerConditionalBindingInvocation(
+                inv,
+                symbol,
+                PrependGenericMethodTypeArguments(symbol, args),
+                model);
         }
 
         if (IsTaskDelay(symbol))
@@ -2392,6 +2854,15 @@ public sealed class IRLowering
 
         return new IRInvocation(LowerExpr(inv.Expression, model), callArgs);
     }
+
+    private sealed record ConditionalReceiver(IRExpr Receiver, ITypeSymbol? Type);
+
+    private sealed record ConditionalAccessParts(
+        IRExpr Receiver,
+        string TempName,
+        IRExpr WhenNotNull,
+        IReadOnlyList<IRStmt> ReceiverPrelude,
+        IReadOnlyList<IRStmt> WhenPrelude);
 
     private sealed record OutArgumentTarget(string? NewLocalName, IRExpr? ExistingTarget);
 
@@ -3574,6 +4045,11 @@ public sealed class IRLowering
         if (TryUnwrapSwitchExpression(expression) is { } switchExpression)
         {
             return LowerSwitchExpression(switchExpression, model);
+        }
+
+        if (TryLowerConditionalAccessReturn(expression, model) is { } conditionalReturn)
+        {
+            return conditionalReturn;
         }
 
         return AppendOutParameterValues(TryLowerStructReturn(expression, model) ?? new IRReturn(LowerExpr(expression, model)));

@@ -121,6 +121,22 @@ A switch expression is supported only as a return value (a `return` statement, a
 
 Supported arm patterns are compile-time constant patterns and the `_` discard arm, matching switch statement labels. `when` guards, type/relational/`or`/`var` patterns, and switch expressions outside return position are hard diagnostics. A switch expression without a discard arm gets an `error("switch expression did not match any arm")` fallback so an unmatched value never silently returns nil.
 
+## Null-Conditional Access
+
+`receiver?.Member` and `receiver?.Method(args)` lower by hoisting the receiver into a temporary and guarding the member access with a nil check. The receiver is evaluated once, and arguments are evaluated only when the receiver is non-nil:
+
+```lua
+local __ca = holder
+if (__ca ~= nil) then
+    return __ca:Find(configId)
+end
+return nil
+```
+
+Return position uses this statement shape directly. Other expression positions use the same temporary and branch wrapped in the existing IIFE scaffolding, matching the ternary/coalesce lowering; no new runtime helper is introduced. Chained forms such as `a?.B.C`, `a?.B()?.C`, and `a?.Method() ?? fallback` reuse the same path, and delegate `call?.Invoke(args)` calls lower to `__ca(args)`.
+
+Supported receivers are reference types (classes, interfaces, strings, arrays, and external LuaObject types). Conditional element access (`?[]`), nullable value-type or type-parameter/dynamic receivers, calls with `ref`/`out` arguments, and conditional access containing `await` are hard diagnostics. Conditional access producing a flattenable struct, or reaching a flattened struct member, is also diagnosed: the expression form cannot represent struct multi-returns, so use an explicit `if`/`return` instead.
+
 ## Generic Types And Structs
 
 Generic types lower to one shared Lua table per generic type definition; there is no per-instantiation specialization of the type itself. The struct decision is share-vs-specialize (the CLR strategy for reference vs value types):
@@ -184,6 +200,7 @@ Common C# constructs lower to direct Lua patterns:
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
 | implicit conversion operator | static `SF__.Type.op_Implicit(...)` function; a flattenable struct parameter is expanded to one Lua parameter per field, and a flattenable struct result uses the ordinary multi-return shape |
 | switch expression (return position) | `repeat` / `local switchValue = ...` / `if ... then return ... else (error) end` / `until true` branch chain, one `return` per arm |
+| `?.` / `?.Method()` | receiver hoisted to `local __ca`; nil-guarded member/invocation branch; return position uses statements, other value positions use the existing IIFE scaffolding |
 
 ## Lua Interop Classes
 
