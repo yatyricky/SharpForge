@@ -664,21 +664,198 @@ public class PipelineTests
     }
 
     [Fact]
-    public async Task Switch_expression_outside_return_position_and_unsupported_patterns_are_diagnosed()
+    public async Task Switch_expression_in_local_initializer_assigns_local()
+    {
+        var src = """
+            public enum SpellUnitType
+            {
+                CastingUnit,
+                TargetUnit,
+                CurrentTargetUnit,
+            }
+
+            public class unit
+            {
+            }
+
+            public class SpellCtx
+            {
+                public unit CastingUnit;
+                public unit TargetUnit;
+            }
+
+            public class Pipeline
+            {
+                public SpellCtx SpellCtx;
+            }
+
+            public class ApplyBuffData
+            {
+                public SpellUnitType whichTarget;
+            }
+
+            public static class Switches
+            {
+                public static void Apply(ApplyBuffData data, Pipeline pipeline, unit currentTarget)
+                {
+                    var target = data.whichTarget switch
+                    {
+                        SpellUnitType.CastingUnit => pipeline.SpellCtx.CastingUnit,
+                        SpellUnitType.TargetUnit => pipeline.SpellCtx.TargetUnit,
+                        SpellUnitType.CurrentTargetUnit => currentTarget,
+                        _ => throw new System.Exception("Unhandled buff target type"),
+                    };
+
+                    if (target == null) return;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "SwitchExpressionLocal.cs");
+
+        Assert.Contains("local target", lua);
+        Assert.Contains("local switchValue = data.whichTarget", lua);
+        Assert.Contains("target = pipeline.SpellCtx.CastingUnit", lua);
+        Assert.Contains("target = pipeline.SpellCtx.TargetUnit", lua);
+        Assert.Contains("target = currentTarget", lua);
+        Assert.Matches(
+            "error\\(SF__\\.StrConcat__\\(\\\"SF__E[0-9a-f]{8}\\\", \\\"Unhandled buff target type\\\"\\)\\)",
+            lua);
+        Assert.DoesNotContain("(function()", lua);
+        Assert.DoesNotContain("unsupported expression: SwitchExpression", lua);
+    }
+
+    [Fact]
+    public async Task Switch_expression_in_assignment_converts_and_assigns_target()
+    {
+        var src = """
+            public enum Kind
+            {
+                A,
+                B,
+            }
+
+            public class Wrapper
+            {
+                public string value;
+
+                public Wrapper(string value)
+                {
+                    this.value = value;
+                }
+
+                public static implicit operator Wrapper(string s)
+                {
+                    return new Wrapper(s);
+                }
+            }
+
+            public static class Switches
+            {
+                public static Wrapper Run(Kind kind)
+                {
+                    Wrapper w = new Wrapper("none");
+                    w = kind switch
+                    {
+                        Kind.A => "a",
+                        _ => "b",
+                    };
+                    return w;
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "SwitchExpressionAssignment.cs");
+
+        Assert.Contains("local switchValue", lua);
+        Assert.Contains("w = SF__.Wrapper.op_Implicit(\"a\")", lua);
+        Assert.Contains("w = SF__.Wrapper.op_Implicit(\"b\")", lua);
+        Assert.DoesNotContain("(function()", lua);
+    }
+
+    [Fact]
+    public async Task Switch_expression_in_argument_and_field_initializer_uses_iife()
+    {
+        var src = """
+            public enum Kind
+            {
+                A,
+                B,
+            }
+
+            public class Holder
+            {
+                public string text = Kind.A switch
+                {
+                    Kind.A => "a",
+                    _ => "b",
+                };
+            }
+
+            public static class Switches
+            {
+                public static string Wrap(string value)
+                {
+                    return value;
+                }
+
+                public static string Run(Kind kind)
+                {
+                    return Wrap(kind switch
+                    {
+                        Kind.A => "a",
+                        _ => "b",
+                    });
+                }
+            }
+            """;
+
+        var lua = await TranspilerTestHelper.TranspileAsync(src, "SwitchExpressionIife.cs");
+
+        Assert.Contains("SF__.Switches.Wrap((function()", lua);
+        Assert.Contains("self.text = (function()", lua);
+        Assert.Matches(@"local __switch\d*", lua);
+        Assert.Matches(@"__switch\d* = ""a""", lua);
+        Assert.Matches(@"return __switch\d*", lua);
+    }
+
+    [Fact]
+    public async Task Switch_expression_with_struct_result_outside_return_is_diagnosed()
+    {
+        var src = """
+            public struct Vec
+            {
+                public float x;
+            }
+
+            public static class Switches
+            {
+                public static Vec Pick(int selector)
+                {
+                    var v = selector switch
+                    {
+                        1 => new Vec { x = 1f },
+                        _ => new Vec { x = 2f },
+                    };
+                    return v;
+                }
+            }
+            """;
+
+        var (_, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
+            new Dictionary<string, string> { ["SwitchExpressionStructResult.cs"] = src });
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Contains(
+            "switch expressions that produce a flattened struct value are only supported as a return value",
+            StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Switch_expression_unsupported_patterns_are_diagnosed()
     {
         var src = """
             public static class Switches
             {
-                public static float Local(int x)
-                {
-                    var y = x switch
-                    {
-                        1 => 10f,
-                        _ => 20f,
-                    };
-                    return y;
-                }
-
                 public static float Guarded(int x)
                 {
                     return x switch
@@ -702,7 +879,6 @@ public class PipelineTests
         var (_, diagnostics, _) = await TranspilerTestHelper.TranspileSourcesWithDiagnosticsAsync(
             new Dictionary<string, string> { ["SwitchExpressionDiagnostics.cs"] = src });
 
-        Assert.Contains(diagnostics, diagnostic => diagnostic.Contains("only supported as a return value", StringComparison.Ordinal));
         Assert.Contains(diagnostics, diagnostic => diagnostic.Contains("unsupported switch expression when clause", StringComparison.Ordinal));
         Assert.Contains(diagnostics, diagnostic => diagnostic.Contains("unsupported switch expression pattern", StringComparison.Ordinal));
     }

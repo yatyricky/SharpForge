@@ -38,6 +38,7 @@ public sealed class IRLowering
     private readonly HashSet<ExpressionSyntax> _reportedInstanceMethodGroups = new();
     private readonly HashSet<ExpressionSyntax> _conversionSourceNodes = new();
     private readonly HashSet<SyntaxNode> _reportedConversionIssues = new();
+    private readonly HashSet<SyntaxNode> _reportedSwitchExpressionIssues = new();
     private int _luaNameCounter;
     private IAssemblySymbol? _compilationAssembly;
     private readonly List<INamedTypeSymbol> _knownExceptionTypes = new();
@@ -75,6 +76,7 @@ public sealed class IRLowering
         _usedLuaNames.Clear();
         _conversionSourceNodes.Clear();
         _reportedConversionIssues.Clear();
+        _reportedSwitchExpressionIssues.Clear();
         _luaNameCounter = 0;
         _knownExceptionTypes.Clear();
         _genericStructSpecializations.Clear();
@@ -1292,6 +1294,13 @@ public sealed class IRLowering
             case LocalDeclarationStatementSyntax ld:
                 var first = ld.Declaration.Variables.First();
                 var declaredSymbol = model.GetDeclaredSymbol(first);
+                if (ld.Declaration.Variables.Count == 1
+                    && first.Initializer?.Value is { } switchInitializer
+                    && TryUnwrapSwitchExpression(switchInitializer) is { } localSwitchExpression)
+                {
+                    return LowerSwitchExpressionLocalDeclaration(first, declaredSymbol, localSwitchExpression, model);
+                }
+
                 if (TryLowerStructLocalDeclaration(ld, first, declaredSymbol, model) is { } structLocalDeclaration)
                 {
                     return structLocalDeclaration;
@@ -1701,6 +1710,12 @@ public sealed class IRLowering
             return accessorAssignment;
         }
 
+        if (ae.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            && TryUnwrapSwitchExpression(ae.Right) is { } assignmentSwitchExpression)
+        {
+            return LowerSwitchExpressionAssignmentTarget(ae.Left, assignmentSwitchExpression, model);
+        }
+
         var target = LowerExpr(ae.Left, model);
         if (ae.IsKind(SyntaxKind.AddAssignmentExpression) && IsStringExpression(ae.Left, model))
         {
@@ -2057,10 +2072,7 @@ public sealed class IRLowering
                     LowerExpr(ternary.WhenFalse, model));
 
             case SwitchExpressionSyntax switchExpression:
-                AddDiagnostic(
-                    switchExpression.GetLocation(),
-                    "switch expressions are only supported as a return value; move the switch expression into a return statement");
-                return new IRLiteral(null, IRLiteralKind.Nil);
+                return LowerSwitchExpressionValue(switchExpression, model);
 
             case AwaitExpressionSyntax awaitExpression:
                 return LowerExpr(awaitExpression.Expression, model);
@@ -3461,6 +3473,13 @@ public sealed class IRLowering
 
     private IRStmt? TryLowerStructAssignment(ExpressionSyntax left, ExpressionSyntax right, SemanticModel model)
     {
+        // Switch expressions are handled by the dedicated assignment path (or diagnosed when
+        // they would produce a flattened struct value), so never probe them as struct values.
+        if (TryUnwrapSwitchExpression(right) is not null)
+        {
+            return null;
+        }
+
         if (right is ConditionalExpressionSyntax ternary
             && TryGetFlattenableStructTargetType(ternary, model, out var ternaryTarget, out var ternaryFields)
             && !TryGetImplicitUserDefinedConversion(ternary, ternaryTarget, model, isExplicitInSource: false, out _))
@@ -4068,17 +4087,97 @@ public sealed class IRLowering
     /// </summary>
     private IRStmt LowerSwitchExpression(SwitchExpressionSyntax switchExpression, SemanticModel model)
     {
+        var pendingStart = _pendingStatements.Count;
         var value = LowerExpr(switchExpression.GoverningExpression, model);
-        var prelude = new List<IRStmt>();
-        if (_pendingStatements.Count > 0)
+        var prelude = TakePendingStatementsFrom(pendingStart);
+        var targetType = GetSwitchExpressionTargetType(switchExpression, model);
+        var sections = LowerSwitchExpressionSections(
+            switchExpression,
+            model,
+            arm => LowerSwitchExpressionArmValue(arm.Expression, targetType, model));
+
+        var switchStatement = new IRSwitch(value, sections);
+        if (prelude.Count == 0)
         {
-            prelude.AddRange(_pendingStatements);
-            _pendingStatements.Clear();
+            return switchStatement;
         }
 
-        var typeInfo = model.GetTypeInfo(switchExpression);
-        var targetType = typeInfo.ConvertedType ?? typeInfo.Type;
+        prelude.Add(switchStatement);
+        return new IRStatementList(prelude);
+    }
 
+    /// <summary>
+    /// Lowers a switch expression used as a value into a switch whose arms assign
+    /// <paramref name="target"/> (or throw), so the value flows through ordinary statement paths
+    /// without an immediately invoked function.
+    /// </summary>
+    private IRStmt LowerSwitchExpressionAssignment(
+        SwitchExpressionSyntax switchExpression,
+        IRExpr target,
+        SemanticModel model)
+    {
+        var pendingStart = _pendingStatements.Count;
+        var value = LowerExpr(switchExpression.GoverningExpression, model);
+        var prelude = TakePendingStatementsFrom(pendingStart);
+        var targetType = GetSwitchExpressionTargetType(switchExpression, model);
+        var sections = LowerSwitchExpressionSections(
+            switchExpression,
+            model,
+            arm => new IRAssign(target, LowerSwitchExpressionArmValueExpression(arm.Expression, targetType, model)));
+
+        var switchStatement = new IRSwitch(value, sections);
+        if (prelude.Count == 0)
+        {
+            return switchStatement;
+        }
+
+        prelude.Add(switchStatement);
+        return new IRStatementList(prelude);
+    }
+
+    private IRStmt LowerSwitchExpressionLocalDeclaration(
+        VariableDeclaratorSyntax variable,
+        ISymbol? localSymbol,
+        SwitchExpressionSyntax switchExpression,
+        SemanticModel model)
+    {
+        var localName = DeclareLuaName(localSymbol, variable.Identifier.ValueText);
+        if (IsFlattenableStructType(ResolveType(GetSwitchExpressionTargetType(switchExpression, model))))
+        {
+            ReportSwitchExpressionIssue(
+                switchExpression,
+                "switch expressions that produce a flattened struct value are only supported as a return value");
+            return new IRLocalDecl(localName, null);
+        }
+
+        return new IRStatementList([
+            new IRLocalDecl(localName, null),
+            LowerSwitchExpressionAssignment(switchExpression, new IRIdentifier(localName), model),
+        ]);
+    }
+
+    private IRStmt LowerSwitchExpressionAssignmentTarget(
+        ExpressionSyntax left,
+        SwitchExpressionSyntax switchExpression,
+        SemanticModel model)
+    {
+        if (IsFlattenableStructType(ResolveType(GetSwitchExpressionTargetType(switchExpression, model))))
+        {
+            ReportSwitchExpressionIssue(
+                switchExpression,
+                "switch expressions that produce a flattened struct value are only supported as a return value");
+            return new IRExprStmt(new IRLiteral(null, IRLiteralKind.Nil));
+        }
+
+        var target = LowerExpr(left, model);
+        return LowerSwitchExpressionAssignment(switchExpression, target, model);
+    }
+
+    private IReadOnlyList<IRSwitchSection> LowerSwitchExpressionSections(
+        SwitchExpressionSyntax switchExpression,
+        SemanticModel model,
+        Func<SwitchExpressionArmSyntax, IRStmt> lowerArm)
+    {
         var sections = new List<IRSwitchSection>();
         var hasDefaultSection = false;
         foreach (var arm in switchExpression.Arms)
@@ -4110,13 +4209,14 @@ public sealed class IRLowering
             }
 
             var body = new IRBlock();
+            var pendingStart = _pendingStatements.Count;
             var armStatement = arm.Expression is ThrowExpressionSyntax throwExpression
                 ? LowerThrowExpression(throwExpression, model)
-                : LowerSwitchExpressionArmValue(arm.Expression, targetType, model);
+                : lowerArm(arm);
 
             // Arm expressions may schedule prelude statements (out vars, conversion temporaries);
-            // they belong inside the arm's branch before the return/throw.
-            FlushPendingStatements(body);
+            // they belong inside the arm's branch, after any pending statements of the caller.
+            FlushPendingStatementsFrom(body, pendingStart);
             body.Statements.Add(armStatement);
             sections.Add(new IRSwitchSection(labels, isDefault, body));
             hasDefaultSection |= isDefault;
@@ -4133,14 +4233,22 @@ public sealed class IRLowering
             sections.Add(new IRSwitchSection(Array.Empty<IRExpr>(), true, fallbackBody));
         }
 
-        var switchStatement = new IRSwitch(value, sections);
-        if (prelude.Count == 0)
+        return sections;
+    }
+
+    private IRExpr LowerSwitchExpressionArmValueExpression(
+        ExpressionSyntax expression,
+        ITypeSymbol? targetType,
+        SemanticModel model)
+    {
+        var resolvedTarget = ResolveType(targetType);
+        if (resolvedTarget is not null
+            && TryGetImplicitUserDefinedConversion(expression, resolvedTarget, model, isExplicitInSource: false, out var conversion))
         {
-            return switchStatement;
+            return BuildImplicitConversionCall(conversion, expression, model);
         }
 
-        prelude.Add(switchStatement);
-        return new IRStatementList(prelude);
+        return LowerExpr(expression, model);
     }
 
     private IRStmt LowerSwitchExpressionArmValue(ExpressionSyntax expression, ITypeSymbol? targetType, SemanticModel model)
@@ -4152,14 +4260,66 @@ public sealed class IRLowering
                 LowerStructArgumentValues(expression, structTarget, model)));
         }
 
-        if (resolvedTarget is not null
-            && TryGetImplicitUserDefinedConversion(expression, resolvedTarget, model, isExplicitInSource: false, out var conversion))
+        return AppendOutParameterValues(new IRReturn(
+            LowerSwitchExpressionArmValueExpression(expression, targetType, model)));
+    }
+
+    /// <summary>
+    /// Lowers a switch expression in an arbitrary expression position. The immediately invoked
+    /// function keeps the switch at its original evaluation position (no statement hoisting) and
+    /// works in contexts without a statement prelude, such as field initializers and base
+    /// constructor arguments.
+    /// </summary>
+    private IRExpr LowerSwitchExpressionValue(SwitchExpressionSyntax switchExpression, SemanticModel model)
+    {
+        if (ResolveType(GetSwitchExpressionTargetType(switchExpression, model)) is INamedTypeSymbol structTarget
+            && IsFlattenableStructType(structTarget))
         {
-            return AppendOutParameterValues(new IRReturn(
-                BuildImplicitConversionCall(conversion, expression, model)));
+            ReportSwitchExpressionIssue(
+                switchExpression,
+                "switch expressions that produce a flattened struct value are only supported as a return value");
+            return new IRLiteral(null, IRLiteralKind.Nil);
         }
 
-        return AppendOutParameterValues(new IRReturn(LowerExpr(expression, model)));
+        var tempName = AllocateLuaName("__switch");
+        var body = new IRBlock();
+        body.Statements.Add(new IRLocalDecl(tempName, null));
+        body.Statements.Add(LowerSwitchExpressionAssignment(switchExpression, new IRIdentifier(tempName), model));
+        body.Statements.Add(new IRReturn(new IRIdentifier(tempName)));
+        return BuildImmediatelyInvokedExpression(body);
+    }
+
+    private ITypeSymbol? GetSwitchExpressionTargetType(SwitchExpressionSyntax switchExpression, SemanticModel model)
+    {
+        var typeInfo = model.GetTypeInfo(switchExpression);
+        return typeInfo.ConvertedType ?? typeInfo.Type;
+    }
+
+    private List<IRStmt> TakePendingStatementsFrom(int startIndex)
+    {
+        if (_pendingStatements.Count <= startIndex)
+        {
+            return new List<IRStmt>();
+        }
+
+        var taken = _pendingStatements.GetRange(startIndex, _pendingStatements.Count - startIndex);
+        _pendingStatements.RemoveRange(startIndex, _pendingStatements.Count - startIndex);
+        return taken;
+    }
+
+    private void FlushPendingStatementsFrom(IRBlock target, int startIndex)
+    {
+        if (_pendingStatements.Count <= startIndex)
+        {
+            return;
+        }
+
+        for (var i = startIndex; i < _pendingStatements.Count; i++)
+        {
+            target.Statements.Add(_pendingStatements[i]);
+        }
+
+        _pendingStatements.RemoveRange(startIndex, _pendingStatements.Count - startIndex);
     }
 
     private IRStmt AppendOutParameterValues(IRStmt returnStmt)
@@ -4788,6 +4948,14 @@ public sealed class IRLowering
     private void ReportConversionIssue(SyntaxNode node, string message)
     {
         if (_reportedConversionIssues.Add(node))
+        {
+            AddDiagnostic(node.GetLocation(), message);
+        }
+    }
+
+    private void ReportSwitchExpressionIssue(SyntaxNode node, string message)
+    {
+        if (_reportedSwitchExpressionIssues.Add(node))
         {
             AddDiagnostic(node.GetLocation(), message);
         }

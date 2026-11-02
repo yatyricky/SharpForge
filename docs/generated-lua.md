@@ -117,9 +117,15 @@ Positions that cannot consume a flattened struct result (array elements, field i
 
 ## Switch Expressions
 
-A switch expression is supported only as a return value (a `return` statement, an expression-bodied member, or an expression-bodied lambda). It canonicalizes to the ordinary switch statement shape before Lua emission: the governing expression is evaluated once into a local, and each arm becomes a `case: return <expression>` section; `throw` arms become `case: throw ...`. Arm values go through the normal return lowering for the switch expression's converted type, so struct flattening and implicit conversion operators apply exactly as they would to a plain `return`.
+Switch expressions lower by progressively rewriting them into statement-level switch forms:
 
-Supported arm patterns are compile-time constant patterns and the `_` discard arm, matching switch statement labels. `when` guards, type/relational/`or`/`var` patterns, and switch expressions outside return position are hard diagnostics. A switch expression without a discard arm gets an `error("switch expression did not match any arm")` fallback so an unmatched value never silently returns nil.
+- In return position they canonicalize to the ordinary switch statement shape: the governing expression is evaluated once into a local, and each arm becomes a `case: return <expression>` section; `throw` arms become `case: throw ...`.
+- As a local variable initializer or the right-hand side of a simple assignment they become a declared target (or the existing assignment target) plus a switch whose arms assign it, with no temporary closure.
+- In any other expression position they become an immediately invoked function containing the same temporary-and-switch-assignment form. This keeps evaluation at the original position and works in contexts without a statement prelude (arguments, conditions, field initializers, constructor arguments).
+
+Arm values are converted to the switch expression's contextual type before being returned or assigned, so struct flattening and implicit conversion operators apply as they would to a plain `return`/assignment. Struct-valued switch expressions are only supported in return position; local-initializer, assignment, and nested positions report a diagnostic.
+
+Supported arm patterns are compile-time constant patterns and the `_` discard arm, matching switch statement labels. `when` guards and type/relational/`or`/`var` patterns are hard diagnostics. A switch expression without a discard arm gets an `error("switch expression did not match any arm")` fallback so an unmatched value never silently returns nil.
 
 ## Null-Conditional Access
 
@@ -219,7 +225,7 @@ Common C# constructs lower to direct Lua patterns:
 | `is` / `as` | emitted type metadata helpers when needed |
 | `??=` | nil-check assignment; expression form returns the existing or assigned value |
 | implicit conversion operator | static `SF__.Type.op_Implicit(...)` function; a flattenable struct parameter is expanded to one Lua parameter per field, and a flattenable struct result uses the ordinary multi-return shape |
-| switch expression (return position) | `repeat` / `local switchValue = ...` / `if ... then return ... else (error) end` / `until true` branch chain, one `return` per arm |
+| switch expression | return position: `repeat` / `if ... then return ... end` branch chain; local initializer / simple assignment: declared or existing target plus `target = <arm>` branches; other positions: immediately invoked function with a temporary and the same assignment branches |
 | `?.` / `?.Method()` | receiver hoisted to `local __ca`; nil-guarded member/invocation branch; return position uses statements, other value positions use the existing IIFE scaffolding |
 | `if` declaration pattern | pattern variable hoisted to `local <name>`; type test via `SF__.TypeIs__(...)`, negated for `is not`; negated locals stay in the enclosing block for use after the guard |
 | `[Flags]` enum | numeric constants; the attribute is ignored, and composite/bitwise values stay ordinary integers |
